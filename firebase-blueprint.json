@@ -1,0 +1,133 @@
+{
+  "entities": {
+    "Property": {
+      "title": "Property",
+      "description": "A real estate property managed in the system.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the property" },
+        "address": { "type": "string", "description": "Full address of the property" },
+        "status": { "type": "string", "enum": ["vacant", "rented", "renovation"], "description": "Current status of the property" },
+        "rentValue": { "type": "number", "description": "Monthly rent value" },
+        "currentTenantId": { "type": "string", "description": "ID of the tenant currently renting the property" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this property record" }
+      },
+      "required": ["name", "address", "status", "rentValue", "ownerId"]
+    },
+    "Tenant": {
+      "title": "Tenant",
+      "description": "A person who rents or is waiting to rent a property.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the tenant" },
+        "cpf": { "type": "string", "description": "CPF (Tax ID) of the tenant" },
+        "contact": { "type": "string", "description": "Primary contact number" },
+        "secondaryContact": { "type": "string", "description": "Secondary contact number" },
+        "status": { "type": "string", "enum": ["waiting", "allocated", "archived"], "description": "Current status of the tenant" },
+        "rating": { "type": "number", "description": "Tenant rating from 1 to 5" },
+        "observations": { "type": "string", "description": "General notes about the tenant" },
+        "contractFile": { "type": "string", "description": "Base64 or URL of the contract file" },
+        "propertyId": { "type": "string", "description": "ID of the associated property" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this tenant record" },
+        "initialPaymentType": { "type": "string", "enum": ["deposit", "rent"], "description": "Type of initial payment" },
+        "depositValue": { "type": "number", "description": "Value of the deposit" },
+        "evidenceLocation": { "type": "string", "description": "External location of the evidence" },
+        "evidenceName": { "type": "string", "description": "Name of the evidence file" },
+        "linkedUserId": { "type": "string", "description": "UID of the user profile linked to this tenant" }
+      },
+      "required": ["name", "cpf", "contact", "status", "ownerId"]
+    },
+    "User": {
+      "title": "User",
+      "description": "A user profile in the system.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "description": "Email of the user" },
+        "role": { "type": "string", "enum": ["admin", "tenant"], "description": "Role of the user" },
+        "tenantId": { "type": "string", "description": "ID of the linked tenant record (if role is tenant)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["email", "role", "createdAt"]
+    },
+    "Agreement": {
+      "title": "Agreement",
+      "description": "A recurring monthly agreement for a tenant.",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "description": "ID of the tenant" },
+        "description": { "type": "string", "description": "Description of the agreement" },
+        "installmentAmount": { "type": "number", "description": "Monthly installment amount" },
+        "durationMonths": { "type": "number", "description": "Number of months for the agreement" },
+        "startDate": { "type": "string", "format": "date", "description": "Start date of the agreement" },
+        "evidence": { "type": "string", "description": "Base64 or URL of the photo/PDF evidence" },
+        "evidenceName": { "type": "string", "description": "Name of the attached file" },
+        "evidenceLocation": { "type": "string", "description": "Physical or digital location of the evidence" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this agreement record" }
+      },
+      "required": ["tenantId", "description", "installmentAmount", "durationMonths", "startDate", "ownerId"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "An expense related to a property (renovation, repair, tax).",
+      "type": "object",
+      "properties": {
+        "propertyId": { "type": "string", "description": "ID of the associated property" },
+        "description": { "type": "string", "description": "Description of the expense" },
+        "amount": { "type": "number", "description": "Cost of the expense" },
+        "date": { "type": "string", "format": "date", "description": "Date of the expense" },
+        "type": { "type": "string", "enum": ["renovation", "repair", "tax", "fine", "other"], "description": "Type of expense" },
+        "evidence": { "type": "string", "description": "Base64 or URL of the photo/PDF evidence" },
+        "evidenceName": { "type": "string", "description": "Name of the attached file" },
+        "evidenceLocation": { "type": "string", "description": "Physical or digital location of the evidence" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this expense record" }
+      },
+      "required": ["propertyId", "description", "amount", "date", "type", "ownerId"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "A rent payment record.",
+      "type": "object",
+      "properties": {
+        "propertyId": { "type": "string", "description": "ID of the associated property" },
+        "tenantId": { "type": "string", "description": "ID of the associated tenant" },
+        "amount": { "type": "number", "description": "Rent amount" },
+        "dueDate": { "type": "string", "format": "date", "description": "Payment due date" },
+        "paidDate": { "type": "string", "format": "date", "description": "Date the payment was made" },
+        "status": { "type": "string", "enum": ["pending", "paid", "late", "cancelled", "partial"], "description": "Payment status" },
+        "paidAmount": { "type": "number", "description": "Amount actually paid" },
+        "interestAmount": { "type": "number", "description": "Calculated interest for late payment" },
+        "receiptUrl": { "type": "string", "description": "Base64 or URL of the receipt" },
+        "evidenceName": { "type": "string", "description": "Name of the attached file" },
+        "evidenceLocation": { "type": "string", "description": "Physical or digital location of the evidence" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this payment record" },
+        "type": { "type": "string", "enum": ["rent", "deposit", "agreement"], "description": "Type of payment" },
+        "description": { "type": "string", "description": "Description of the payment" },
+        "observations": { "type": "string", "description": "General notes about the payment" },
+        "revertReason": { "type": "string", "description": "Reason why the payment was reverted" },
+        "agreementId": { "type": "string", "description": "ID of the associated agreement" }
+      },
+      "required": ["propertyId", "tenantId", "amount", "dueDate", "status", "ownerId"]
+    },
+    "Config": {
+      "title": "Config",
+      "description": "User-specific configuration settings.",
+      "type": "object",
+      "properties": {
+        "securityPassword": { "type": "string", "description": "Security password for sensitive actions" },
+        "googleDriveTokens": { "type": "string", "description": "JSON string of Google OAuth tokens" },
+        "googleDriveConnected": { "type": "boolean", "description": "Whether Google Drive is connected" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["securityPassword"]
+    }
+  },
+  "firestore": {
+    "properties": { "schema": "Property", "description": "Collection of properties" },
+    "tenants": { "schema": "Tenant", "description": "Collection of tenants" },
+    "expenses": { "schema": "Expense", "description": "Collection of property expenses" },
+    "payments": { "schema": "Payment", "description": "Collection of rent payments" },
+    "agreements": { "schema": "Agreement", "description": "Collection of recurring agreements" },
+    "users": { "schema": "User", "description": "Collection of user profiles" },
+    "config": { "schema": "Config", "description": "User-specific configuration" }
+  }
+}
