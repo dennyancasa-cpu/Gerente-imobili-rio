@@ -2,6 +2,16 @@ export type PropertyStatus = 'vacant' | 'rented' | 'renovation';
 export type TenantStatus = 'waiting' | 'allocated' | 'archived';
 export type ExpenseType = 'renovation' | 'repair' | 'tax' | 'fine' | 'other';
 export type PaymentStatus = 'pending' | 'paid' | 'late' | 'cancelled' | 'partial';
+export type DepositStatus = 'pending' | 'received' | 'partially_used' | 'refunded';
+
+export interface DepositUsage {
+  id: string;
+  amount: number;
+  date: string;
+  reason: string;
+  userName: string;
+  timestamp: any;
+}
 
 export interface Property {
   id?: string;
@@ -32,6 +42,8 @@ export interface Tenant {
   updatedAt?: any;
   initialPaymentType?: 'deposit' | 'rent';
   depositValue?: number;
+  depositInstallments?: number;
+  depositDay?: number;
   evidenceLocation?: string;
   evidenceName?: string;
   thumbnailLink?: string;
@@ -90,6 +102,11 @@ export interface Payment {
   createdAt?: any;
   updatedAt?: any;
   type?: 'rent' | 'deposit' | 'agreement';
+  installmentNumber?: number;
+  totalInstallments?: number;
+  depositStatus?: DepositStatus;
+  depositUsage?: DepositUsage[];
+  originalDepositAmount?: number;
   description?: string;
   observations?: string;
   revertReason?: string;

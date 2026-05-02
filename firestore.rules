@@ -1,79 +1,3 @@
-// ===============================================================
-// Assumed Data Model
-// ===============================================================
-//
-// Collection: properties
-// Fields:
-//   - name: string (required)
-//   - address: string (required)
-//   - status: string (required, enum: vacant, rented, renovation)
-//   - rentValue: number (required)
-//   - currentTenantId: string (optional)
-//   - ownerId: string (required, immutable)
-//
-// Collection: tenants
-// Fields:
-//   - name: string (required)
-//   - cpf: string (required)
-//   - contact: string (required)
-//   - secondaryContact: string (optional)
-//   - status: string (required, enum: waiting, allocated, archived)
-//   - rating: number (optional, 1-5)
-//   - observations: string (optional)
-//   - contractFile: string (optional, base64/URL)
-//   - propertyId: string (optional)
-//   - ownerId: string (required, immutable)
-//   - initialPaymentType: string (optional, enum: deposit, rent)
-//   - depositValue: number (optional)
-//   - linkedUserId: string (optional)
-//
-// Collection: agreements
-// Fields:
-//   - tenantId: string (required)
-//   - description: string (required)
-//   - installmentAmount: number (required)
-//   - durationMonths: number (required)
-//   - startDate: string (required, ISO 8601)
-//   - ownerId: string (required, immutable)
-//
-// Collection: expenses
-// Fields:
-//   - propertyId: string (required)
-//   - description: string (required)
-//   - amount: number (required)
-//   - date: string (required, ISO 8601)
-//   - type: string (required, enum: renovation, repair, tax, fine, other)
-//   - evidence: string (optional, base64/URL)
-//   - ownerId: string (required, immutable)
-//
-// Collection: payments
-// Fields:
-//   - propertyId: string (required)
-//   - tenantId: string (required)
-//   - amount: number (required)
-//   - dueDate: string (required, ISO 8601)
-//   - paidDate: string (optional, ISO 8601)
-//   - status: string (required, enum: pending, paid, late, cancelled)
-//   - interestAmount: number (optional)
-//   - ownerId: string (required, immutable)
-//   - type: string (optional, enum: rent, deposit, agreement)
-//   - description: string (optional)
-//   - observations: string (optional)
-//
-// Collection: users
-// Fields:
-//   - email: string (required)
-//   - role: string (required, enum: admin, tenant)
-//   - tenantId: string (optional)
-//   - createdAt: timestamp (required)
-//
-// Collection: config
-// Fields:
-//   - securityPassword: string (required)
-//   - updatedAt: string (optional, ISO 8601)
-//
-// ===============================================================
-
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -86,42 +10,56 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isEmailVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+    function isAdmin() {
+      // Identity roles (Owner, Admin) MUST be verified against a trusted source.
+      // We use a allowlist of emails but ensure email_verified is true to prevent spoofing.
+      return isSignedIn() && 
+             request.auth.token.email_verified == true && (
+               request.auth.token.email == "dennyancasa@gmail.com" ||
+               request.auth.token.email == "dennayncasa@gmail.com" ||
+               request.auth.token.email == "dennyan.moto@gmail.com"
+             );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
     }
 
     function isOwner(ownerId) {
-      return isEmailVerified() && request.auth.uid == ownerId;
+      return isSignedIn() && request.auth.uid == ownerId;
     }
 
     function isDocOwner() {
-      return isEmailVerified() && request.auth.uid == resource.data.ownerId;
+      return isSignedIn() && (
+        (request.resource != null && request.resource.data.ownerId == request.auth.uid) ||
+        (resource != null && resource.data.ownerId == request.auth.uid)
+      );
     }
 
     function uidUnchanged() {
-      return request.resource.data.ownerId == request.auth.uid;
+      return incoming().ownerId == request.auth.uid;
     }
 
     function uidNotModified() {
-      return request.resource.data.ownerId == resource.data.ownerId;
-    }
-
-    function isAdmin() {
-      return isEmailVerified() &&
-        (request.auth.token.email == "dennyancasa@gmail.com" ||
-         request.auth.token.email == "dennayncasa@gmail.com" ||
-         request.auth.token.email == "dennyan.moto@gmail.com" ||
-         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+      return incoming().ownerId == existing().ownerId;
     }
 
     function hasOnlyAllowedFields(fields) {
-      return request.resource.data.keys().hasOnly(fields);
+      return incoming().keys().hasOnly(fields);
     }
 
     function isValidDate(field) {
-      return request.resource.data[field] is string && 
-             request.resource.data[field].matches("^\\d{4}-\\d{2}-\\d{2}.*");
+      return !incoming().keys().contains(field) || (
+             incoming()[field] is string && 
+             incoming()[field].size() <= 64);
     }
 
     // ===============================================================
@@ -129,107 +67,109 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidProperty(data) {
-      return hasOnlyAllowedFields(['id', 'name', 'address', 'status', 'rentValue', 'paymentDay', 'currentTenantId', 'ownerId', 'createdAt', 'updatedAt']) &&
+      let allowed = ['id', 'name', 'address', 'status', 'rentValue', 'paymentDay', 'currentTenantId', 'ownerId', 'createdAt', 'updatedAt', 'thumbnailLink'];
+      return incoming().keys().hasAll(['name', 'ownerId']) &&
+             incoming().keys().hasOnly(allowed) &&
              data.name is string && data.name.size() > 0 &&
-             data.address is string && data.address.size() > 0 &&
-             data.status in ['vacant', 'rented', 'renovation'] &&
-             data.rentValue is number && data.rentValue >= 0 &&
+             (!data.keys().contains('status') || data.status in ['vacant', 'rented', 'renovation']) &&
+             (!data.keys().contains('rentValue') || data.rentValue is number) &&
              (isAdmin() || data.ownerId == request.auth.uid);
     }
 
     function isValidTenant(data) {
-      return hasOnlyAllowedFields(['id', 'name', 'cpf', 'contact', 'secondaryContact', 'status', 'rating', 'observations', 'contractFile', 'propertyId', 'ownerId', 'createdAt', 'updatedAt', 'initialPaymentType', 'depositValue', 'linkedUserId', 'evidenceLocation', 'evidenceName', 'thumbnailLink']) &&
+      let allowed = ['id', 'name', 'cpf', 'contact', 'secondaryContact', 'status', 'rating', 'observations', 'contractFile', 'propertyId', 'ownerId', 'createdAt', 'updatedAt', 'initialPaymentType', 'depositValue', 'depositInstallments', 'depositDay', 'linkedUserId', 'evidenceLocation', 'evidenceName', 'thumbnailLink'];
+      return incoming().keys().hasAll(['name', 'ownerId', 'status']) &&
+             incoming().keys().hasOnly(allowed) &&
              data.name is string && data.name.size() > 0 &&
-             data.cpf is string && data.cpf.size() >= 1 &&
-             data.contact is string && data.contact.size() > 0 &&
              data.status in ['waiting', 'allocated', 'archived'] &&
+             (!data.keys().contains('depositInstallments') || data.depositInstallments is number) &&
+             (!data.keys().contains('depositDay') || data.depositDay is number) &&
              (isAdmin() || data.ownerId == request.auth.uid);
     }
 
     function isValidAgreement(data) {
-      return hasOnlyAllowedFields(['id', 'tenantId', 'propertyId', 'description', 'totalAmount', 'installmentAmount', 'durationMonths', 'startDate', 'status', 'justification', 'evidence', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'thumbnailLink']) &&
-             data.description is string && data.description.size() > 0 &&
-             data.totalAmount is number && data.totalAmount >= 0 &&
-             data.installmentAmount is number && data.installmentAmount >= 0 &&
-             data.durationMonths is number && data.durationMonths > 0 &&
-             data.startDate is string && isValidDate('startDate') &&
-             data.status in ['active', 'archived', 'deleted'] &&
+      let allowed = ['id', 'tenantId', 'propertyId', 'description', 'totalAmount', 'installmentAmount', 'durationMonths', 'startDate', 'status', 'justification', 'evidence', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'thumbnailLink'];
+      return incoming().keys().hasAll(['ownerId', 'tenantId', 'description']) &&
+             incoming().keys().hasOnly(allowed) &&
              (isAdmin() || data.ownerId == request.auth.uid);
     }
 
     function isValidExpense(data) {
-      return hasOnlyAllowedFields(['propertyId', 'description', 'amount', 'date', 'type', 'evidence', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'thumbnailLink']) &&
-             data.propertyId is string && data.propertyId.size() > 0 &&
-             data.description is string && data.description.size() > 0 &&
-             data.amount is number && data.amount >= 0 &&
-             data.date is string && isValidDate('date') &&
-             data.type in ['renovation', 'repair', 'tax', 'fine', 'other'] &&
+      let allowed = ['id', 'propertyId', 'description', 'amount', 'date', 'type', 'evidence', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'thumbnailLink'];
+      return incoming().keys().hasAll(['ownerId', 'propertyId', 'amount']) &&
+             incoming().keys().hasOnly(allowed) &&
              (isAdmin() || data.ownerId == request.auth.uid);
     }
 
     function isValidPayment(data) {
-      return hasOnlyAllowedFields(['id', 'propertyId', 'tenantId', 'amount', 'paidAmount', 'dueDate', 'paidDate', 'status', 'interestAmount', 'receiptUrl', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'type', 'description', 'observations', 'agreementId', 'revertReason', 'thumbnailLink']) &&
-             data.amount is number && data.amount >= 0 &&
-             data.dueDate is string &&
-             data.status in ['pending', 'paid', 'late', 'cancelled', 'partial'] &&
+      let allowed = ['id', 'propertyId', 'tenantId', 'amount', 'paidAmount', 'dueDate', 'paidDate', 'status', 'interestAmount', 'receiptUrl', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'type', 'description', 'observations', 'agreementId', 'revertReason', 'thumbnailLink'];
+      return incoming().keys().hasAll(['ownerId', 'propertyId', 'amount', 'status']) &&
+             incoming().keys().hasOnly(allowed) &&
              (isAdmin() || data.ownerId == request.auth.uid);
     }
 
     function isValidConfig(data) {
-      return data.keys().hasAny(['securityPassword', 'updatedAt', 'googleDriveTokens', 'googleDriveConnected', 'driveRootFolderId']) &&
-             (!data.keys().contains('securityPassword') || (data.securityPassword is string && data.securityPassword.size() >= 4 && data.securityPassword.size() <= 20)) &&
-             (!data.keys().contains('googleDriveTokens') || data.googleDriveTokens is string) &&
-             (!data.keys().contains('googleDriveConnected') || data.googleDriveConnected is bool);
+      let allowed = ['securityPassword', 'updatedAt', 'googleDriveTokens', 'googleDriveConnected', 'driveRootFolderId'];
+      return incoming().keys().hasOnly(allowed);
     }
 
     // ===============================================================
     // Collection Rules
     // ===============================================================
 
+    match /test/connection {
+      allow read: if true;
+    }
+
     match /properties/{propertyId} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isEmailVerified() && (uidUnchanged() || isAdmin()) && isValidProperty(request.resource.data);
-      allow update: if (isDocOwner() || isAdmin()) && uidNotModified() && isValidProperty(request.resource.data);
-      allow delete: if isDocOwner() || isAdmin();
+      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidProperty(incoming());
+      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidProperty(incoming());
+      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     match /tenants/{tenantId} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isEmailVerified() && (uidUnchanged() || isAdmin()) && isValidTenant(request.resource.data);
-      allow update: if (isDocOwner() || isAdmin()) && uidNotModified() && isValidTenant(request.resource.data);
-      allow delete: if isDocOwner() || isAdmin();
+      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidTenant(incoming());
+      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidTenant(incoming());
+      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     match /expenses/{expenseId} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isEmailVerified() && (uidUnchanged() || isAdmin()) && isValidExpense(request.resource.data);
-      allow update: if (isDocOwner() || isAdmin()) && uidNotModified() && isValidExpense(request.resource.data);
-      allow delete: if isDocOwner() || isAdmin();
+      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidExpense(incoming());
+      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidExpense(incoming());
+      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     match /payments/{paymentId} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isEmailVerified() && (uidUnchanged() || isAdmin()) && isValidPayment(request.resource.data);
-      allow update: if (isDocOwner() || isAdmin()) && uidNotModified() && isValidPayment(request.resource.data);
-      allow delete: if isDocOwner() || isAdmin();
+      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidPayment(incoming());
+      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidPayment(incoming());
+      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     match /agreements/{agreementId} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isEmailVerified() && (uidUnchanged() || isAdmin()) && isValidAgreement(request.resource.data);
-      allow update: if (isDocOwner() || isAdmin()) && uidNotModified() && isValidAgreement(request.resource.data);
-      allow delete: if isDocOwner() || isAdmin();
+      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidAgreement(incoming());
+      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidAgreement(incoming());
+      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     match /users/{userId} {
-      allow read: if isEmailVerified() && (request.auth.uid == userId || isAdmin());
-      allow create: if isEmailVerified() && request.auth.uid == userId;
-      allow update: if isEmailVerified() && (request.auth.uid == userId || isAdmin()) && (isAdmin() || request.resource.data.role == resource.data.role);
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
     }
 
-    match /config/{userId} {
-      allow read: if isEmailVerified() && (request.auth.uid == userId || isAdmin());
-      allow write: if isEmailVerified() && (request.auth.uid == userId || isAdmin()) && isValidConfig(request.resource.data);
+    match /config/{configId} {
+      allow read, write: if isSignedIn() && (request.auth.uid == configId || isAdmin());
     }
 
     // Default deny

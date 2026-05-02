@@ -7,10 +7,51 @@ interface Message {
   text: string;
 }
 
+const getBotResponse = (input: string): string => {
+  const lowerInput = input.toLowerCase();
+  const prefix = "Meste IA: ";
+  
+  if (lowerInput.includes('recibo') || lowerInput.includes('comprovante') || lowerInput.includes('quitação')) {
+    return prefix + 'Para **gerar um recibo**, vá na aba "Financeiro", encontre o pagamento (em "Recebimentos" ou histórico) e clique em "Gerar Recibo". Você pode escolher entre o **Recibo Simples** ou o **Recibo Detalhado** (que inclui dados do imóvel e inquilino).';
+  }
+  if (lowerInput.includes('imóvel') || lowerInput.includes('imovel') || lowerInput.includes('casa') || lowerInput.includes('apartamento')) {
+    return prefix + 'Para **cadastrar um imóvel**, utilize a aba "Imóveis" > "Novo Imóvel". Preencha os detalhes como endereço, valor base e dia de vencimento. Você também pode editar imóveis existentes para atualizar fotos ou valores.';
+  }
+  if (lowerInput.includes('inquilino') || lowerInput.includes('morador')) {
+    return prefix + 'Na aba "Inquilinos", você pode cadastrar novos moradores. Lembre-se de mudar o status para **"Alocado"** e selecionar o imóvel correspondente para que o sistema comece a gerar as cobranças mensais.';
+  }
+  if (lowerInput.includes('caução') || lowerInput.includes('caucao') || lowerInput.includes('depósito') || lowerInput.includes('garantia')) {
+    return prefix + 'O sistema permite registrar o **Caução** no momento da alocação do inquilino. Este valor fica registrado como um crédito ou garantia, facilitando o acerto de contas ao final do contrato.';
+  }
+  if (lowerInput.includes('acordo') || lowerInput.includes('renegoc') || lowerInput.includes('atrasad') || lowerInput.includes('parcela')) {
+    return prefix + 'Se houver pendências, use a função **"Realizar Acordo"** na aba Financeiro. Isso permite consolidar dívidas e criar um novo parcelamento, automatizando as novas datas de vencimento.';
+  }
+  if (lowerInput.includes('dashboard') || lowerInput.includes('início') || lowerInput.includes('resumo')) {
+    return prefix + 'No **Dashboard (Início)**, você tem uma visão rápida de quem pagou, quem está atrasado e o faturamento total do mês. É o painel central para controle rápido do seu negócio.';
+  }
+  if (lowerInput.includes('drive') || lowerInput.includes('cloud') || lowerInput.includes('nuvem') || lowerInput.includes('contrato') || lowerInput.includes('anexo')) {
+    return prefix + 'A **Central Cloud** integra o app ao seu Google Drive. Isso permite que fotos de recibos e contratos sejam salvos na nuvem com segurança, sem ocupar espaço no seu dispositivo.';
+  }
+  if (lowerInput.includes('despesa') || lowerInput.includes('gasto') || lowerInput.includes('manutenção')) {
+    return prefix + 'Você pode registrar **Despesas** (como reformas, IPTU ou taxas) na aba Financeiro. Isso é essencial para calcular seu lucro líquido real ao final de cada mês.';
+  }
+  if (lowerInput.includes('versão') || lowerInput.includes('versao') || lowerInput.includes('atualiz')) {
+    return prefix + 'O sistema está na versão **4.1.1**. Estamos sempre evoluindo para oferecer o melhor controle imobiliário para você!';
+  }
+  if (lowerInput.includes('instalar') || lowerInput.includes('aplicativo') || lowerInput.includes('app')) {
+    return prefix + 'Para instalar o app: \n1. No Android (Chrome): Clique nos **3 pontos** (superior direito) e depois em **"Instalar aplicativo"**.\n2. No iOS (Safari): Clique no botão **"Compartilhar"** e depois em **"Adicionar à Tela de Início"**.\n3. No desktop: Um ícone de instalação aparecerá na barra de endereços.';
+  }
+  if (lowerInput.includes('oi') || lowerInput.includes('olá') || lowerInput.includes('ola') || lowerInput.includes('bom dia') || lowerInput.includes('boa tarde')) {
+    return prefix + 'Olá! Eu sou o assistente inteligente do Gerente Imobiliário. Como posso facilitar sua gestão hoje?';
+  }
+
+  return prefix + 'Como sua inteligência artificial de suporte, posso te ajudar com: **Gerar Recibos**, **Cadastrar Imóveis**, **Gerenciar Inquilinos**, **Lançar Despesas**, **Realizar Acordos** ou configurar a **Central Cloud**. O que deseja saber agora?';
+};
+
 export function HelpView() {
   const [activeTab, setActiveTab] = useState<'manual' | 'agent'>('manual');
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'model', text: 'Olá! Sou o assistente virtual do Gerente Imobiliário. Como posso te ajudar hoje?' }
+    { role: 'model', text: 'Olá! Sou o assistente de ajuda do Gerente Imobiliário. Como posso te orientar hoje?' }
   ]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -30,20 +71,12 @@ export function HelpView() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          history: messages,
-          message: userMessage
-        })
-      });
-
-      if (!response.ok) throw new Error('Falha ao comunicar com o assistente.');
+      // Simula um tempinho de pensamento
+      await new Promise(resolve => setTimeout(resolve, 800));
       
-      const data = await response.json();
-      setMessages(prev => [...prev, { role: 'model', text: data.reply }]);
-    } catch (error) {
+      const responseText = getBotResponse(userMessage);
+      setMessages(prev => [...prev, { role: 'model', text: responseText }]);
+    } catch (error: any) {
       console.error(error);
       setMessages(prev => [...prev, { role: 'model', text: 'Desculpe, ocorreu um erro ao processar sua pergunta. Tente novamente em instantes.' }]);
     } finally {
@@ -138,16 +171,16 @@ export function HelpView() {
 
           <div className="bg-white p-6 rounded-3xl border shadow-sm space-y-4 hover:shadow-md transition-all">
             <div className="w-12 h-12 bg-purple-100 text-purple-600 rounded-2xl flex items-center justify-center mb-4">
-              <AlertCircle className="w-6 h-6" />
+              <BookText className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold text-slate-800">4. Criar Acordos e Atrasos</h3>
+            <h3 className="text-xl font-bold text-slate-800">4. Recibos e Quitações</h3>
             <p className="text-slate-600 leading-relaxed">
-              O inquilino atrasou múltiplos meses? Refinancie em um Acordo.
+              Emita documentos profissionais com um clique.
             </p>
             <ul className="space-y-3 mt-4 text-sm text-slate-600">
-              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> Na tela Dashboard ou Financeiro, procure as parcelas em atraso da pessoa.</li>
-              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> Existe um botão "Realizar Acordo". Clique nele.</li>
-              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> Isso mudará os status das faturas velhas para "Em Acordo" e você poderá parcelar esse saldo devedor em novas faturas mensais, mantendo as coisas organizadas.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> No <strong>Financeiro</strong>, localize o pagamento desejado.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> Clique no botão <strong>Gerar Recibo</strong>.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> Escolha entre Simples ou Detalhado. Você pode imprimir ou salvar em PDF para enviar ao inquilino.</li>
             </ul>
           </div>
 

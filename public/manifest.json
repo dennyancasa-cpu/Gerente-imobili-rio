@@ -1,12 +1,14 @@
 {
   "name": "Gerente Imobiliário",
-  "short_name": "Gerente Imobiliário",
-  "description": "Seu controle total de recebimentos e imóveis.",
+  "short_name": "GerentePWA",
+  "description": "Sistema completo de gestão de aluguéis e imóveis.",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "orientation": "portrait",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
+  "orientation": "portrait",
   "icons": [
     {
       "src": "/icon-192.png",

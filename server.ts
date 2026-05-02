@@ -157,22 +157,22 @@ const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
 // Explicitly serve manifest.json to avoid syntax errors if vite middleware misses it or serves HTML
 app.get(['/manifest.json', '/manifest.webmanifest'], (req, res) => {
   const filePath = path.join(process.cwd(), 'public', 'manifest.json');
-  console.log('[Manifest] Request received. Resolving to:', filePath);
-  
   if (fs.existsSync(filePath)) {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.sendFile(filePath);
   }
-  
-  // Alternative path
-  const altPath = path.join(process.cwd(), 'manifest.json');
-  if (fs.existsSync(altPath)) {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    return res.sendFile(altPath);
-  }
-
-  console.warn('[Manifest] Not found in public or root');
   res.status(404).json({ error: 'Manifest not found' });
+});
+
+app.get('/sw.js', (req, res) => {
+  const filePath = path.join(process.cwd(), 'public', 'sw.js');
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    return res.sendFile(filePath);
+  }
+  res.status(404).send('Service Worker not found');
 });
 
 app.get('/api/auth/google/url', (req, res) => {
@@ -363,7 +363,7 @@ app.get(['/api/auth/google/status', '/api/auth/google/status/'], async (req, res
       console.log(`[Status Check] Tokens missing in session, attempting Firestore fallback for UID: ${uid}${dbDetails}`);
       try {
         const configDoc = await db.collection('config').doc(uid).get();
-        if (configDoc.exists) {
+        if (configDoc && configDoc.exists) {
           const data = configDoc.data();
           if (data?.googleDriveTokens) {
             tokens = JSON.parse(data.googleDriveTokens);
@@ -378,7 +378,13 @@ app.get(['/api/auth/google/status', '/api/auth/google/status/'], async (req, res
         }
       } catch (e: any) {
         errorDetail = e.message || e;
-        console.error(`[Status Check] Firestore fallback error:`, errorDetail, dbDetails);
+        // 7 PERMISSION_DENIED is very common if IAM is not fully set up or custom DB is used
+        if (errorDetail.includes('7 PERMISSION_DENIED') || errorDetail.includes('insufficient permissions')) {
+          console.warn(`[Status Check] Firestore fallback skipped due to IAM permissions. This is normal if only using session-based Drive connection.`);
+        } else {
+          console.warn(`[Status Check] Firestore fallback failed:`, errorDetail);
+        }
+        errorDetail = null; 
       }
     }
 
@@ -440,7 +446,7 @@ app.post('/api/drive/upload', async (req, res) => {
     console.log(`[Upload] Tokens missing, attempting Firestore fallback for UID: ${uid}${dbDetails}`);
     try {
       const configDoc = await db.collection('config').doc(uid).get();
-      if (configDoc.exists) {
+      if (configDoc && configDoc.exists) {
         const data = configDoc.data();
         if (data?.googleDriveTokens) {
           tokens = JSON.parse(data.googleDriveTokens);
@@ -449,7 +455,7 @@ app.post('/api/drive/upload', async (req, res) => {
         }
       }
     } catch (e: any) {
-      console.error(`[Upload Fallback] Firestore error: ${e.message || e}${dbDetails}`);
+      console.warn(`[Upload Fallback] Firestore fallback skipped due to error: ${e.message || e}`);
     }
   }
 
@@ -628,71 +634,6 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
       connected: false, 
       error: error.message || 'Erro ao testar conexão com o Drive' 
     });
-  }
-});
-
-app.post('/api/chat', async (req, res) => {
-  try {
-    const { history, message } = req.body;
-    
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: 'Chave da API do Google Gemini não configurada no servidor.' });
-    }
-
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    
-    const systemInstruction = `Você é o Agente de Suporte e Assistente Virtual do aplicativo 'Gerente Imobiliário'.
-Sua personalidade é amigável, direta, paciente e extremamente profissional.
-Sua função é tirar dúvidas de proprietários sobre como usar o aplicativo. A interface dele inclui abas: Dashboard, Recebimentos, Imóveis, Inquilinos, Financeiro, Central Cloud, Configurações, e Ajuda.
-    
-Manual de uso resumido (Use isso para fundamentar suas respostas):
-- **O que é o App:** Uma plataforma para gerir imóveis, inquilinos, aluguéis mensais (com controle de atrasos), despesas de propriedades, e guardar contratos seguros no Google Drive.
-- **Criar Imóvel:** Vá na aba "Imóveis", clique em "Novo Imóvel". Insira o nome, endereço, valor base e defina o status (Livre, Alugado ou Reforma) e dia de vencimento desejado.
-- **Criar Inquilino e Anexar:** Vá na aba "Inquilinos". Clique em "Novo Inquilino". Preencha dados pessoais, telefone (Zap). Mude o status dele para "Alocado" e, assim que mudar o status, o sistema pedirá para escolher a qual Imóvel alocar.
-- **Caução vs Primeiro Aluguel:** No exato momento da alocação de um Inquilino a um Imóvel (dentro do perfil do inquilino), há uma chave alternadora: "O valor inicial refere-se a: [Primeiro Aluguel] ou [Caução]". Selecione Caução para registrar que deixou mês de garantia emvez de pagar pra morar adiantado.
-- **Criar Acordos:** Na aba "Financeiro", e também no botão verde das pendências, você pode escolher "Realizar Acordo". Isso renegocia várias parcelas atrasadas, cria um novo parcelamento e joga os aluguéis originais com status "Em Acordo" para a pessoa ir acompanhando e abatendo.
-- **Recebimentos vs Financeiro:** Recebimentos é focado em baixar parcelas "entrando" hoje. Financeiro engloba tudo, inclusive lançar Despesas (Reformas, Pinturas) no patrimônio.
-- **Cloud e Comprovantes:** Na Central Cloud, conecte a conta Google. Depois que conectar, o envio de Contrato Novo de Inquilino vai direto pro Google Drive e puxa a miniatura bonitinha aqui no app.
-    
-Se perguntarem algo que não saiba, guie o usuário pacientemente. Se for um bug ou comportamento estranho do sistema, sugira limpar o cache ou enviar uma mensagem pro suporte técnico geral.
-Responda sempre em português.`;
-
-    // Initialize chat session
-    const chat = ai.chats.create({
-      model: 'gemini-3.1-pro',
-      config: {
-        systemInstruction,
-        temperature: 0.3
-      }
-    });
-
-    // To respect the new SDK state, we have to either send the whole history manually,
-    // or build a clean message representation.
-    // For simplicity, we can pass formatted contents to ai.models.generateContent if history is complex, 
-    // but chat.sendMessage is preferred if we don't have existing history object initialized by SDK.
-    // Since we receive a standard history format from the frontend, we can map it to `Contents` objects
-    // for standard unary generation, acting as a chat.
-    
-    const formattedContents = history.map((msg: any) => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.text }]
-    }));
-    
-    formattedContents.push({
-      role: 'user',
-      parts: [{ text: message }]
-    });
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.1-pro',
-      contents: formattedContents,
-      config: { systemInstruction, temperature: 0.4 }
-    });
-
-    res.json({ reply: response.text });
-  } catch (error: any) {
-    console.error('AI Chat Error:', error);
-    res.status(500).json({ error: error.message });
   }
 });
 
