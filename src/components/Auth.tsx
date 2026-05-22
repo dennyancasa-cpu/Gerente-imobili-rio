@@ -5,7 +5,8 @@ import {
   GoogleAuthProvider,
   User
 } from 'firebase/auth';
-import { auth } from '../firebase';
+import { auth, db } from '../firebase';
+import { doc, setDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import { AlertCircle, Home, LogOut, User as UserIcon } from 'lucide-react';
 
@@ -34,10 +35,41 @@ export const Auth: React.FC<AuthProps> = ({ user: propUser }) => {
     setLoading(true);
     try {
       const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      provider.addScope('https://www.googleapis.com/auth/drive.file');
+      provider.addScope('https://www.googleapis.com/auth/calendar');
+      const result = await signInWithPopup(auth, provider);
+      
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential && credential.accessToken) {
+        const tokens = { access_token: credential.accessToken };
+        localStorage.setItem('google_drive_tokens', JSON.stringify(tokens));
+        
+        try {
+          await fetch('/api/auth/google/save-tokens', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tokens, uid: result.user.uid })
+          });
+          
+          try {
+            await setDoc(doc(db, 'config', result.user.uid), {
+              googleDriveTokens: JSON.stringify(tokens),
+              googleDriveConnected: true,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+          } catch (configErr) {
+            console.error('Failed to save tokens to firestore config:', configErr);
+          }
+          
+          // Dispatch a custom event so App.tsx can re-check connection immediately
+          window.dispatchEvent(new Event('drive-connected'));
+        } catch (e) {
+          console.error('Failed to sync tokens to backend:', e);
+        }
+      }
     } catch (err: any) {
       console.error(err);
-      setError('Falha ao entrar com Google. Verifique se popups estão permitidos.');
+      setError('Falha ao entrar com Google. Verifique se popups estão permitidos e libere acesso ao Drive.');
     } finally {
       setLoading(false);
     }

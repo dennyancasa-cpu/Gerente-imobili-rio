@@ -311,21 +311,6 @@ app.post('/api/auth/google/save-tokens', async (req, res) => {
   (req.session as any).tokens = tokens;
   
   let firestoreSaved = false;
-  // Save to Firestore as permanent fallback if UID provided
-  if (uid && db) {
-    try {
-      await db.collection('config').doc(uid).set({
-        googleDriveTokens: JSON.stringify(tokens),
-        googleDriveConnected: true,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-      console.log(`[Firestore Sync] Tokens saved permanently for UID: ${uid}`);
-      firestoreSaved = true;
-    } catch (e: any) {
-      console.error(`[Firestore Sync] Error saving tokens for UID ${uid}:`, e);
-      // We don't fail the whole request because session saving might still work
-    }
-  }
   
   req.session.save((err) => {
     if (err) {
@@ -357,36 +342,7 @@ app.get(['/api/auth/google/status', '/api/auth/google/status/'], async (req, res
       }
     }
 
-    // Fallback to Firestore if session and header are missing but UID is present
-    if (!tokens && uid && db) {
-      const dbDetails = (db as any)._databaseId ? ` [DB: ${(db as any)._databaseId}]` : '';
-      console.log(`[Status Check] Tokens missing in session, attempting Firestore fallback for UID: ${uid}${dbDetails}`);
-      try {
-        const configDoc = await db.collection('config').doc(uid).get();
-        if (configDoc && configDoc.exists) {
-          const data = configDoc.data();
-          if (data?.googleDriveTokens) {
-            tokens = JSON.parse(data.googleDriveTokens);
-            (req.session as any).tokens = tokens; // Restore session
-            source = 'firestore';
-            console.log(`[Status Check] Tokens restored from Firestore for UID: ${uid}`);
-          } else {
-            console.log(`[Status Check] Config doc exists but no googleDriveTokens for UID: ${uid}`);
-          }
-        } else {
-          console.log(`[Status Check] Config doc does not exist for UID: ${uid}`);
-        }
-      } catch (e: any) {
-        errorDetail = e.message || e;
-        // 7 PERMISSION_DENIED is very common if IAM is not fully set up or custom DB is used
-        if (errorDetail.includes('7 PERMISSION_DENIED') || errorDetail.includes('insufficient permissions')) {
-          console.warn(`[Status Check] Firestore fallback skipped due to IAM permissions. This is normal if only using session-based Drive connection.`);
-        } else {
-          console.warn(`[Status Check] Firestore fallback failed:`, errorDetail);
-        }
-        errorDetail = null; 
-      }
-    }
+
 
     const sessionID = req.sessionID;
     console.log('[Status Check] SessionID:', sessionID, 'Tokens:', !!tokens, 'Source:', source);
@@ -440,24 +396,7 @@ app.post('/api/drive/upload', async (req, res) => {
     }
   }
 
-  // Fallback to Firestore for upload if tokens missing in session
-  if (!tokens && uid && db) {
-    const dbDetails = (db as any)._databaseId ? ` [DB: ${(db as any)._databaseId}]` : '';
-    console.log(`[Upload] Tokens missing, attempting Firestore fallback for UID: ${uid}${dbDetails}`);
-    try {
-      const configDoc = await db.collection('config').doc(uid).get();
-      if (configDoc && configDoc.exists) {
-        const data = configDoc.data();
-        if (data?.googleDriveTokens) {
-          tokens = JSON.parse(data.googleDriveTokens);
-          (req.session as any).tokens = tokens;
-          console.log(`[Upload] Tokens recovered from Firestore for UID: ${uid}`);
-        }
-      }
-    } catch (e: any) {
-      console.warn(`[Upload Fallback] Firestore fallback skipped due to error: ${e.message || e}`);
-    }
-  }
+
 
   if (!tokens) {
     return res.status(401).json({ error: 'Google Drive not connected' });
@@ -554,8 +493,23 @@ app.post('/api/drive/upload', async (req, res) => {
       webContentLink: file.data.webContentLink,
       thumbnailLink: file.data.thumbnailLink
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error uploading to Drive:', error);
+    const isAuthError = 
+      error.status === 401 || 
+      error.response?.status === 401 ||
+      (error.message && (
+        error.message.includes('credentials') || 
+        error.message.includes('auth') || 
+        error.message.includes('token') || 
+        error.message.includes('expired') ||
+        error.message.includes('Unauthorized') ||
+        error.message.includes('invalid')
+      ));
+
+    if (isAuthError) {
+      return res.status(401).json({ error: 'Google Drive credentials expired or invalid. Please reconnect.' });
+    }
     res.status(500).json({ error: 'Upload failed' });
   }
 });
@@ -563,18 +517,6 @@ app.post('/api/drive/upload', async (req, res) => {
 app.post('/api/auth/google/logout', async (req, res) => {
   const uid = req.body.uid;
   (req.session as any).tokens = null;
-
-  if (uid && db) {
-    try {
-      await db.collection('config').doc(uid).set({
-        googleDriveTokens: null,
-        googleDriveConnected: false,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    } catch (e) {
-      console.error('Error removing tokens from Firestore:', e);
-    }
-  }
 
   req.session.save(() => {
     res.json({ success: true });
@@ -597,20 +539,7 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
     }
   }
 
-  if (!tokens && uid && db) {
-    try {
-      const configDoc = await db.collection('config').doc(uid).get();
-      if (configDoc.exists) {
-        const data = configDoc.data();
-        if (data?.googleDriveTokens) {
-          tokens = JSON.parse(data.googleDriveTokens);
-          (req.session as any).tokens = tokens;
-        }
-      }
-    } catch (e) {
-      console.error('[Test Fallback] Firestore error:', e);
-    }
-  }
+
 
   if (!tokens) {
     return res.status(401).json({ connected: false, error: 'Não conectado (sem tokens na sessão)' });
@@ -630,6 +559,21 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
     });
   } catch (error: any) {
     console.error('Drive test failed:', error);
+    const isAuthError = 
+      error.status === 401 || 
+      error.response?.status === 401 ||
+      (error.message && (
+        error.message.includes('credentials') || 
+        error.message.includes('auth') || 
+        error.message.includes('token') || 
+        error.message.includes('expired') ||
+        error.message.includes('Unauthorized') ||
+        error.message.includes('invalid')
+      ));
+
+    if (isAuthError) {
+      return res.status(401).json({ connected: false, error: 'Google Drive credentials expired or invalid. Please reconnect.' });
+    }
     res.status(500).json({ 
       connected: false, 
       error: error.message || 'Erro ao testar conexão com o Drive' 

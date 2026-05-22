@@ -67,50 +67,79 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidProperty(data) {
-      let allowed = ['id', 'name', 'address', 'status', 'rentValue', 'paymentDay', 'currentTenantId', 'ownerId', 'createdAt', 'updatedAt', 'thumbnailLink'];
-      return incoming().keys().hasAll(['name', 'ownerId']) &&
-             incoming().keys().hasOnly(allowed) &&
+      let allowed = ['id', 'name', 'address', 'status', 'rentValue', 'paymentDay', 'currentTenantId', 'ownerId', 'chargeLateFees', 'lateFeePenalty', 'lateFeeDaily', 'lateFeeType', 'createdAt', 'updatedAt', 'thumbnailLink', 'documents', 'renovationJustification'];
+      return isAdmin() || (
+             data.keys().hasAll(['name', 'ownerId']) &&
+             data.keys().hasOnly(allowed) &&
              data.name is string && data.name.size() > 0 &&
              (!data.keys().contains('status') || data.status in ['vacant', 'rented', 'renovation']) &&
              (!data.keys().contains('rentValue') || data.rentValue is number) &&
-             (isAdmin() || data.ownerId == request.auth.uid);
+             (!data.keys().contains('chargeLateFees') || data.chargeLateFees is bool) &&
+             data.ownerId == request.auth.uid
+      );
+    }
+
+    function isValidContract(data) {
+      let allowed = ['id', 'tenantId', 'propertyId', 'startDate', 'endDate', 'rentValue', 'paymentDay', 'depositValue', 'depositInstallments', 'depositDay', 'chargeLateFees', 'lateFeePenalty', 'lateFeeDaily', 'lateFeeType', 'observations', 'contractFile', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'aiContractText', 'status', 'ownerId', 'createdAt', 'updatedAt'];
+      return isAdmin() || (
+             data.keys().hasAll(['ownerId', 'tenantId', 'propertyId', 'startDate', 'rentValue', 'paymentDay', 'chargeLateFees', 'status']) &&
+             data.keys().hasOnly(allowed) &&
+             data.ownerId == request.auth.uid
+      );
     }
 
     function isValidTenant(data) {
       let allowed = ['id', 'name', 'cpf', 'contact', 'secondaryContact', 'status', 'rating', 'observations', 'contractFile', 'propertyId', 'ownerId', 'createdAt', 'updatedAt', 'initialPaymentType', 'depositValue', 'depositInstallments', 'depositDay', 'linkedUserId', 'evidenceLocation', 'evidenceName', 'thumbnailLink'];
-      return incoming().keys().hasAll(['name', 'ownerId', 'status']) &&
-             incoming().keys().hasOnly(allowed) &&
+      return isAdmin() || (
+             data.keys().hasAll(['name', 'ownerId', 'status']) &&
+             data.keys().hasOnly(allowed) &&
              data.name is string && data.name.size() > 0 &&
              data.status in ['waiting', 'allocated', 'archived'] &&
              (!data.keys().contains('depositInstallments') || data.depositInstallments is number) &&
              (!data.keys().contains('depositDay') || data.depositDay is number) &&
-             (isAdmin() || data.ownerId == request.auth.uid);
+             data.ownerId == request.auth.uid
+      );
     }
 
     function isValidAgreement(data) {
-      let allowed = ['id', 'tenantId', 'propertyId', 'description', 'totalAmount', 'installmentAmount', 'durationMonths', 'startDate', 'status', 'justification', 'evidence', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'thumbnailLink'];
-      return incoming().keys().hasAll(['ownerId', 'tenantId', 'description']) &&
-             incoming().keys().hasOnly(allowed) &&
-             (isAdmin() || data.ownerId == request.auth.uid);
+      let allowed = ['id', 'tenantId', 'propertyId', 'description', 'totalAmount', 'installmentAmount', 'durationMonths', 'startDate', 'status', 'justification', 'evidence', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'chargeLateFees', 'lateFeePenalty', 'lateFeeDaily', 'lateFeeType', 'ownerId', 'createdAt', 'updatedAt'];
+      return isAdmin() || (
+             data.keys().hasAll(['ownerId', 'tenantId', 'description']) &&
+             data.keys().hasOnly(allowed) &&
+             data.ownerId == request.auth.uid
+      );
     }
 
     function isValidExpense(data) {
-      let allowed = ['id', 'propertyId', 'description', 'amount', 'date', 'type', 'evidence', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'thumbnailLink'];
-      return incoming().keys().hasAll(['ownerId', 'propertyId', 'amount']) &&
-             incoming().keys().hasOnly(allowed) &&
-             (isAdmin() || data.ownerId == request.auth.uid);
+      let allowed = ['id', 'propertyId', 'description', 'amount', 'date', 'type', 'evidence', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'ownerId', 'createdAt', 'updatedAt'];
+      return isAdmin() || (
+             data.keys().hasAll(['ownerId', 'propertyId', 'amount']) &&
+             data.keys().hasOnly(allowed) &&
+             data.ownerId == request.auth.uid
+      );
     }
 
     function isValidPayment(data) {
-      let allowed = ['id', 'propertyId', 'tenantId', 'amount', 'paidAmount', 'dueDate', 'paidDate', 'status', 'interestAmount', 'receiptUrl', 'evidenceName', 'evidenceLocation', 'ownerId', 'createdAt', 'updatedAt', 'type', 'description', 'observations', 'agreementId', 'revertReason', 'thumbnailLink'];
-      return incoming().keys().hasAll(['ownerId', 'propertyId', 'amount', 'status']) &&
-             incoming().keys().hasOnly(allowed) &&
-             (isAdmin() || data.ownerId == request.auth.uid);
+      let allowed = ['id', 'propertyId', 'tenantId', 'amount', 'paidAmount', 'dueDate', 'paidDate', 'status', 'interestAmount', 'waivedLateFee', 'waivedLateFeeReason', 'receiptUrl', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'ownerId', 'createdAt', 'updatedAt', 'type', 'installmentNumber', 'totalInstallments', 'depositStatus', 'depositUsage', 'originalDepositAmount', 'description', 'observations', 'revertReason', 'agreementId'];
+      return isAdmin() || (
+             data.keys().hasAll(['ownerId', 'propertyId', 'amount', 'status']) &&
+             data.keys().hasOnly(allowed) &&
+             data.ownerId == request.auth.uid
+      );
     }
 
     function isValidConfig(data) {
       let allowed = ['securityPassword', 'updatedAt', 'googleDriveTokens', 'googleDriveConnected', 'driveRootFolderId'];
-      return incoming().keys().hasOnly(allowed);
+      return isAdmin() || incoming().keys().hasOnly(allowed);
+    }
+
+    function isValidTicket(data) {
+      let allowed = ['id', 'propertyId', 'tenantId', 'title', 'description', 'status', 'priority', 'createdAt', 'updatedAt', 'slaDays', 'ownerId'];
+      return isAdmin() || (
+             data.keys().hasAll(['ownerId', 'propertyId', 'tenantId', 'title', 'status', 'priority', 'slaDays']) &&
+             data.keys().hasOnly(allowed) &&
+             data.ownerId == request.auth.uid
+      );
     }
 
     // ===============================================================
@@ -121,55 +150,111 @@ service cloud.firestore {
       allow read: if true;
     }
 
+    match /contracts/{contractId} {
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidContract(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidContract(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
+    }
+
     match /properties/{propertyId} {
-      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidProperty(incoming());
-      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidProperty(incoming());
-      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidProperty(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidProperty(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
     match /tenants/{tenantId} {
-      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidTenant(incoming());
-      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidTenant(incoming());
-      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidTenant(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidTenant(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
     match /expenses/{expenseId} {
-      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidExpense(incoming());
-      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidExpense(incoming());
-      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidExpense(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidExpense(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
     match /payments/{paymentId} {
-      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidPayment(incoming());
-      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidPayment(incoming());
-      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidPayment(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidPayment(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
     match /agreements/{agreementId} {
-      allow get: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && (incoming().ownerId == request.auth.uid || isAdmin()) && isValidAgreement(incoming());
-      allow update: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin()) && (incoming().ownerId == existing().ownerId || isAdmin()) && isValidAgreement(incoming());
-      allow delete: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidAgreement(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidAgreement(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
     match /users/{userId} {
-      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow get: if isSignedIn() && (isAdmin() || request.auth.uid == userId);
       allow list: if isAdmin();
       allow create: if isSignedIn() && request.auth.uid == userId;
-      allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow update: if isSignedIn() && (isAdmin() || request.auth.uid == userId);
     }
 
     match /config/{configId} {
-      allow read, write: if isSignedIn() && (request.auth.uid == configId || isAdmin());
+      allow read, write: if isSignedIn() && (isAdmin() || request.auth.uid == configId);
+    }
+
+    match /tickets/{ticketId} {
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidTicket(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidTicket(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
+    }
+
+    match /archived_contracts/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_properties/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_tenants/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_expenses/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_payments/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_agreements/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_tickets/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /historical_backups/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /staging_records/{id} {
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
     // Default deny

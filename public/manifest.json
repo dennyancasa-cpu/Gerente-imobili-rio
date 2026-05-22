@@ -1,15 +1,21 @@
 {
-  "name": "Gerente Imobiliário",
-  "short_name": "GerentePWA",
-  "description": "Sistema completo de gestão de aluguéis e imóveis.",
-  "id": "/",
+  "name": "Gerente Imobiliário Elite",
+  "short_name": "G. Imob",
+  "description": "Sistema completo de gestão imobiliária e financeira",
+  "background_color": "#ffffff",
+  "theme_color": "#4f46e6",
+  "categories": ["finance", "business", "productivity"],
+  "orientation": "portrait",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#0f172a",
-  "orientation": "portrait",
   "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
     {
       "src": "/icon-192.png",
       "sizes": "192x192",

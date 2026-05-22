@@ -4,6 +4,8 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 import { onAuthStateChanged, EmailAuthProvider, reauthenticateWithCredential, updateProfile, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
 import { 
@@ -31,11 +33,17 @@ import {
   Expense, 
   Payment, 
   Agreement,
+  Contract,
+  StagingRecord,
   OperationType, 
   PropertyStatus, 
   TenantStatus, 
   ExpenseType, 
-  PaymentStatus
+  PaymentStatus,
+  PropertyDocument,
+  Ticket,
+  PropertyInspection,
+  PropertyInspectionImage
 } from './types';
 import { handleFirestoreError } from './utils/firestoreError';
 import { Auth } from './components/Auth';
@@ -49,6 +57,10 @@ import {
   Search, 
   MoreVertical, 
   Trash2, 
+  Check,
+  Maximize2,
+  Minimize2,
+  FolderCheck,
   Edit, 
   CheckCircle2, 
   XCircle, 
@@ -90,6 +102,7 @@ import {
   Download,
   Cloud,
   CloudOff,
+  WifiOff,
   RefreshCw,
   Copy,
   UserCircle,
@@ -101,16 +114,37 @@ import {
   FolderOpen,
   Zap,
   ChevronDown,
-  QrCode
+  ChevronUp,
+  QrCode,
+  Monitor,
+  Bell,
+  FileWarning,
+  BadgeAlert,
+  FolderDown,
+  ArrowDownToLine,
+  FileQuestion,
+  FileSearch,
+  Scale,
+  MessageSquare,
+  Bot,
+  DatabaseBackup,
+  BookText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
-import { format, addDays, addMonths, setDate, isAfter, isBefore, parseISO, startOfMonth, endOfMonth, differenceInDays, isSameMonth } from 'date-fns';
+import { format, addDays, addMonths, setDate, isAfter, isBefore, parseISO, startOfMonth, endOfMonth, differenceInDays, isSameMonth, startOfDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { adjustDateToNextBusinessDay } from './utils/dateHelpers';
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { HelpView } from './components/HelpView';
+import { TicketsView } from './components/TicketsView';
+import { ContractsView } from './components/ContractsView';
+import { IntelligenceHubView } from './components/IntelligenceHubView';
+import { CustomRobotAssistant } from './components/CustomRobotAssistant';
+import { ImportDataView } from './components/ImportDataView';
+import { CalendarSync } from './components/CalendarSync';
 import { 
   BarChart, 
   Bar, 
@@ -137,6 +171,49 @@ const cleanObject = (obj: any) => {
     }
   });
   return result;
+};
+
+const compressImage = (base64: string, maxWidth = 1200, maxHeight = 1200, quality = 0.6): Promise<string> => {
+  return new Promise((resolve) => {
+    if (!base64.startsWith('data:image/')) {
+      resolve(base64);
+      return;
+    }
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = base64;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(base64);
+  });
+};
+
+const getWhatsAppLink = (phone: string | undefined, message: string) => {
+  if (!phone) return '#';
+  const cleanPhone = phone.replace(/\D/g, '');
+  const number = cleanPhone.length <= 11 ? `55${cleanPhone}` : cleanPhone;
+  return `https://wa.me/${number}?text=${encodeURIComponent(message)}`;
 };
 
 const InfoTooltip = ({ text }: { text: string }) => (
@@ -476,9 +553,12 @@ interface HomeViewProps {
   agreements: Agreement[];
   onConfirmPayment: (paymentId: string) => void;
   onOpenTenantDetail: (t: Tenant) => void;
+  onOpenAlerts: () => void;
+  globalAlertsCount?: number | null;
+  globalAlertsPriority?: 'high' | 'medium' | 'low';
 }
 
-const HomeView = ({ properties, tenants, payments, expenses, agreements, onConfirmPayment, onOpenTenantDetail }: HomeViewProps) => {
+const HomeView = ({ properties, tenants, payments, expenses, agreements, onConfirmPayment, onOpenTenantDetail, onOpenAlerts, globalAlertsCount, globalAlertsPriority }: HomeViewProps) => {
   const today = new Date();
   const [isGuideOpen, setIsGuideOpen] = useState(false);
 
@@ -525,182 +605,337 @@ const HomeView = ({ properties, tenants, payments, expenses, agreements, onConfi
     });
   }, [tenants, properties, payments, agreements, today]);
 
+  const projectionData = useMemo(() => {
+    const data: any[] = [];
+    
+    for (let i = -3; i <= 3; i++) {
+      const monthDate = addMonths(today, i);
+      const mStart = startOfMonth(monthDate);
+      const mEnd = endOfMonth(monthDate);
+      const monthLabel = format(monthDate, 'MMM/yy', { locale: ptBR });
+      
+      const monthPayments = payments.filter(p => {
+        const d = parseISO(p.dueDate);
+        return d >= mStart && d <= mEnd && p.status !== 'cancelled' && p.type !== 'deposit';
+      });
+      
+      const received = monthPayments
+        .filter(p => (p.status === 'paid' || p.status === 'partial'))
+        .reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
+        
+      const pending = monthPayments
+        .filter(p => p.status === 'pending' || p.status === 'late')
+        .reduce((acc, p) => acc + p.amount, 0);
+        
+      const monthExpenses = expenses
+        .filter(e => parseISO(e.date) >= mStart && parseISO(e.date) <= mEnd)
+        .reduce((acc, e) => acc + e.amount, 0);
+        
+      let projectedRent = 0;
+      if (i > 0) {
+        tenants.forEach(t => {
+          if (t.propertyId && t.status === 'allocated') {
+            const prop = properties.find(p => p.id === t.propertyId);
+            if (prop) {
+              projectedRent += prop.rentValue;
+            }
+          }
+        });
+      }
+
+      data.push({
+        name: monthLabel,
+        recebido: received,
+        pendente: pending,
+        projetado: i > 0 ? projectedRent : 0,
+        despesas: monthExpenses,
+        isFuture: i > 0,
+        isCurrent: i === 0
+      });
+    }
+    return data;
+  }, [payments, expenses, tenants, today]);
+
+  const totalLateCount = useMemo(() => {
+    return tenantStatus.reduce((acc, ts) => acc + ts.latePaymentsCount, 0);
+  }, [tenantStatus]);
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Olá, {auth.currentUser?.displayName?.split(' ')[0] || 'Proprietário'}!</h1>
-          <p className="text-muted-foreground">Aqui está o resumo dos seus inquilinos hoje.</p>
+          <p className="text-muted-foreground">Aqui está o resumo do seu sistema hoje.</p>
         </div>
         <Button 
           variant="outline" 
           onClick={() => setIsGuideOpen(true)}
           className="gap-2 border-indigo-200 text-indigo-600 hover:bg-indigo-50"
         >
-          <HelpCircle className="w-4 h-4" /> Guia do Sistema
+          <HelpCircle className="w-4 h-4" /> Guia
         </Button>
       </header>
 
       <UserGuide isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {tenantStatus.map(({ tenant, property, isUpToDate, hasPendingRemainder, latePaymentsCount, nextPayment, lastPaid, activeAgreement, nextAgreementInstallment }, i) => (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.05 }}
-            key={tenant.id} 
-            className="group relative"
-          >
-            <div className="absolute inset-0 bg-gradient-to-b from-indigo-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-3xl" />
-            <Card className="p-6 flex flex-col gap-4 h-full border-slate-100/60 bg-white/70 backdrop-blur-md shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] hover:shadow-[0_8px_30px_-4px_rgba(0,0,0,0.1)] hover:-translate-y-1 relative z-10 transition-all duration-300 rounded-[1.5rem]">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3 cursor-pointer group/name" onClick={() => onOpenTenantDetail(tenant)}>
-                  <div className="w-12 h-12 bg-slate-50 border border-slate-100 rounded-2xl flex items-center justify-center text-slate-400 group-hover/name:bg-indigo-50 group-hover/name:text-indigo-600 transition-colors shadow-sm">
-                    <UserIcon className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-lg text-slate-800 group-hover/name:text-indigo-600 transition-colors">{tenant.name}</h3>
-                    <p className="text-xs text-slate-500 flex items-center gap-1 font-medium">
-                      <Home className="w-3 h-3 text-slate-400" /> {property?.name || 'Sem imóvel'}
-                    </p>
-                  </div>
-              </div>
-              <div className="flex flex-col items-end gap-1">
-                <div 
-                  className={cn(
-                    "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all",
-                    !isUpToDate ? "bg-red-100 text-red-700" : 
-                    hasPendingRemainder ? "bg-indigo-100 text-indigo-700 ring-1 ring-indigo-500/20 hover:bg-indigo-200 cursor-pointer" : 
-                    "bg-emerald-100 text-emerald-700"
-                  )}
-                  onClick={() => hasPendingRemainder && onOpenTenantDetail(tenant)}
-                  title={hasPendingRemainder ? "Clique para ver detalhes do saldo pendente" : ""}
-                >
-                  {!isUpToDate ? `${latePaymentsCount} Atraso(s)` : 
-                   hasPendingRemainder ? 'Saldo Pendente' : 'Em Dia'}
-                </div>
-                {activeAgreement && (
-                  <div className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 text-[9px] font-bold uppercase tracking-tight">
-                    Acordo Ativo
-                  </div>
-                )}
-              </div>
+      <Card className="p-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <BarChart3 className="w-5 h-5 text-indigo-500" />
+              Projeção Financeira (7 Meses)
+            </h2>
+            <p className="text-sm text-muted-foreground">Visão rápida do fluxo de caixa e projeções.</p>
+          </div>
+          <div className="flex items-center gap-3 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-sm bg-emerald-500" /> Recebido
             </div>
-
-            <div className="pt-4 border-t space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
-                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Último Recebido</p>
-                  {lastPaid ? (
-                    <div>
-                      <p className="text-xs font-bold text-slate-700 truncate">{lastPaid.description || 'Aluguel'}</p>
-                      <p className="text-[10px] font-bold text-emerald-600">R$ {lastPaid.paidAmount?.toLocaleString() || lastPaid.amount.toLocaleString()}</p>
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-slate-400 italic">Nenhum</p>
-                  )}
-                </div>
-                <div className={cn(
-                  "p-3 rounded-xl border",
-                  nextPayment?.description?.startsWith('Restante:') ? "bg-indigo-50/50 border-indigo-100" : "bg-emerald-50/30 border-emerald-100"
-                )}>
-                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Próximo</p>
-                  {nextPayment ? (
-                    <div>
-                      <p className="text-xs font-bold text-slate-700 truncate">{nextPayment.description || 'Aluguel'}</p>
-                      <p className={cn(
-                        "text-[10px] font-bold",
-                        nextPayment.description?.startsWith('Restante:') ? "text-indigo-600" : "text-emerald-600"
-                      )}>R$ {nextPayment.amount.toLocaleString()}</p>
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-slate-400 italic">Nenhum</p>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Ação Pendente</p>
-                {nextPayment ? (
-                  <div className={cn(
-                    "flex items-center justify-between p-3 rounded-xl border transition-all",
-                    nextPayment.description?.startsWith('Restante:') 
-                      ? "bg-indigo-50/30 border-indigo-100 ring-1 ring-indigo-500/5" 
-                      : "bg-slate-50 border-slate-100"
-                  )}>
-                    <div className="flex items-center gap-3">
-                      <div className={cn(
-                        "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-                        nextPayment.description?.startsWith('Restante:') ? "bg-indigo-100 text-indigo-600" : "bg-emerald-100 text-emerald-600"
-                      )}>
-                        {nextPayment.description?.startsWith('Restante:') ? <TrendingUp className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="text-xs font-bold text-slate-700">
-                            {nextPayment.description?.replace(/^Restante:\s*Restante:\s*/, 'Restante: ') || 'Aluguel'}
-                          </p>
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-sm bg-amber-500" /> Pendente
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-sm bg-indigo-400" /> Projetado
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-sm bg-red-400" /> Despesas
+            </div>
+          </div>
+        </div>
+        
+        <div className="h-[250px] w-full min-h-[250px] min-w-0">
+          <ResponsiveContainer minWidth={0} minHeight={0} width="100%" height="100%">
+            <BarChart data={projectionData} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis 
+                dataKey="name" 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#64748b', fontSize: 9, fontWeight: 600 }}
+                dy={10}
+              />
+              <YAxis 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#64748b', fontSize: 9, fontWeight: 600 }}
+                tickFormatter={(value) => `R$ ${value >= 1000 ? (value/1000).toFixed(1) + 'k' : value}`}
+              />
+              <RechartsTooltip 
+                cursor={{ fill: '#f8fafc' }}
+                content={({ active, payload, label }) => {
+                  if (active && payload && payload.length) {
+                    return (
+                      <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-xl min-w-[150px]">
+                        <p className="text-xs font-black text-slate-800 mb-2 border-b pb-1">{label}</p>
+                        <div className="space-y-1.5">
+                          {payload.map((entry: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: entry.color }} />
+                                <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tight">{entry.name}</span>
+                              </div>
+                              <span className="text-[10px] font-black text-slate-700">R$ {entry.value.toLocaleString()}</span>
+                            </div>
+                          ))}
                         </div>
-                        <p className="text-[10px] text-slate-500 flex items-center gap-1">
-                          <Calendar className="w-3 h-3" /> {format(parseISO(nextPayment.dueDate), 'dd/MM/yyyy')}
-                        </p>
                       </div>
-                    </div>
-                    <div className="text-right">
-                      <Button 
-                        size="sm" 
-                        className={cn(
-                          "h-7 text-[10px] border-none shadow-sm px-3 rounded-lg text-white",
-                          nextPayment.description?.startsWith('Restante:') ? "bg-indigo-500 hover:bg-indigo-600" : "bg-emerald-500 hover:bg-emerald-600"
-                        )}
-                        onClick={() => onConfirmPayment(nextPayment.id)}
-                      >
-                        Confirmar
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-400 italic py-2">Nenhum pagamento futuro agendado.</p>
-                )}
+                    );
+                  }
+                  return null;
+                }}
+              />
+              <Bar dataKey="recebido" name="Recebido" stackId="a" radius={[0, 0, 0, 0]}>
+                {projectionData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.isCurrent ? '#10b981' : '#34d399'} />
+                ))}
+              </Bar>
+              <Bar dataKey="pendente" name="Pendente" stackId="a" radius={[2, 2, 0, 0]}>
+                {projectionData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.isCurrent ? '#f59e0b' : '#fbbf24'} />
+                ))}
+              </Bar>
+              <Bar dataKey="projetado" name="Projetado" stackId="a" radius={[2, 2, 0, 0]}>
+                {projectionData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill="#818cf8" />
+                ))}
+              </Bar>
+              <Bar dataKey="despesas" name="Despesas" radius={[2, 2, 2, 2]}>
+                {projectionData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill="#f87171" />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <div className="flex items-center pt-2">
+        <h2 className="text-lg font-bold flex items-center gap-2">
+          <UserIcon className="w-5 h-5 text-indigo-500" />
+          Visão Rápida dos Inquilinos
+        </h2>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+        {tenantStatus.map(({ tenant, property, isUpToDate, hasPendingRemainder, latePaymentsCount, nextPayment, lastPaid }, i) => (
+          <motion.div 
+            key={tenant.id} 
+            className="group relative cursor-pointer"
+            onClick={() => onOpenTenantDetail(tenant)}
+            whileHover={{ y: -2, scale: 1.02 }}
+          >
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-xl" />
+            <div className="p-3 flex flex-col justify-between h-full border border-slate-100 bg-white/90 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-slate-200 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+              
+              <div className="space-y-1 mb-2 relative z-10">
+                <div className="flex items-start justify-between gap-1">
+                  <h3 className="font-bold text-xs text-slate-800 group-hover:text-indigo-600 transition-colors truncate" title={tenant.name}>{tenant.name}</h3>
+                  <div className={cn("w-2 h-2 rounded-full shrink-0 shadow-sm mt-0.5", !isUpToDate ? "bg-red-500" : hasPendingRemainder ? "bg-amber-400" : "bg-emerald-500")} />
+                </div>
+                
+                <p className="text-[9px] text-slate-500 flex items-center gap-1 font-medium truncate" title={property?.name || 'Vazio'}>
+                  <Home className="w-2.5 h-2.5 shrink-0" />
+                  <span className="truncate">{property?.name || 'Sem imóvel'}</span>
+                </p>
               </div>
 
-              {activeAgreement && nextAgreementInstallment && nextAgreementInstallment.id !== nextPayment?.id && (
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Próxima Parcela do Acordo</p>
-                  <div className="flex items-center justify-between p-3 bg-blue-50/50 rounded-xl border border-blue-100">
-                    <div>
-                      <p className="text-xs font-bold text-blue-900">{nextAgreementInstallment.description}</p>
-                      <p className="text-[10px] text-blue-600 flex items-center gap-1">
-                        <Calendar className="w-3 h-3" /> {format(parseISO(nextAgreementInstallment.dueDate), 'dd/MM/yyyy')}
+              <div className="mt-auto relative z-10">
+                 {nextPayment ? (
+                   <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+                     <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Pendência</p>
+                     <p className={cn("text-[10px] font-bold truncate", nextPayment.description?.startsWith('Restante:') ? "text-indigo-600" : "text-emerald-600")}>R$ {nextPayment.amount.toLocaleString()}</p>
+                   </div>
+                 ) : (
+                   <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+                      <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Último Pago</p>
+                      <p className="text-[9px] font-bold text-emerald-600 truncate">
+                        {lastPaid ? `R$ ${lastPaid.paidAmount?.toLocaleString() || lastPaid.amount.toLocaleString()}` : '-'}
                       </p>
-                    </div>
-                    <div className="text-right flex flex-col items-end gap-2">
-                      <p className="font-bold text-blue-700">R$ {nextAgreementInstallment.amount.toLocaleString()}</p>
-                      <Button 
-                        size="sm" 
-                        className="h-7 text-[10px] bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-sm px-3 rounded-lg"
-                        onClick={() => onConfirmPayment(nextAgreementInstallment.id)}
-                      >
-                        Confirmar
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )}
+                   </div>
+                 )}
+              </div>
             </div>
-          </Card>
           </motion.div>
         ))}
         {tenants.length === 0 && (
-          <div className="col-span-full text-center py-12 text-muted-foreground italic border-2 border-dashed rounded-2xl">
+          <div className="col-span-full text-center py-6 text-muted-foreground italic border border-dashed rounded-xl text-sm">
             Nenhum inquilino cadastrado.
           </div>
         )}
       </div>
-
-      {/* Resumo de Dashboard na parte de baixo removido a pedido do usuário */}
     </div>
+  );
+};
+
+interface PaymentAlertsProps {
+  properties: Property[];
+  tenants: Tenant[];
+  payments: Payment[];
+  onConfirmPayment: (paymentId: string) => void;
+  onOpenTenantDetail: (t: Tenant) => void;
+}
+
+const PaymentAlerts = ({ properties, tenants, payments, onConfirmPayment, onOpenTenantDetail }: PaymentAlertsProps) => {
+  const today = new Date();
+
+  const alerts = useMemo(() => {
+    const list: any[] = [];
+
+    payments.forEach(p => {
+      const dueDate = parseISO(p.dueDate);
+      const diff = differenceInDays(dueDate, today);
+      
+      if (p.status === 'pending' || p.status === 'late') {
+        if (diff <= 5 && diff >= 0) {
+          list.push({ ...p, alertType: 'warning', alertMessage: `Vence em ${diff} dias` });
+        } else if (diff < 0) {
+          list.push({ ...p, alertType: 'danger', alertMessage: `Atrasado há ${Math.abs(diff)} dias` });
+        }
+      }
+    });
+
+    return list.sort((a, b) => differenceInDays(parseISO(a.dueDate), today) - differenceInDays(parseISO(b.dueDate), today));
+  }, [payments, today]);
+
+  return (
+    <Card className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <AlertCircle className="w-5 h-5 text-amber-500" />
+          Alertas de Pagamento
+        </h2>
+        <CalendarSync payments={payments} properties={properties} tenants={tenants} />
+      </div>
+      <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+        {alerts.length === 0 ? (
+          <div className="text-center py-12 text-muted-foreground italic border-2 border-dashed rounded-2xl">
+            Nenhum alerta pendente no momento.
+          </div>
+        ) : (
+          alerts.map(alert => (
+            <div key={alert.id} className={cn(
+              "p-4 rounded-2xl border flex items-center justify-between transition-all",
+              alert.alertType === 'danger' ? "bg-red-50 border-red-100" : "bg-amber-50 border-amber-100"
+            )}>
+              <div className="flex items-center gap-4">
+                <div className={cn(
+                  "p-2 rounded-xl",
+                  alert.alertType === 'danger' ? "bg-red-500 text-white" : "bg-amber-500 text-white"
+                )}>
+                  <DollarSign className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p 
+                      className="font-bold text-sm truncate max-w-[120px] cursor-pointer hover:text-indigo-600 transition-colors"
+                      onClick={() => {
+                        const tenant = tenants.find(t => t.propertyId === alert.propertyId);
+                        if (tenant) onOpenTenantDetail(tenant);
+                      }}
+                    >
+                      {properties.find(p => p.id === alert.propertyId)?.name}
+                    </p>
+                    {alert.revertReason && (
+                      <button 
+                        title={`Revertido: ${alert.revertReason}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toast.info(`Justificativa da Reversão: ${alert.revertReason}`, {
+                            duration: 5000,
+                          });
+                        }}
+                        className="text-amber-500 hover:text-amber-600 transition-colors"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <p className={cn(
+                    "text-xs font-medium",
+                    alert.alertType === 'danger' ? "text-destructive" : 
+                    alert.alertType === 'warning' ? "text-amber-600" : 
+                    "text-emerald-600"
+                  )}>
+                    {alert.alertMessage}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col items-end gap-2 shrink-0">
+                <p className="font-bold text-sm">R$ {alert.amount.toLocaleString()}</p>
+                <Button 
+                  size="sm" 
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-sm h-7 px-2 text-[10px]"
+                  onClick={() => onConfirmPayment(alert.id)}
+                >
+                  Confirmar
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
   );
 };
 
@@ -737,57 +972,7 @@ const FinancialSummary = ({ properties, tenants, payments, expenses, agreements,
     return list.sort((a, b) => differenceInDays(parseISO(a.dueDate), today) - differenceInDays(parseISO(b.dueDate), today));
   }, [payments, today]);
 
-  const projectionData = useMemo(() => {
-    const data: any[] = [];
-    
-    for (let i = -3; i <= 3; i++) {
-      const monthDate = addMonths(today, i);
-      const mStart = startOfMonth(monthDate);
-      const mEnd = endOfMonth(monthDate);
-      const monthLabel = format(monthDate, 'MMM/yy', { locale: ptBR });
-      
-      const monthPayments = payments.filter(p => {
-        const d = parseISO(p.dueDate);
-        return d >= mStart && d <= mEnd && p.status !== 'cancelled' && p.type !== 'deposit';
-      });
-      
-      const received = monthPayments
-        .filter(p => (p.status === 'paid' || p.status === 'partial'))
-        .reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
-        
-      const pending = monthPayments
-        .filter(p => p.status === 'pending' || p.status === 'late')
-        .reduce((acc, p) => acc + p.amount, 0);
-        
-      const monthExpenses = expenses
-        .filter(e => parseISO(e.date) >= mStart && parseISO(e.date) <= mEnd)
-        .reduce((acc, e) => acc + e.amount, 0);
-        
-      // For future months, project rent based on active tenants
-      let projectedRent = 0;
-      if (i > 0) {
-        tenants.forEach(t => {
-          if (t.propertyId && t.status === 'allocated') {
-            const prop = properties.find(p => p.id === t.propertyId);
-            if (prop) {
-              projectedRent += prop.rentValue;
-            }
-          }
-        });
-      }
 
-      data.push({
-        name: monthLabel,
-        recebido: received,
-        pendente: pending,
-        projetado: i > 0 ? projectedRent : 0,
-        despesas: monthExpenses,
-        isFuture: i > 0,
-        isCurrent: i === 0
-      });
-    }
-    return data;
-  }, [payments, expenses, tenants, today]);
 
   const monthStart = startOfMonth(today);
   const monthEnd = endOfMonth(today);
@@ -851,8 +1036,8 @@ const FinancialSummary = ({ properties, tenants, payments, expenses, agreements,
 
       <UserGuide isOpen={isGuideOpen} onClose={() => setIsGuideOpen(false)} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <Card className="lg:col-span-1 p-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <Card className="p-6">
           <h2 className="text-lg font-semibold mb-6 flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-emerald-500" />
             Panorama Financeiro (Mês)
@@ -885,7 +1070,7 @@ const FinancialSummary = ({ properties, tenants, payments, expenses, agreements,
           </div>
         </Card>
 
-        <Card className="lg:col-span-1 p-6">
+        <Card className="p-6">
           <h2 className="text-lg font-semibold mb-6 flex items-center gap-2">
             <ArrowRightLeft className="w-5 h-5 text-blue-500" />
             Panorama de Acordos
@@ -913,173 +1098,9 @@ const FinancialSummary = ({ properties, tenants, payments, expenses, agreements,
             </div>
           </div>
         </Card>
-
-        <Card className="lg:col-span-1 p-6">
-          <h2 className="text-lg font-semibold mb-6 flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-amber-500" />
-            Alertas de Pagamento
-          </h2>
-          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-            {alerts.length === 0 ? (
-              <div className="text-center py-12 text-muted-foreground italic border-2 border-dashed rounded-2xl">
-                Nenhum alerta pendente no momento.
-              </div>
-            ) : (
-              alerts.map(alert => (
-                <div key={alert.id} className={cn(
-                  "p-4 rounded-2xl border flex items-center justify-between transition-all",
-                  alert.alertType === 'danger' ? "bg-red-50 border-red-100" : "bg-amber-50 border-amber-100"
-                )}>
-                  <div className="flex items-center gap-4">
-                    <div className={cn(
-                      "p-2 rounded-xl",
-                      alert.alertType === 'danger' ? "bg-red-500 text-white" : "bg-amber-500 text-white"
-                    )}>
-                      <DollarSign className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p 
-                          className="font-bold text-sm truncate max-w-[120px] cursor-pointer hover:text-indigo-600 transition-colors"
-                          onClick={() => {
-                            const tenant = tenants.find(t => t.propertyId === alert.propertyId);
-                            if (tenant) onOpenTenantDetail(tenant);
-                          }}
-                        >
-                          {properties.find(p => p.id === alert.propertyId)?.name}
-                        </p>
-                        {alert.revertReason && (
-                          <button 
-                            title={`Revertido: ${alert.revertReason}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toast.info(`Justificativa da Reversão: ${alert.revertReason}`, {
-                                duration: 5000,
-                              });
-                            }}
-                            className="text-amber-500 hover:text-amber-600 transition-colors"
-                          >
-                            <AlertCircle className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                      <p className={cn(
-                        "text-xs font-medium",
-                        alert.alertType === 'danger' ? "text-destructive" : 
-                        alert.alertType === 'warning' ? "text-amber-600" : 
-                        "text-emerald-600"
-                      )}>
-                        {alert.alertMessage}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-2 shrink-0">
-                    <p className="font-bold text-sm">R$ {alert.amount.toLocaleString()}</p>
-                    <Button 
-                      size="sm" 
-                      className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-sm h-7 px-2 text-[10px]"
-                      onClick={() => onConfirmPayment(alert.id)}
-                    >
-                      Confirmar
-                    </Button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
       </div>
 
-      <Card className="p-8">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-          <div>
-            <h2 className="text-xl font-bold flex items-center gap-2">
-              <BarChart3 className="w-6 h-6 text-indigo-500" />
-              Projeção Financeira (7 Meses)
-            </h2>
-            <p className="text-sm text-muted-foreground">Comparativo entre valores recebidos, pendentes e projeções futuras.</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-4 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-            <div className="flex items-center gap-1.5">
-              <div className="w-3 h-3 rounded-sm bg-emerald-500" /> Recebido
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-3 h-3 rounded-sm bg-amber-500" /> Pendente
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-3 h-3 rounded-sm bg-indigo-400" /> Projetado
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-3 h-3 rounded-sm bg-red-400" /> Despesas
-            </div>
-          </div>
-        </div>
-        
-        <div className="h-[350px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={projectionData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis 
-                dataKey="name" 
-                axisLine={false} 
-                tickLine={false} 
-                tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }}
-                dy={10}
-              />
-              <YAxis 
-                axisLine={false} 
-                tickLine={false} 
-                tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }}
-                tickFormatter={(value) => `R$ ${value >= 1000 ? (value/1000).toFixed(1) + 'k' : value}`}
-              />
-              <RechartsTooltip 
-                cursor={{ fill: '#f8fafc' }}
-                content={({ active, payload, label }) => {
-                  if (active && payload && payload.length) {
-                    return (
-                      <div className="bg-white p-4 rounded-2xl shadow-xl border border-slate-100 min-w-[180px]">
-                        <p className="text-sm font-black text-slate-800 mb-3 border-b pb-2">{label}</p>
-                        <div className="space-y-2">
-                          {payload.map((entry: any, index: number) => (
-                            <div key={index} className="flex items-center justify-between gap-4">
-                              <div className="flex items-center gap-2">
-                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tight">{entry.name}</span>
-                              </div>
-                              <span className="text-xs font-black text-slate-700">R$ {entry.value.toLocaleString()}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-              <Bar dataKey="recebido" name="Recebido" stackId="a" radius={[0, 0, 0, 0]}>
-                {projectionData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.isCurrent ? '#10b981' : '#34d399'} />
-                ))}
-              </Bar>
-              <Bar dataKey="pendente" name="Pendente" stackId="a" radius={[4, 4, 0, 0]}>
-                {projectionData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.isCurrent ? '#f59e0b' : '#fbbf24'} />
-                ))}
-              </Bar>
-              <Bar dataKey="projetado" name="Projetado" stackId="a" radius={[4, 4, 0, 0]}>
-                {projectionData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill="#818cf8" />
-                ))}
-              </Bar>
-              <Bar dataKey="despesas" name="Despesas" radius={[4, 4, 4, 4]}>
-                {projectionData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill="#f87171" />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
+
 
       {/* Resumo Financeiro por Imóvel */}
       <div id="financial-summary-section" className="space-y-6 pt-4">
@@ -1116,7 +1137,7 @@ const FinancialSummary = ({ properties, tenants, payments, expenses, agreements,
               const balance = totalRent - totalInvested - totalTax - totalFine - totalOther;
 
               return (
-                <Card key={property.id} className="p-5 flex flex-col gap-4 hover:shadow-md transition-shadow border-slate-200 bg-white/50 backdrop-blur-sm">
+                <Card id={`property-${property.id}`} key={property.id} className="p-5 flex flex-col gap-4 hover:shadow-md transition-shadow border-slate-200 bg-white/50 backdrop-blur-sm">
                   <div className="flex items-center justify-between border-b pb-3">
                     <div className="min-w-0">
                       <h3 className="font-bold text-slate-900 truncate">{property.name}</h3>
@@ -1219,26 +1240,117 @@ interface PropertiesViewProps {
   properties: Property[];
   tenants: Tenant[];
   payments: Payment[];
-  addProperty: (p: any) => Promise<void>;
-  updateProperty: (id: string, p: any) => Promise<void>;
+  expenses: Expense[];
+  addProperty: (p: any) => Promise<any>;
+  updateProperty: (id: string, p: any) => Promise<any>;
   deleteProperty: (id: string) => Promise<void>;
   removeTenantFromProperty: (pId: string, tId: string, action: 'waiting' | 'archived' | 'delete') => Promise<void>;
   onSecurityCheck: (onSuccess: () => void, description?: string) => void;
+  onOpenLegal: () => void;
+  addExpense?: (e: any) => Promise<void>;
+  deleteExpense?: (id: string) => Promise<void>;
+  uploadToDrive?: (fileName: string, fileData: string, mimeType: string, folderName?: string) => Promise<any>;
+  onNavigateToCreateTenant?: (propertyId: string) => void;
+  onNavigateToEditTenant?: (tenantId: string) => void;
 }
 
-const PropertiesView = ({ properties, tenants, payments, addProperty, updateProperty, deleteProperty, removeTenantFromProperty, onSecurityCheck }: PropertiesViewProps) => {
+const PropertiesView = ({ properties, tenants, payments, expenses, addProperty, updateProperty, deleteProperty, removeTenantFromProperty, onSecurityCheck, onOpenLegal, addExpense, deleteExpense, uploadToDrive, onNavigateToCreateTenant, onNavigateToEditTenant }: PropertiesViewProps) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
   const [editingProperty, setEditingProperty] = useState<Property | null>(null);
-  const [formData, setFormData] = useState({
+  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+  const [expenseForm, setExpenseForm] = useState({
+    propertyId: '',
+    description: '',
+    amount: 0,
+    date: format(new Date(), 'yyyy-MM-dd'),
+    type: 'repair' as ExpenseType,
+    evidence: '',
+    evidenceName: '',
+    evidenceLocation: '',
+    thumbnailLink: ''
+  });
+
+  const [isInspectionModalOpen, setIsInspectionModalOpen] = useState(false);
+  const [inspectionForm, setInspectionForm] = useState<{
+    date: string;
+    type: 'move_in' | 'move_out' | 'routine';
+    notes: string;
+    images: { url: string; name: string }[];
+  }>({
+    date: format(new Date(), 'yyyy-MM-dd'),
+    type: 'move_in',
+    notes: '',
+    images: []
+  });
+
+  const handleAddExpense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addExpense) return;
+    setIsSubmitting(true);
+    try {
+      await addExpense(expenseForm);
+      toast.success('Despesa adicionada com sucesso!');
+      setIsExpenseModalOpen(false);
+      setExpenseForm({
+        propertyId: '',
+        description: '',
+        amount: 0,
+        date: format(new Date(), 'yyyy-MM-dd'),
+        type: 'repair' as ExpenseType,
+        evidence: '',
+        evidenceName: '',
+        evidenceLocation: '',
+        thumbnailLink: ''
+      });
+    } catch (error) {
+      console.error('Erro ao adicionar despesa:', error);
+      toast.error('Erro ao salvar a despesa. Por favor, tente novamente.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSaveInspection = async () => {
+    if (!selectedProperty) return;
+    setIsSubmitting(true);
+    try {
+      const newInspection: PropertyInspection = {
+        id: crypto.randomUUID(),
+        ...inspectionForm,
+        status: 'completed'
+      };
+      const inspections = [...(selectedProperty.inspections || []), newInspection];
+      await updateProperty(selectedProperty.id!, { inspections });
+      setSelectedProperty({ ...selectedProperty, inspections });
+      toast.success('Vistoria salva com sucesso!');
+      setIsInspectionModalOpen(false);
+      setInspectionForm({ date: format(new Date(), 'yyyy-MM-dd'), type: 'move_in', notes: '', images: [] });
+    } catch (error) {
+      console.error('Erro ao salvar vistoria:', error);
+      toast.error('Erro ao salvar a vistoria. Tente novamente.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const [formData, setFormData] = useState<Partial<Property>>({
     name: '',
     address: '',
     status: 'vacant' as PropertyStatus,
     rentValue: 0,
     paymentDay: 5,
-    currentTenantId: ''
+    currentTenantId: '',
+    chargeLateFees: false,
+    lateFeePenalty: 10,
+    lateFeeDaily: 0.33,
+    lateFeeType: 'percentage' as 'percentage' | 'fixed',
+    documents: [] as PropertyDocument[],
+    renovationEstimatedTime: '',
+    renovationDescription: '',
+    renovationImages: [] as PropertyInspectionImage[]
   });
 
   const handleOpenModal = (p?: Property) => {
@@ -1250,11 +1362,40 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
         status: p.status,
         rentValue: p.rentValue,
         paymentDay: p.paymentDay || 5,
-        currentTenantId: p.currentTenantId || ''
+        currentTenantId: p.currentTenantId || '',
+        chargeLateFees: !!p.chargeLateFees,
+        lateFeePenalty: p.lateFeePenalty ?? 10,
+        lateFeeDaily: p.lateFeeDaily ?? 0.33,
+        lateFeeType: p.lateFeeType || 'percentage',
+        documents: p.documents || [],
+        renovationEstimatedTime: p.renovationEstimatedTime || '',
+        renovationDescription: p.renovationDescription || '',
+        renovationImages: p.renovationImages || []
       });
     } else {
       setEditingProperty(null);
-      setFormData({ name: '', address: '', status: 'vacant', rentValue: 0, paymentDay: 5, currentTenantId: '' });
+      setFormData({ 
+        name: '', 
+        address: '', 
+        status: 'vacant', 
+        rentValue: 0, 
+        paymentDay: 5, 
+        currentTenantId: '', 
+        chargeLateFees: false, 
+        lateFeePenalty: 10, 
+        lateFeeDaily: 0.33, 
+        lateFeeType: 'percentage',
+        documents: [
+          { id: crypto.randomUUID(), name: 'Matrícula Atualizada', status: 'pending', isRequired: false },
+          { id: crypto.randomUUID(), name: 'Carnê do IPTU', status: 'pending', isRequired: false },
+          { id: crypto.randomUUID(), name: 'Contas de Consumo (Água/Luz)', status: 'pending', isRequired: false },
+          { id: crypto.randomUUID(), name: 'Laudo de Vistoria Inicial', status: 'pending', isRequired: false },
+          { id: crypto.randomUUID(), name: 'Seguro Incêndio', status: 'pending', isRequired: false },
+          { id: crypto.randomUUID(), name: 'Aprovação de Bombeiros (AVCB)', status: 'pending', isRequired: false },
+          { id: crypto.randomUUID(), name: 'Convenção de Condomínio', status: 'pending', isRequired: false },
+          { id: crypto.randomUUID(), name: 'Habite-se', status: 'pending', isRequired: false }
+        ]
+      });
     }
     setIsModalOpen(true);
   };
@@ -1296,8 +1437,18 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
       onSecurityCheck(async () => {
         setIsSubmitting(true);
         try {
-          await updateProperty(editingProperty.id, formData);
+          const payload = { ...formData };
+          const isNewTenant = payload.currentTenantId === 'new_tenant';
+          if (isNewTenant) {
+            payload.currentTenantId = '';
+          }
+          await updateProperty(editingProperty.id, payload);
           setIsModalOpen(false);
+          if (isNewTenant) {
+            onNavigateToCreateTenant?.(editingProperty.id);
+          } else if (payload.currentTenantId && payload.currentTenantId !== editingProperty.currentTenantId) {
+            onNavigateToEditTenant?.(payload.currentTenantId);
+          }
         } catch (error) {
           console.error('Erro ao salvar imóvel:', error);
         } finally {
@@ -1307,8 +1458,18 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
     } else {
       setIsSubmitting(true);
       try {
-        await addProperty(formData);
+        const payload = { ...formData };
+        const isNewTenant = payload.currentTenantId === 'new_tenant';
+        if (isNewTenant) {
+          payload.currentTenantId = '';
+        }
+        const createdId = await addProperty(payload);
         setIsModalOpen(false);
+        if (isNewTenant && createdId) {
+          onNavigateToCreateTenant?.(createdId);
+        } else if (payload.currentTenantId) {
+          onNavigateToEditTenant?.(payload.currentTenantId);
+        }
       } catch (error) {
         console.error('Erro ao salvar imóvel:', error);
       } finally {
@@ -1363,6 +1524,29 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
                       {tenant ? tenant.name : <span className="text-muted-foreground italic">Nenhum</span>}
                     </span>
                   </div>
+                  
+                  {/* Intelligent Info */}
+                  {(p.rules || p.allowPets === false || p.alerts) && (
+                    <div className="mt-3 pt-3 border-t border-dashed border-slate-200 flex flex-col gap-1.5">
+                       {p.allowPets === false && (
+                         <div className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded max-w-fit shadow-sm border border-amber-100">
+                           <Info className="w-3.5 h-3.5" /> <span className="font-semibold tracking-tight">Não aceita animais</span>
+                         </div>
+                       )}
+                       {p.rules && (
+                         <div className="text-xs text-slate-600 line-clamp-2 leading-relaxed" title={p.rules}>
+                           <span className="font-bold text-slate-700 mr-1">Regras:</span>
+                           {p.rules}
+                         </div>
+                       )}
+                       {p.alerts && (
+                         <div className="text-xs text-red-600 line-clamp-2 leading-relaxed bg-red-50 p-1.5 rounded border border-red-100 shadow-sm" title={p.alerts}>
+                           <span className="font-bold mr-1 flex items-center gap-1 inline-flex"><AlertCircle className="w-3 h-3"/> Alerta:</span>
+                           {p.alerts}
+                         </div>
+                       )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-4 flex items-center gap-2" onClick={e => e.stopPropagation()}>
@@ -1370,16 +1554,14 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
                     <Edit className="w-3 h-3" /> Editar
                   </Button>
                   {p.currentTenantId && (
-                    <div className="relative group/menu">
-                      <Button variant="outline" size="sm" className="gap-1">
-                        <ArrowRightLeft className="w-3 h-3" /> Remover
-                      </Button>
-                      <div className="absolute bottom-full right-0 mb-2 hidden group-hover/menu:flex flex-col bg-white border rounded-lg shadow-xl z-10 min-w-[150px]">
-                        <button onClick={() => removeTenantFromProperty(p.id, p.currentTenantId!, 'waiting')} className="px-4 py-2 text-xs text-left hover:bg-accent">Deixar em Espera</button>
-                        <button onClick={() => removeTenantFromProperty(p.id, p.currentTenantId!, 'archived')} className="px-4 py-2 text-xs text-left hover:bg-accent">Arquivar</button>
-                        <button onClick={() => removeTenantFromProperty(p.id, p.currentTenantId!, 'delete')} className="px-4 py-2 text-xs text-left hover:bg-destructive hover:text-white">Excluir Inquilino</button>
-                      </div>
-                    </div>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="gap-1 text-slate-600 hover:text-amber-700 hover:bg-amber-50 hover:border-amber-200 transition-colors"
+                      onClick={() => removeTenantFromProperty(p.id, p.currentTenantId!, 'archived')}
+                    >
+                      <ArrowRightLeft className="w-3 h-3" /> Desocupar
+                    </Button>
                   )}
                   <Button variant="danger" size="sm" onClick={() => onSecurityCheck(() => deleteProperty(p.id), `Ao confirmar, você excluirá permanentemente o imóvel ${p.name}.`)}>
                     <Trash2 className="w-3 h-3" />
@@ -1420,6 +1602,47 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
               </div>
             </div>
 
+            {/* Intelligent Memory Integration */}
+            {(currentProperty.rules || currentProperty.alerts || currentProperty.allowPets === false) && (
+              <div className="space-y-3">
+                <p className="text-[10px] font-bold flex items-center gap-1.5 text-indigo-500 uppercase tracking-wider ml-1">
+                  <Sparkles className="w-3.5 h-3.5" /> Memória do Assistente
+                </p>
+                <div className="bg-gradient-to-br from-indigo-50 to-white border border-indigo-100/50 p-4 rounded-2xl space-y-3 shadow-sm">
+                  {currentProperty.allowPets === false && (
+                    <div className="flex items-center gap-2">
+                       <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center text-red-600">
+                         <Info className="w-3.5 h-3.5" />
+                       </div>
+                       <span className="text-sm font-semibold text-slate-700">Proprietário não aceita animais neste imóvel.</span>
+                    </div>
+                  )}
+                  {currentProperty.rules && (
+                    <div className="flex gap-2 text-sm text-slate-700">
+                       <div className="w-6 h-6 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 shrink-0 mt-0.5">
+                         <BookText className="w-3.5 h-3.5" />
+                       </div>
+                       <div>
+                         <span className="font-semibold block mb-0.5 text-indigo-900">Regras e Restrições:</span>
+                         <p className="leading-relaxed whitespace-pre-wrap text-sm">{currentProperty.rules}</p>
+                       </div>
+                    </div>
+                  )}
+                  {currentProperty.alerts && (
+                    <div className="flex gap-2 text-sm text-slate-700">
+                       <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 shrink-0 mt-0.5">
+                         <AlertCircle className="w-3.5 h-3.5" />
+                       </div>
+                       <div>
+                         <span className="font-semibold block mb-0.5 text-amber-900">Avisos Importantes:</span>
+                         <p className="leading-relaxed whitespace-pre-wrap text-sm">{currentProperty.alerts}</p>
+                       </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-1">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">Inquilino Atual</p>
               <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-center justify-between">
@@ -1436,6 +1659,72 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
                 )}
               </div>
             </div>
+
+            {currentProperty.status === 'renovation' && (
+               <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl space-y-3">
+                 <div className="flex items-center gap-2 mb-2">
+                   <Hammer className="w-4 h-4 text-indigo-600" />
+                   <h4 className="text-sm font-bold text-indigo-900">Andamento da Reforma</h4>
+                 </div>
+                 {currentProperty.renovationEstimatedTime && (
+                   <p className="text-xs font-semibold text-indigo-800 bg-indigo-100/50 px-2 py-1.5 rounded-lg w-fit">
+                     Tempo Estimado: {currentProperty.renovationEstimatedTime}
+                   </p>
+                 )}
+                 <div className="space-y-1.5 pt-2">
+                    {(currentProperty.renovationDescription || '').split('\n').filter(l => l.trim().length > 0).map((line, idx) => {
+                        const isChecked = line.startsWith('- [x]');
+                        const text = line.replace(/^- \[(x| )\] /, '').replace(/^- /, '').trim();
+                        return (
+                           <div key={idx} className="flex items-center gap-3">
+                               <div className={cn("w-3.5 h-3.5 rounded-sm flex items-center justify-center shrink-0 border", isChecked ? "bg-emerald-500 border-emerald-600 text-white" : "border-indigo-200 bg-indigo-50")}>
+                                  {isChecked && <Check className="w-2.5 h-2.5" />}
+                               </div>
+                               <span className={cn("text-xs", isChecked ? "text-indigo-400 line-through" : "text-indigo-900 font-medium")}>{text}</span>
+                           </div>
+                        );
+                    })}
+                    {(!currentProperty.renovationDescription || currentProperty.renovationDescription.trim().length === 0) && (
+                      <p className="text-xs text-indigo-400 italic">Nenhum item no checklist.</p>
+                    )}
+                 </div>
+                 {/* Launch Expenses Button inside detail */
+                  addExpense && (
+                  <div className="pt-3 border-t border-indigo-100/50 mt-3">
+                    <button 
+                      onClick={() => {
+                        setExpenseForm(prev => ({ ...prev, propertyId: currentProperty.id, type: 'renovation' }));
+                        setIsDetailModalOpen(false);
+                        setIsExpenseModalOpen(true);
+                      }}
+                      className="text-xs font-bold text-emerald-700 bg-emerald-100 hover:bg-emerald-200 px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 w-full justify-center"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Lançar Despesa da Reforma
+                    </button>
+                  </div>
+                 )}
+               </div>
+            )}
+
+            {/* Document Alerts Pipeline */}
+            {currentProperty.documents && currentProperty.documents.filter(d => d.status !== 'valid').length > 0 && (
+              <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-start gap-3">
+                <Sparkles className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h4 className="text-sm font-bold text-indigo-900 mb-1">Dica do Hub Estratégico</h4>
+                  <p className="text-xs text-indigo-700 mb-3 leading-relaxed">Manter a papelada do imóvel organizada valoriza seu espaço e evita dores de cabeça futuras. Há documentos pendentes na auditoria.</p>
+                  <button 
+                    onClick={() => {
+                      setIsDetailModalOpen(false);
+                      onOpenLegal();
+                    }}
+                    className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded-xl transition-all shadow-sm shadow-indigo-200 w-fit"
+                  >
+                    <FolderCheck className="w-3.5 h-3.5" /> Abrir Auditoria de Documentos
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Pagamentos Pendentes e em Atraso */}
             {(pendingPayments.length > 0 || latePayments.length > 0) && (
@@ -1469,7 +1758,14 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
                                 {daysLate} dias
                               </span>
                             </div>
-                            <p className="text-[10px] text-red-700">Vencimento: {format(parseISO(p.dueDate), 'dd/MM/yyyy')}</p>
+                            <p className="text-[10px] text-red-700 flex items-center gap-1 flex-wrap">
+                              Vencimento: {format(parseISO(p.dueDate), 'dd/MM/yyyy')}
+                              {p.originalDueDate && (
+                                <span className="inline-block text-amber-600 font-semibold" title={`Vencimento original coincidia com fim de semana ou feriado (vencimento original: ${format(parseISO(p.originalDueDate), 'dd/MM/yyyy')})`}>
+                                  • Útil Posterior
+                                </span>
+                              )}
+                            </p>
                           </div>
                         </div>
                         <p className="text-sm font-bold text-red-900">R$ {(p.amount + (p.interestAmount || 0)).toLocaleString()}</p>
@@ -1498,7 +1794,14 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
                               </button>
                             )}
                           </div>
-                          <p className="text-[10px] text-blue-700">Vencimento: {format(parseISO(p.dueDate), 'dd/MM/yyyy')}</p>
+                          <p className="text-[10px] text-blue-700 flex items-center gap-1 flex-wrap">
+                            Vencimento: {format(parseISO(p.dueDate), 'dd/MM/yyyy')}
+                            {p.originalDueDate && (
+                              <span className="inline-block text-amber-600 font-semibold" title={`Vencimento original coincidia com fim de semana ou feriado (vencimento original: ${format(parseISO(p.originalDueDate), 'dd/MM/yyyy')})`}>
+                                • Útil Posterior
+                              </span>
+                            )}
+                          </p>
                         </div>
                       </div>
                       <p className="text-sm font-bold text-blue-900">R$ {p.amount.toLocaleString()}</p>
@@ -1507,6 +1810,154 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
                 </div>
               </div>
             )}
+
+            {/* Despesas do Imóvel */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between ml-1">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Despesas do Imóvel</p>
+                {addExpense && (
+                  <button 
+                    onClick={() => {
+                      setExpenseForm(prev => ({ ...prev, propertyId: currentProperty.id! }));
+                      setIsExpenseModalOpen(true);
+                    }}
+                    className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Adicionar Despesa
+                  </button>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                {expenses.filter(e => e.propertyId === currentProperty.id).length === 0 ? (
+                  <p className="text-xs text-slate-400 italic px-1">Nenhuma despesa registrada para este imóvel.</p>
+                ) : (
+                  expenses.filter(e => e.propertyId === currentProperty.id).sort((a,b) => b.date.localeCompare(a.date)).slice(0, 5).map(e => (
+                    <div key={e.id} className="p-3 bg-red-50/30 border border-slate-100 rounded-xl flex items-center justify-between group">
+                      <div className="flex items-center gap-3">
+                        <TrendingDown className="w-4 h-4 text-red-400" />
+                        <div>
+                          <p className="text-xs font-bold text-slate-800">{e.description}</p>
+                          <p className="text-[10px] text-slate-500">{format(parseISO(e.date), 'dd/MM/yyyy')} • {e.type === 'repair' ? 'Manutenção' : e.type === 'renovation' ? 'Reforma' : e.type === 'tax' ? 'Imposto' : e.type === 'fine' ? 'Multa' : 'Outro'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {e.evidenceLocation && (
+                           <a href={e.evidenceLocation.startsWith('http') ? e.evidenceLocation : '#'} target="_blank" rel="noreferrer" className="w-6 h-6 rounded bg-indigo-50 text-indigo-600 flex items-center justify-center hover:bg-indigo-100" title="Ver Comprovante">
+                             <Paperclip className="w-3 h-3" />
+                           </a>
+                        )}
+                        <p className="text-sm font-bold text-red-600">R$ {e.amount.toLocaleString()}</p>
+                        {deleteExpense && (
+                          <button onClick={() => deleteExpense(e.id!)} className="w-6 h-6 rounded bg-red-50 text-red-600 items-center justify-center hover:bg-red-100 hidden group-hover:flex">
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {currentProperty.documents && currentProperty.documents.length > 0 && (
+              <div className="space-y-3">
+                <h3 className="text-sm font-bold text-slate-800 tracking-tight uppercase px-1">Organizador de Papelada</h3>
+                <div className="grid gap-2">
+                  {currentProperty.documents.map(doc => (
+                    <div key={doc.id} className="p-3 bg-slate-50 border border-slate-100 hover:border-slate-200 transition-colors rounded-xl flex items-center justify-between group">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-bold text-slate-900">{doc.name}</p>
+                          {doc.isRequired && <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-rose-50 text-rose-600">Obrigatório</span>}
+                        </div>
+                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-0.5 flex flex-wrap items-center gap-1">
+                          {doc.status === 'valid' && <span className="text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Válido</span>}
+                          {doc.status === 'missing' && <span className="text-amber-600 flex items-center gap-1"><FileQuestion className="w-3 h-3" /> PENDENTE</span>}
+                          {doc.status === 'expired' && <span className="text-rose-600 flex items-center gap-1"><FileWarning className="w-3 h-3" /> Expirado</span>}
+                          {doc.status === 'pending' && <span className="text-slate-500 flex items-center gap-1"><Clock className="w-3 h-3" /> Pendente</span>}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        {doc.status !== 'valid' && (
+                          <button 
+                            onClick={onOpenLegal}
+                            className="w-7 h-7 rounded bg-indigo-50 text-indigo-600 flex items-center justify-center hover:bg-indigo-100 opacity-0 group-hover:opacity-100 transition-opacity" title="Perguntar ao Chat como resolver">
+                            <MessageSquare className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={() => {
+                             const updatedDocs = currentProperty.documents!.map(d => 
+                               d.id === doc.id ? { ...d, status: 'valid' as const } : d
+                             );
+                             updateProperty(currentProperty.id!, { documents: updatedDocs });
+                             toast.success(`Documento ${doc.name} marcado como válido.`);
+                          }}
+                          className="w-7 h-7 rounded bg-green-100 text-green-700 flex items-center justify-center hover:bg-green-200" title="Marcar como Válido">
+                          <CheckCircle2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => {
+                             const updatedDocs = currentProperty.documents!.map(d => 
+                               d.id === doc.id ? { ...d, status: 'missing' as const } : d
+                             );
+                             updateProperty(currentProperty.id!, { documents: updatedDocs });
+                          }}
+                          className="w-7 h-7 rounded bg-red-100 text-red-700 flex items-center justify-center hover:bg-red-200" title="Informar Pendência">
+                          <AlertCircle className="w-4 h-4" />
+                        </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Vistorias / Inspeções */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between ml-1">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vistorias Digitais</p>
+                <button 
+                  onClick={() => setIsInspectionModalOpen(true)}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Nova Vistoria
+                </button>
+              </div>
+              
+              <div className="space-y-2">
+                {(!currentProperty.inspections || currentProperty.inspections.length === 0) ? (
+                  <p className="text-xs text-slate-400 italic px-1">Nenhuma vistoria registrada.</p>
+                ) : (
+                  currentProperty.inspections.sort((a,b) => b.date.localeCompare(a.date)).map(insp => (
+                    <div key={insp.id} className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between group">
+                      <div className="flex flex-col">
+                        <p className="text-xs font-bold text-slate-800">
+                          {insp.type === 'move_in' ? 'Vistoria de Entrada' : insp.type === 'move_out' ? 'Vistoria de Saída' : 'Vistoria de Rotina'}
+                        </p>
+                        <p className="text-[10px] text-slate-500">{format(parseISO(insp.date), 'dd/MM/yyyy')}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {insp.images?.length > 0 && (
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded flex items-center gap-1">
+                            <Camera className="w-3 h-3" /> {insp.images.length} fotos
+                          </span>
+                        )}
+                        <span className={cn(
+                          "px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-widest",
+                          insp.status === 'completed' ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                        )}>
+                          {insp.status === 'completed' ? 'Concluída' : 'Rascunho'}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
 
             <div className="pt-4 flex gap-3">
               <Button className="flex-1 py-3" onClick={() => {
@@ -1521,91 +1972,512 @@ const PropertiesView = ({ properties, tenants, payments, addProperty, updateProp
         )}
       </Modal>
 
+      <Modal isOpen={isInspectionModalOpen} onClose={() => setIsInspectionModalOpen(false)} title="Nova Vistoria Digital">
+        <div className="space-y-4">
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Tipo de Vistoria</label>
+              <Select 
+                id="insp-type"
+                value={inspectionForm.type}
+                onChange={e => setInspectionForm({...inspectionForm, type: e.target.value as any})}
+                options={[
+                  {label: 'Entrada (Início de Contrato)', value: 'move_in'},
+                  {label: 'Saída (Término de Contrato)', value: 'move_out'},
+                  {label: 'Rotina (Manutenção)', value: 'routine'},
+                ]}
+              />
+            </div>
+            <div className="flex-1">
+              <Input
+                id="insp-date"
+                type="date"
+                label="Data"
+                value={inspectionForm.date}
+                onChange={e => setInspectionForm({...inspectionForm, date: e.target.value})}
+              />
+            </div>
+          </div>
+          
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Checklist & Observações do Imóvel</label>
+            <textarea 
+              className="w-full min-h-[120px] p-3 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 resize-none transition-all placeholder:text-slate-400"
+              placeholder="Descreva as condições reais da pintura, piso, portas, fechaduras e armários..."
+              value={inspectionForm.notes}
+              onChange={e => setInspectionForm({...inspectionForm, notes: e.target.value})}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5 pt-2">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Fotos / Evidências</label>
+            <div className="border-2 border-dashed border-slate-200 rounded-2xl p-4 bg-slate-50 flex flex-col items-center justify-center gap-3">
+              <input
+                type="file"
+                id="insp-photos"
+                multiple
+                accept="image/*"
+                className="hidden"
+                disabled={!uploadToDrive}
+                onChange={async (e) => {
+                  if (e.target.files && uploadToDrive) {
+                    const files = Array.from(e.target.files);
+                    toast.promise(
+                      Promise.all(files.map(async file => {
+                        return new Promise<{url: string, name: string}>((resolve, reject) => {
+                           const reader = new FileReader();
+                           reader.onloadend = async () => {
+                             try {
+                               const base64 = reader.result as string;
+                               const compressed = await compressImage(base64, 1200, 1200, 0.7);
+                               const res = await uploadToDrive(file.name, compressed, file.type, `Vistoria-${selectedProperty?.name}`);
+                               resolve({url: res.webViewLink, name: file.name});
+                             } catch (err) { reject(err); }
+                           };
+                           reader.onerror = reject;
+                           reader.readAsDataURL(file);
+                        });
+                      })),
+                      {
+                        loading: `Fazendo upload seguro de ${files.length} foto(s)...`,
+                        success: (uploadedPhotos) => {
+                          setInspectionForm(prev => ({...prev, images: [...prev.images, ...uploadedPhotos]}));
+                          return 'Fotos adicionadas ao álbum.';
+                        },
+                        error: 'Falha ao processar imagens.'
+                      }
+                    );
+                  }
+                }}
+              />
+              <div className="flex flex-wrap gap-2 justify-center w-full">
+                 {inspectionForm.images.map((img, i) => (
+                    <div key={i} className="relative group">
+                       <a href={img.url} target="_blank" rel="noreferrer" className="block w-16 h-16 rounded-lg bg-indigo-50 border border-indigo-100 overflow-hidden relative shadow-sm">
+                         <div className="absolute inset-0 flex items-center justify-center bg-indigo-100/50">
+                           <Camera className="w-6 h-6 text-indigo-400" />
+                         </div>
+                       </a>
+                       <button 
+                         onClick={() => setInspectionForm(prev => ({...prev, images: prev.images.filter((_, idx) => idx !== i)}))}
+                         className="absolute -top-2 -right-2 w-5 h-5 bg-rose-500 rounded-full text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10"
+                       >
+                         <X className="w-3 h-3" />
+                       </button>
+                    </div>
+                 ))}
+              </div>
+              <Button 
+                type="button" 
+                variant="outline" 
+                onClick={() => document.getElementById('insp-photos')?.click()}
+                disabled={!uploadToDrive}
+                className="gap-2 bg-white mt-1 border-dashed"
+              >
+                <Camera className="w-4 h-4" /> Anexar Fotos
+              </Button>
+              {!uploadToDrive && <p className="text-[10px] text-amber-600 font-bold bg-amber-50 px-2 py-1 rounded">Drive não conectado! Acesse "Arquivos" para configurar o backup.</p>}
+            </div>
+          </div>
+          
+          <div className="pt-4 flex gap-2">
+            <Button onClick={handleSaveInspection} className="flex-1" disabled={isSubmitting || !inspectionForm.notes}>
+              {isSubmitting ? 'Finalizando...' : 'Gerar Laudo de Vistoria'}
+            </Button>
+            <Button variant="outline" onClick={() => setIsInspectionModalOpen(false)} disabled={isSubmitting}>Cancelar</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} title="Nova Despesa (Este Imóvel)">
+        <form onSubmit={handleAddExpense} className="space-y-4">
+          <Input 
+            id="expense-desc" 
+            label="Descrição da Despesa" 
+            value={expenseForm.description} 
+            onChange={e => setExpenseForm({...expenseForm, description: e.target.value})} 
+            required 
+            placeholder="Ex: Conserto do telhado"
+          />
+          <div className="grid grid-cols-2 gap-4">
+            <CurrencyInput
+              id="expense-amount"
+              label="Valor (R$)"
+              value={expenseForm.amount}
+              onChange={val => setExpenseForm({...expenseForm, amount: val})}
+              required
+            />
+            <Input 
+              id="expense-date" 
+              type="date" 
+              label="Data da Despesa" 
+              value={expenseForm.date} 
+              onChange={e => setExpenseForm({...expenseForm, date: e.target.value})} 
+              required 
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Tipo de Despesa</label>
+            <select 
+              className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-medium"
+              value={expenseForm.type}
+              onChange={e => setExpenseForm({...expenseForm, type: e.target.value as any})}
+              required
+            >
+              <option value="repair">Manutenção / Conserto</option>
+              <option value="renovation">Reforma / Melhoria</option>
+              <option value="tax">Imposto / Taxa</option>
+              <option value="fine">Multa</option>
+              <option value="other">Outros</option>
+            </select>
+          </div>
+          
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Anexar Comprovante (Opcional)</label>
+            <div className="flex items-center gap-3">
+              <input 
+                type="file" 
+                id="prop-expense-evidence"
+                className="hidden"
+                accept="image/*,application/pdf"
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (file && uploadToDrive) {
+                    const reader = new FileReader();
+                    reader.onloadend = async () => {
+                      const base64 = reader.result as string;
+                      const tenantName = tenants.find(t => t.propertyId === expenseForm.propertyId)?.name || 'Geral';
+                      toast.promise(
+                        uploadToDrive(file.name, base64, file.type, tenantName),
+                        {
+                          loading: 'Enviando evidência para o Google Drive...',
+                          success: (data) => {
+                            setExpenseForm({
+                              ...expenseForm, 
+                              evidenceLocation: data.webViewLink,
+                              evidenceName: file.name
+                            });
+                            return 'Evidência salva!';
+                          },
+                          error: 'Erro ao enviar para o Google Drive.'
+                        }
+                      );
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                }}
+              />
+              <Button 
+                type="button" 
+                variant="outline" 
+                onClick={() => document.getElementById('prop-expense-evidence')?.click()}
+                className="w-full gap-2 border-dashed bg-slate-50/50 hover:bg-slate-100"
+              >
+                <Paperclip className="w-4 h-4" /> 
+                {expenseForm.evidenceName || 'Escolher arquivo...'}
+              </Button>
+            </div>
+            {expenseForm.evidenceLocation && (
+              <p className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md mt-1 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" /> Arquivo anexado: {expenseForm.evidenceName}
+              </p>
+            )}
+          </div>
+          
+          <div className="pt-4 flex gap-2">
+            <Button type="submit" className="flex-1" disabled={isSubmitting}>
+              {isSubmitting ? 'Salvando...' : 'Salvar Despesa'}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setIsExpenseModalOpen(false)} disabled={isSubmitting}>Cancelar</Button>
+          </div>
+        </form>
+      </Modal>
+
       <Modal 
         isOpen={isModalOpen} 
         onClose={() => setIsModalOpen(false)} 
         title={editingProperty ? "Editar Imóvel" : "Novo Imóvel"}
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input 
-            id="name" 
-            label="Nome do Imóvel" 
-            value={formData.name} 
-            onChange={e => setFormData({...formData, name: e.target.value})} 
-            required 
-          />
-          <Input 
-            id="address" 
-            label="Endereço" 
-            value={formData.address} 
-            onChange={e => setFormData({...formData, address: e.target.value})} 
-            required 
-          />
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                Status
-                <InfoTooltip text="Livre: Disponível para alugar. Alugada: Já possui inquilino. Reforma: Indisponível temporariamente." />
-              </label>
-              <Select 
-                id="status" 
-                value={formData.status} 
-                onChange={e => {
-                  const newStatus = e.target.value as PropertyStatus;
-                  if (newStatus === 'renovation' && formData.currentTenantId) {
-                    setFormData({...formData, status: newStatus, currentTenantId: ''});
-                  } else {
-                    setFormData({...formData, status: newStatus});
-                  }
-                }} 
-                options={[
-                  { label: 'Livre', value: 'vacant' },
-                  { label: 'Alugada', value: 'rented' },
-                  { label: 'Reforma', value: 'renovation' }
-                ]}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                Valor do Aluguel
-                <InfoTooltip text="Valor base mensal que será cobrado do inquilino." />
-              </label>
-              <CurrencyInput 
-                id="rentValue" 
-                value={formData.rentValue} 
-                onChange={val => setFormData({...formData, rentValue: val})} 
-                required 
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                Dia de Vencimento
-                <InfoTooltip text="Dia do mês em que o aluguel deve ser pago (ex: 5, 10, 15)." />
-              </label>
-              <Input 
-                id="paymentDay" 
-                type="number" 
-                value={formData.paymentDay} 
-                onChange={e => setFormData({...formData, paymentDay: Number(e.target.value)})} 
-                required 
-                placeholder="Ex: 5"
-              />
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">Informações Principais</h3>
+            <Input 
+              id="name" 
+              label="Nome do Imóvel" 
+              value={formData.name || ''} 
+              onChange={e => setFormData({...formData, name: e.target.value})} 
+              required 
+              placeholder="Ex: Apartamento 101"
+            />
+            <Input 
+              id="address" 
+              label="Endereço" 
+              value={formData.address || ''} 
+              onChange={e => setFormData({...formData, address: e.target.value})} 
+              required 
+              placeholder="Rua, Número, Bairro, Cidade"
+            />
+          </div>
+
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">Detalhes e Status</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Status
+                  <InfoTooltip text="Livre: Disponível para alugar. Alugada: Já possui inquilino. Reforma: Indisponível temporariamente." />
+                </label>
+                <Select 
+                  id="status" 
+                  value={formData.status} 
+                  onChange={e => {
+                    const newStatus = e.target.value as PropertyStatus;
+                    if (newStatus === 'renovation' && formData.currentTenantId) {
+                      setFormData({...formData, status: newStatus, currentTenantId: ''});
+                    } else {
+                      setFormData({...formData, status: newStatus});
+                    }
+                  }} 
+                  options={[
+                    { label: 'Livre', value: 'vacant' },
+                    { label: 'Alugada', value: 'rented' },
+                    { label: 'Reforma', value: 'renovation' }
+                  ]}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Aceita Animais?
+                </label>
+                <Select 
+                  id="allowPets" 
+                  value={formData.allowPets ? 'yes' : 'no'} 
+                  onChange={e => setFormData({...formData, allowPets: e.target.value === 'yes'})} 
+                  options={[
+                    { label: 'Sim', value: 'yes' },
+                    { label: 'Não', value: 'no' }
+                  ]}
+                />
+              </div>
             </div>
           </div>
           {formData.status === 'rented' && (
-            <Select 
-              id="tenant" 
-              label="Inquilino Atual" 
-              value={formData.currentTenantId} 
-              onChange={e => setFormData({...formData, currentTenantId: e.target.value})} 
-              options={[
-                { label: 'Nenhum', value: '' },
-                ...tenants
-                  .filter(t => t.status !== 'archived' && (!t.propertyId || t.propertyId === editingProperty?.id))
-                  .map(t => ({ label: t.name, value: t.id }))
-              ]}
-            />
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Inquilino Atual</label>
+              <Select 
+                id="tenant" 
+                value={formData.currentTenantId || ''} 
+                onChange={e => setFormData({...formData, currentTenantId: e.target.value})} 
+                options={[
+                  { label: 'Nenhum', value: '' },
+                  { label: '+ Novo Inquilino (Criar após salvar)', value: 'new_tenant' },
+                  ...tenants
+                    .filter(t => t.status !== 'archived' && (!t.propertyId || t.propertyId === editingProperty?.id))
+                    .map(t => ({ label: t.name, value: t.id }))
+                ]}
+              />
+              <p className="text-[10px] text-slate-500 ml-1 mt-1">
+                Acesse a aba <strong>Inquilinos</strong> ou <strong>Contratos</strong> depois para gerar ou assinar o contrato.
+              </p>
+            </div>
           )}
+
+          {formData.status === 'renovation' && (
+            <div className="p-4 bg-indigo-50/50 rounded-xl border border-indigo-100 space-y-4">
+              <h4 className="text-sm font-bold text-indigo-900">Detalhes da Reforma</h4>
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Tempo Estimado</label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="renovationTime"
+                    className="flex-grow"
+                    placeholder="Tempo"
+                    type="number"
+                    value={formData.renovationEstimatedTime?.split(' ')[0] || ''}
+                    onChange={e => setFormData({...formData, renovationEstimatedTime: `${e.target.value} ${formData.renovationEstimatedTime?.split(' ')[1] || 'meses'}`})}
+                  />
+                  <select 
+                    className="rounded-xl border border-indigo-200 bg-white px-3 text-sm focus:border-indigo-500 outline-none"
+                    value={formData.renovationEstimatedTime?.split(' ')[1] || 'meses'}
+                    onChange={e => setFormData({...formData, renovationEstimatedTime: `${formData.renovationEstimatedTime?.split(' ')[0] || ''} ${e.target.value}`})}
+                  >
+                    <option value="dias">dias</option>
+                    <option value="semanas">semanas</option>
+                    <option value="meses">meses</option>
+                  </select>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Checklist da Reforma</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (editingProperty?.id) {
+                          setExpenseForm(prev => ({ ...prev, propertyId: editingProperty.id, type: 'renovation' }));
+                          setIsExpenseModalOpen(true);
+                        } else {
+                          toast.error("Salve o imóvel primeiro para adicionar despesas.");
+                        }
+                      }}
+                      className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md hover:bg-emerald-100 transition-colors flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" /> Lançar Despesa
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-1.5 pt-1">
+                    {(formData.renovationDescription || '').split('\n').filter(l => l.trim().length > 0).map((line, idx, arr) => {
+                        const isChecked = line.startsWith('- [x]');
+                        const text = line.replace(/^- \[(x| )\] /, '').replace(/^- /, '').trim();
+                        return (
+                           <div key={idx} className="flex items-center justify-between p-2.5 bg-white border border-indigo-100/60 rounded-lg group transition-all hover:border-indigo-300">
+                               <div className="flex items-center gap-3 flex-1 cursor-pointer" onClick={() => {
+                                   const newArr = [...arr];
+                                   newArr[idx] = isChecked ? `- [ ] ${text}` : `- [x] ${text}`;
+                                   setFormData({...formData, renovationDescription: newArr.join('\n')});
+                               }}>
+                                   <div className={cn("w-4 h-4 rounded-sm flex items-center justify-center shrink-0 border transition-all", isChecked ? "bg-emerald-500 border-emerald-600 text-white" : "border-slate-300 bg-slate-50")}>
+                                      {isChecked && <Check className="w-3 h-3" />}
+                                   </div>
+                                   <span className={cn("text-sm transition-all", isChecked ? "text-slate-400 line-through" : "text-slate-700 font-medium")}>{text}</span>
+                               </div>
+                               <button type="button" onClick={() => {
+                                   const newArr = arr.filter((_, i) => i !== idx);
+                                   setFormData({...formData, renovationDescription: newArr.join('\n')});
+                               }} className="text-slate-300 md:opacity-0 md:group-hover:opacity-100 hover:text-red-500 transition-all p-1">
+                                   <X className="w-4 h-4" />
+                               </button>
+                           </div>
+                        );
+                    })}
+                    {(!formData.renovationDescription || formData.renovationDescription.trim().length === 0) && (
+                      <p className="text-xs text-slate-400 italic px-1 py-2">Nenhum item adicionado ao checklist.</p>
+                    )}
+                  </div>
+                  
+                  <textarea
+                    className="w-full min-h-[40px] rounded-xl border border-indigo-200 bg-white px-4 py-3 text-sm focus:border-indigo-500 outline-none mt-2 placeholder:text-slate-400"
+                    placeholder="Digite um novo item e pressione Enter..."
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            const val = e.currentTarget.value.trim();
+                            if (val) {
+                                const current = formData.renovationDescription ? formData.renovationDescription.trim() + '\n' : '';
+                                setFormData({...formData, renovationDescription: current + `- [ ] ${val}`});
+                                e.currentTarget.value = '';
+                            }
+                        }
+                    }}
+                  />
+
+                  <div className="flex flex-wrap gap-2 mt-1">
+                      {['Pintura completa', 'Troca de fiação', 'Limpeza pós-obra', 'Troca de piso', 'Revisão hidráulica', 'Impermeabilização'].map(s => (
+                          <button
+                              key={s}
+                              type="button"
+                              onClick={() => setFormData({...formData, renovationDescription: formData.renovationDescription ? `${formData.renovationDescription.trim()}\n- [ ] ${s}` : `- [ ] ${s}`})}
+                              className="px-2 py-1 bg-white border border-indigo-200 rounded text-[10px] text-indigo-700 hover:border-indigo-400"
+                          >+ {s}</button>
+                      ))}
+                  </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Fotos da Reforma</label>
+                  <input
+                    type="file"
+                    id="renovation-photos"
+                    className="hidden"
+                    accept="image/*"
+                    onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                            const reader = new FileReader();
+                            reader.onload = (ev) => {
+                                setFormData({
+                                    ...formData,
+                                    renovationImages: [...(formData.renovationImages || []), { url: ev.target?.result as string, name: file.name }]
+                                });
+                            };
+                            reader.readAsDataURL(file);
+                        }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => document.getElementById('renovation-photos')?.click()}
+                    className="w-full gap-2 border-dashed"
+                  >
+                    <Paperclip className="w-4 h-4" /> Adicionar Foto
+                  </Button>
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {formData.renovationImages?.map((img, idx) => (
+                        <div key={idx} className="relative w-16 h-16 rounded overflow-hidden">
+                            <img src={img.url} className="w-full h-full object-cover" />
+                            <button 
+                                type="button" 
+                                onClick={() => setFormData({...formData, renovationImages: formData.renovationImages?.filter((_, i) => i !== idx)})}
+                                className="absolute top-0 right-0 bg-red-500 text-white rounded-bl p-0.5"
+                            >x</button>
+                        </div>
+                    ))}
+                  </div>
+              </div>
+            </div>
+          )}
+
+
+          <div className="space-y-4">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between ml-1 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <label>Regras e Restrições</label>
+              </div>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {[
+                  "Não permitir som alto após 22h",
+                  "Proibido fumar nas dependências", 
+                  "Máximo de 4 moradores",
+                  "Proibido alterar pintura sem autorização",
+                  "Garagem restrita a 1 veículo",
+                  "Não furar paredes azulejadas"
+                ].map((suggestion, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      const currentRules = formData.rules || '';
+                      if (!currentRules.includes(suggestion)) {
+                        setFormData({...formData, rules: currentRules ? `${currentRules}\n- ${suggestion}` : `- ${suggestion}`});
+                      }
+                    }}
+                    className="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 hover:border-indigo-300 transition-colors"
+                  >
+                    + {suggestion}
+                  </button>
+                ))}
+              </div>
+              <textarea 
+                className="flex min-h-[80px] w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm transition-all focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none placeholder:text-slate-400"
+                placeholder="Ex: Não é permitido furar a parede da sala..."
+                value={formData.rules || ''}
+                onChange={e => setFormData({...formData, rules: e.target.value})}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Alertas sobre o Imóvel</label>
+              <textarea 
+                className="flex min-h-[80px] w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm transition-all focus:bg-white focus:border-red-500 focus:ring-4 focus:ring-red-500/10 outline-none placeholder:text-slate-400"
+                placeholder="Ex: Vazamento no teto necessita atenção no inverno..."
+                value={formData.alerts || ''}
+                onChange={e => setFormData({...formData, alerts: e.target.value})}
+              />
+            </div>
+          </div>
+
+
+
           <div className="pt-4 flex gap-2">
             <Button type="submit" className="flex-1" disabled={isSubmitting}>
               {isSubmitting ? 'Salvando...' : 'Salvar'}
@@ -1622,7 +2494,8 @@ interface TenantsViewProps {
   tenants: Tenant[];
   properties: Property[];
   payments: Payment[];
-  addTenant: (t: any) => Promise<void>;
+  contracts: Contract[];
+  addTenant: (t: any) => Promise<any>;
   updateTenant: (id: string, t: any) => Promise<void>;
   deleteTenant: (id: string) => Promise<void>;
   onOpenDetail: (t: Tenant) => void;
@@ -1630,30 +2503,67 @@ interface TenantsViewProps {
   isDriveConnected: boolean;
   uploadToDrive: (fileName: string, fileData: string, mimeType: string, folderName?: string) => Promise<any>;
   setPreviewReceipt: (preview: { url: string; name: string; isImage: boolean } | null) => void;
+  initialPropertyId?: string | null;
+  onClearInitialPropertyId?: () => void;
+  initialTenantIdToEdit?: string | null;
+  onClearInitialTenantIdToEdit?: () => void;
 }
 
-const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, deleteTenant, onOpenDetail, onSecurityCheck, isDriveConnected, uploadToDrive, setPreviewReceipt }: TenantsViewProps) => {
+const TenantsView = ({ tenants, properties, payments, contracts, addTenant, updateTenant, deleteTenant, onOpenDetail, onSecurityCheck, isDriveConnected, uploadToDrive, setPreviewReceipt, initialPropertyId, onClearInitialPropertyId, initialTenantIdToEdit, onClearInitialTenantIdToEdit }: TenantsViewProps) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isNoPropertiesPromptOpen, setIsNoPropertiesPromptOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<Partial<Tenant>>({
     name: '',
     cpf: '',
     contact: '',
     secondaryContact: '',
+    additionalResidents: [],
     status: 'waiting' as TenantStatus,
     rating: 5,
     observations: '',
-    propertyId: '',
-    contractFile: '',
-    initialPaymentType: 'rent' as 'deposit' | 'rent',
-    depositValue: 0,
-    depositInstallments: 1,
-    depositDay: 10,
-    evidenceLocation: '',
-    evidenceName: '',
-    thumbnailLink: ''
+    leaseDurationMonths: 12,
+    firstRentDueDate: ''
   });
+
+  useEffect(() => {
+    if (initialTenantIdToEdit) {
+      const tenantToEdit = tenants.find(t => t.id === initialTenantIdToEdit);
+      if (tenantToEdit) {
+        setEditingTenant(tenantToEdit);
+        setFormData({
+          ...tenantToEdit,
+          cpf: tenantToEdit.cpf || '',
+          contact: tenantToEdit.contact || '',
+          secondaryContact: tenantToEdit.secondaryContact || '',
+          observations: tenantToEdit.observations || '',
+          evidenceLocation: tenantToEdit.evidenceLocation || '',
+          additionalResidents: tenantToEdit.additionalResidents || [],
+          leaseDurationMonths: tenantToEdit.leaseDurationMonths || 12,
+          firstRentDueDate: tenantToEdit.firstRentDueDate || ''
+        });
+        setIsModalOpen(true);
+      }
+      onClearInitialTenantIdToEdit?.();
+    } else if (initialPropertyId) {
+      setEditingTenant(null);
+      setFormData({
+        name: '', 
+        cpf: '', 
+        contact: '', 
+        secondaryContact: '', 
+        status: 'allocated', 
+        propertyId: initialPropertyId,
+        rating: 5, 
+        observations: '',
+        leaseDurationMonths: 12,
+        firstRentDueDate: ''
+      });
+      setIsModalOpen(true);
+      onClearInitialPropertyId?.();
+    }
+  }, [initialPropertyId, initialTenantIdToEdit, tenants, onClearInitialPropertyId, onClearInitialTenantIdToEdit]);
 
   const handleOpenModal = (t?: Tenant) => {
     if (t) {
@@ -1663,40 +2573,49 @@ const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, d
         cpf: t.cpf,
         contact: t.contact,
         secondaryContact: t.secondaryContact || '',
+        additionalResidents: t.additionalResidents || [],
         status: t.status,
-        rating: t.rating || 5,
-        observations: t.observations || '',
         propertyId: t.propertyId || '',
-        contractFile: t.contractFile || '',
         initialPaymentType: t.initialPaymentType || 'rent',
         depositValue: t.depositValue || 0,
         depositInstallments: t.depositInstallments || 1,
-        depositDay: t.depositDay || 10,
-        evidenceLocation: t.evidenceLocation || '',
-        evidenceName: t.evidenceName || '',
-        thumbnailLink: t.thumbnailLink || ''
+        depositDueDate: t.depositDueDate || '',
+        rating: t.rating || 5,
+        observations: t.observations || '',
+        leaseDurationMonths: t.leaseDurationMonths || 12,
+        firstRentDueDate: t.firstRentDueDate || ''
       });
+      setIsModalOpen(true);
     } else {
-      setEditingTenant(null);
-      setFormData({ 
-        name: '', 
-        cpf: '', 
-        contact: '', 
-        secondaryContact: '', 
-        status: 'waiting', 
-        rating: 5, 
-        observations: '', 
-        propertyId: '', 
-        contractFile: '',
-        initialPaymentType: 'rent',
-        depositValue: 0,
-        depositInstallments: 1,
-        depositDay: 10,
-        evidenceLocation: '',
-        evidenceName: '',
-        thumbnailLink: ''
-      });
+      const hasAvailableProperties = properties.some(p => p.status === 'vacant');
+      if (!hasAvailableProperties) {
+        setIsNoPropertiesPromptOpen(true);
+        return;
+      }
+      proceedToCreateTenant();
     }
+  };
+
+  const proceedToCreateTenant = () => {
+    setIsNoPropertiesPromptOpen(false);
+    setEditingTenant(null);
+    setFormData({ 
+      name: '', 
+      cpf: '', 
+      contact: '', 
+      secondaryContact: '', 
+      additionalResidents: [],
+      status: 'waiting', 
+      propertyId: '',
+      initialPaymentType: 'rent',
+      depositValue: 0,
+      depositInstallments: 1,
+      depositDueDate: '',
+      rating: 5, 
+      observations: '',
+      leaseDurationMonths: 12,
+      firstRentDueDate: ''
+    });
     setIsModalOpen(true);
   };
 
@@ -1741,8 +2660,19 @@ const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, d
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        {tenants.map(t => (
-          <Card key={t.id} className="p-6 space-y-4 hover:shadow-md transition-shadow cursor-pointer group" onClick={() => onOpenDetail(t)}>
+        {tenants.map(t => {
+          const linkedContract = contracts.find(c => c.tenantId === t.id && c.status === 'active');
+          const linkedPropId = linkedContract ? linkedContract.propertyId : t.propertyId;
+          const linkedProperty = properties.find(p => p.id === linkedPropId);
+          
+          const hasPetConflict = linkedProperty && linkedProperty.allowPets === false && t.pets && t.pets.trim() !== '';
+          const hasSmokeConflict = !!t.isSmoker && linkedProperty?.rules?.toLowerCase().includes('fumar');
+          const hasVehicleConflict = !!t.vehicleDetails && linkedProperty?.rules?.toLowerCase().includes('garagem');
+          const hasResidentConflict = !!t.residentCount && linkedProperty?.rules?.toLowerCase().includes('moradores');
+          const hasAlerts = !!linkedProperty?.alerts;
+
+          return (
+          <Card id={`tenant-${t.id}`} key={t.id} className="p-6 space-y-4 hover:shadow-md transition-shadow cursor-pointer group" onClick={() => onOpenDetail(t)}>
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold">
@@ -1771,6 +2701,36 @@ const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, d
                 <div className="flex items-center gap-2 px-2 py-1 bg-amber-50 rounded-lg border border-amber-100">
                   <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
                   <span className="text-[10px] font-black text-amber-700 uppercase tracking-tighter">Caução Pendente</span>
+                </div>
+              )}
+
+              {/* Intelligent Memory & Conflicts */}
+              {(hasPetConflict || hasSmokeConflict || hasVehicleConflict || hasResidentConflict || hasAlerts) && (
+                <div className="space-y-1.5 pt-1">
+                  {hasPetConflict && (
+                    <div className="flex items-center gap-1.5 text-xs text-red-700 bg-red-50 px-2 py-1 rounded shadow-sm border border-red-100">
+                      <AlertCircle className="w-3.5 h-3.5" /> 
+                      <span className="font-bold">Pets ñ permitidos.</span>
+                    </div>
+                  )}
+                  {hasSmokeConflict && (
+                    <div className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded shadow-sm border border-amber-100">
+                      <AlertCircle className="w-3.5 h-3.5" /> 
+                      <span className="font-bold">Regras de fumo.</span>
+                    </div>
+                  )}
+                  {(hasVehicleConflict || hasResidentConflict) && (
+                    <div className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded shadow-sm border border-amber-100">
+                      <AlertCircle className="w-3.5 h-3.5" /> 
+                      <span className="font-bold">Verificar regras limites!</span>
+                    </div>
+                  )}
+                  {linkedProperty?.alerts && (
+                    <div className="flex items-start gap-1.5 text-[10px] sm:text-xs text-slate-600 bg-slate-50/50 p-1.5 rounded border border-slate-100" title={linkedProperty.alerts}>
+                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span className="line-clamp-2"><span className="font-bold">Aviso do Imóvel:</span> {linkedProperty.alerts}</span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1804,7 +2764,8 @@ const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, d
               </Button>
             </div>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       <Modal 
@@ -1812,39 +2773,148 @@ const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, d
         onClose={() => setIsModalOpen(false)} 
         title={editingTenant ? "Editar Perfil" : "Novo Inquilino"}
       >
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <Input label="Nome Completo" id="name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} required />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                CPF
-                <InfoTooltip text="Documento de identificação obrigatório para o contrato." />
-              </label>
-              <Input id="cpf" value={formData.cpf} onChange={e => setFormData({...formData, cpf: e.target.value})} required />
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">Informações Pessoais</h3>
+            <Input label="Nome Completo" id="name" value={formData.name || ''} onChange={e => setFormData({...formData, name: e.target.value})} required />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  CPF
+                  <InfoTooltip text="Documento de identificação obrigatório para o contrato." />
+                </label>
+                <Input id="cpf" value={formData.cpf || ''} onChange={e => setFormData({...formData, cpf: e.target.value})} required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Celular do Inquilino
+                  <InfoTooltip text="Número de contato principal (WhatsApp)." />
+                </label>
+                <Input id="contact" value={formData.contact || ''} onChange={e => setFormData({...formData, contact: e.target.value})} required />
+              </div>
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                Celular do Inquilino
-                <InfoTooltip text="Número de contato principal (WhatsApp)." />
+                Contato de Emergência (Outra Pessoa)
+                <InfoTooltip text="Nome e telefone de um parente ou amigo para casos de emergência." />
               </label>
-              <Input id="contact" value={formData.contact} onChange={e => setFormData({...formData, contact: e.target.value})} required />
+              <Input id="sec" value={formData.secondaryContact || ''} onChange={e => setFormData({...formData, secondaryContact: e.target.value})} />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5 flex-1">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Animais</label>
+                <Input id="pets" value={formData.pets || ''} onChange={e => setFormData({...formData, pets: e.target.value})} placeholder="Quantos e quais?" />
+              </div>
+            </div>
+
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Outros Moradores (Cônjuge, Filhos, etc)</label>
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, additionalResidents: [...(formData.additionalResidents || []), { name: '', relation: '', cpf: '', age: '' }] })}
+                  className="text-xs text-indigo-600 font-bold hover:text-indigo-800 flex items-center gap-1"
+                >
+                  <Plus className="w-3 h-3" /> Adicionar Morador
+                </button>
+              </div>
+              
+              <div className="space-y-2">
+                {formData.additionalResidents?.map((res, idx) => (
+                  <div key={idx} className="flex flex-wrap items-end gap-2 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                    <div className="flex-1 min-w-[200px]">
+                      <Input 
+                        id={`res-name-${idx}`}
+                        placeholder="Nome" 
+                        value={res.name || ''} 
+                        onChange={(e) => {
+                          const newResidents = [...(formData.additionalResidents || [])];
+                          newResidents[idx].name = e.target.value;
+                          setFormData({ ...formData, additionalResidents: newResidents });
+                        }}
+                      />
+                    </div>
+                    <div className="w-24">
+                      <Input 
+                        id={`res-rel-${idx}`}
+                        placeholder="Vínculo" 
+                        value={res.relation || ''} 
+                        onChange={(e) => {
+                          const newResidents = [...(formData.additionalResidents || [])];
+                          newResidents[idx].relation = e.target.value;
+                          setFormData({ ...formData, additionalResidents: newResidents });
+                        }}
+                      />
+                    </div>
+                    <div className="w-32 hidden sm:block">
+                      <Input 
+                        id={`res-cpf-${idx}`}
+                        placeholder="CPF (Opç)" 
+                        value={res.cpf || ''} 
+                        onChange={(e) => {
+                          const newResidents = [...(formData.additionalResidents || [])];
+                          newResidents[idx].cpf = e.target.value;
+                          setFormData({ ...formData, additionalResidents: newResidents });
+                        }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newResidents = [...(formData.additionalResidents || [])];
+                        newResidents.splice(idx, 1);
+                        setFormData({ ...formData, additionalResidents: newResidents });
+                      }}
+                      className="p-2.5 text-slate-400 hover:text-rose-600 bg-white rounded-lg border border-slate-200"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                {(!formData.additionalResidents || formData.additionalResidents.length === 0) && (
+                  <p className="text-xs text-slate-400 italic ml-1">Nenhum outro morador adicionado.</p>
+                )}
+              </div>
             </div>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-              Contato de Emergência (Outra Pessoa)
-              <InfoTooltip text="Nome e telefone de um parente ou amigo para casos de emergência." />
-            </label>
-            <Input id="sec" value={formData.secondaryContact} onChange={e => setFormData({...formData, secondaryContact: e.target.value})} />
+
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">Configurações Rápidas & Perfil</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-100">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Total de Moradores</label>
+                <Input id="residentCount" type="number" min="1" value={formData.residentCount || ''} onChange={e => setFormData({...formData, residentCount: Number(e.target.value) || undefined})} placeholder="Ex: 3" />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">É Fumante?</label>
+                <Select 
+                  id="isSmoker" 
+                  value={formData.isSmoker === undefined ? '' : (formData.isSmoker ? 'yes' : 'no')} 
+                  onChange={e => setFormData({...formData, isSmoker: e.target.value === '' ? undefined : e.target.value === 'yes'})} 
+                  options={[
+                    { label: 'Não informado', value: '' },
+                    { label: 'Sim', value: 'yes' },
+                    { label: 'Não', value: 'no' }
+                  ]}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Veículos (Qtd e Tipo)</label>
+                <Input id="vehicleDetails" value={formData.vehicleDetails || ''} onChange={e => setFormData({...formData, vehicleDetails: e.target.value})} placeholder="Ex: 1 Carro, 1 Moto" />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                Localização do Comprovante de Cadastro
+                <InfoTooltip text="Onde os documentos físicos estão guardados ou link para pasta digital." />
+              </label>
+              <Input id="evidence" value={formData.evidenceLocation || ''} onChange={e => setFormData({...formData, evidenceLocation: e.target.value})} placeholder="Ex: Pasta 5, Gaveta 2 ou Link" />
+            </div>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-              Localização do Comprovante
-              <InfoTooltip text="Onde o contrato físico está guardado ou link para pasta digital." />
-            </label>
-            <Input id="evidence" value={formData.evidenceLocation} onChange={e => setFormData({...formData, evidenceLocation: e.target.value})} placeholder="Ex: Pasta 5, Gaveta 2 ou Link" />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
+
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">Status e Alocação</h3>
+            <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
                 Status
@@ -1861,165 +2931,349 @@ const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, d
                 ]}
               />
             </div>
+            {formData.status === 'allocated' && (
+              <>
+                <div className="flex flex-col gap-1.5 col-span-2 sm:col-span-1">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                    Vincular a Imóvel
+                  </label>
+                  <Select 
+                    id="propertyId" 
+                    value={formData.propertyId} 
+                    onChange={e => setFormData({...formData, propertyId: e.target.value})} 
+                    options={[
+                      { label: 'Selecione um Imóvel...', value: '' },
+                      ...properties
+                        .filter(p => !p.currentTenantId || p.currentTenantId === editingTenant?.id)
+                        .map(p => ({ label: p.name, value: p.id }))
+                    ]}
+                  />
+                  
+                  {/* Intelligent Warning Check */}
+                  {(() => {
+                    if (!formData.propertyId) return null;
+                    const selectedProp = properties.find(p => p.id === formData.propertyId);
+                    if (!selectedProp) return null;
+                    
+                    const hasPetConflict = selectedProp.allowPets === false && !!formData.pets;
+                    const hasSmokeConflict = !!formData.isSmoker && selectedProp.rules?.toLowerCase().includes('fumar');
+                    const hasVehicleConflict = !!formData.vehicleDetails && selectedProp.rules?.toLowerCase().includes('garagem');
+                    const hasResidentConflict = !!formData.residentCount && selectedProp.rules?.toLowerCase().includes('moradores');
+                    
+                    const hasPropertyAlert = !!selectedProp.alerts;
+                    const hasRules = !!selectedProp.rules;
+                    
+                    if (!hasPetConflict && !hasSmokeConflict && !hasVehicleConflict && !hasResidentConflict && !hasPropertyAlert && !hasRules) return null;
+                    
+                    return (
+                      <div className="mt-2 flex flex-col gap-2 p-3 bg-amber-50 rounded-xl border border-amber-200">
+                        <div className="flex items-center gap-1.5 text-amber-800 border-b border-amber-200/60 pb-1 mb-1">
+                           <Sparkles className="w-4 h-4" />
+                           <span className="text-xs font-bold uppercase tracking-tight">Análise do Assistente</span>
+                        </div>
+                        {hasPetConflict && (
+                          <div className="flex items-start gap-1.5 text-xs text-red-700 bg-white/50 p-1.5 rounded">
+                             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
+                             <span><strong className="block text-red-800">Conflito Grave:</strong> O imóvel não aceita animais, mas o inquilino possui pets cadastrados.</span>
+                          </div>
+                        )}
+                        {hasSmokeConflict && (
+                          <div className="flex items-start gap-1.5 text-xs text-amber-700 bg-white/50 p-1.5 rounded">
+                             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                             <span><strong className="block text-amber-900">Atenção ao Fumo:</strong> O inquilino é fumante e o imóvel tem regras sobre fumo. Verifique.</span>
+                          </div>
+                        )}
+                        {hasVehicleConflict && (
+                          <div className="flex items-start gap-1.5 text-xs text-amber-700 bg-white/50 p-1.5 rounded">
+                             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                             <span><strong className="block text-amber-900">Conferir Garagem:</strong> Inquilino tem veículos ({formData.vehicleDetails}) e há regras de garagem.</span>
+                          </div>
+                        )}
+                        {hasResidentConflict && (
+                          <div className="flex items-start gap-1.5 text-xs text-amber-700 bg-white/50 p-1.5 rounded">
+                             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                             <span><strong className="block text-amber-900">Limite de Moradores:</strong> Inquilino tem {formData.residentCount} morador(es) e há regras sobre limite.</span>
+                          </div>
+                        )}
+                        {hasPropertyAlert && (
+                          <div className="flex items-start gap-1.5 text-xs text-slate-800 bg-white/50 p-1.5 rounded border border-slate-100">
+                             <Info className="w-4 h-4 shrink-0 mt-0.5 text-slate-400" />
+                             <span><strong className="block text-slate-600">Alerta do Imóvel:</strong> {selectedProp.alerts}</span>
+                          </div>
+                        )}
+                        {hasRules && (
+                          <div className="flex items-start gap-1.5 text-xs text-slate-800 bg-white/50 p-1.5 rounded border border-slate-100">
+                             <BookText className="w-4 h-4 shrink-0 mt-0.5 text-slate-400" />
+                             <span><strong className="block text-slate-600">Regras do Imóvel:</strong> {selectedProp.rules}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="flex flex-col gap-1.5 col-span-2 sm:col-span-1">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                    Duração da Locação
+                    <InfoTooltip text="Tempo de validade do contrato de locação (será usado para calcular e registrar o vencimento automático)." />
+                  </label>
+                  <Select 
+                    id="leaseDurationMonths" 
+                    value={
+                      formData.leaseDurationMonths === 12 ? '12' :
+                      formData.leaseDurationMonths === 24 ? '24' :
+                      formData.leaseDurationMonths === 30 ? '30' :
+                      formData.leaseDurationMonths === 6 ? '6' :
+                      formData.leaseDurationMonths === 3 ? '3' :
+                      formData.leaseDurationMonths ? 'custom' : '12'
+                    } 
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val === '12') {
+                        setFormData({...formData, leaseDurationMonths: 12});
+                      } else if (val === '24') {
+                        setFormData({...formData, leaseDurationMonths: 24});
+                      } else if (val === '30') {
+                        setFormData({...formData, leaseDurationMonths: 30});
+                      } else if (val === '6') {
+                        setFormData({...formData, leaseDurationMonths: 6});
+                      } else if (val === '3') {
+                        setFormData({...formData, leaseDurationMonths: 3});
+                      } else {
+                        setFormData({...formData, leaseDurationMonths: formData.leaseDurationMonths || 12});
+                      }
+                    }} 
+                    options={[
+                      { label: '1 Ano (12 meses)', value: '12' },
+                      { label: '2 Anos (24 meses)', value: '24' },
+                      { label: '30 meses', value: '30' },
+                      { label: '6 meses', value: '6' },
+                      { label: '3 meses', value: '3' },
+                      { label: 'Outro período (em meses)...', value: 'custom' },
+                    ]}
+                  />
+                </div>
+
+                {formData.leaseDurationMonths !== 12 && 
+                 formData.leaseDurationMonths !== 24 && 
+                 formData.leaseDurationMonths !== 30 && 
+                 formData.leaseDurationMonths !== 6 && 
+                 formData.leaseDurationMonths !== 3 && (
+                  <div className="flex flex-col gap-1.5 col-span-2 sm:col-span-1">
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                      Especificar Meses
+                      <InfoTooltip text="Digite a quantidade exata de meses de validade da locação." />
+                    </label>
+                    <Input 
+                      id="customLeaseDuration" 
+                      type="number" 
+                      min="1" 
+                      value={formData.leaseDurationMonths || ''} 
+                      onChange={e => setFormData({...formData, leaseDurationMonths: Number(e.target.value) || undefined})} 
+                      placeholder="Ex: 18" 
+                    />
+                  </div>
+                )}
+              </>
+            )}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
                 Avaliação (1-5)
                 <InfoTooltip text="Nota para o comportamento e pontualidade do inquilino." />
               </label>
-              <Input id="rating" type="number" value={formData.rating} onChange={e => setFormData({...formData, rating: Number(e.target.value)})} />
+              <Input id="rating" type="number" value={formData.rating || ''} onChange={e => setFormData({...formData, rating: Number(e.target.value)})} />
             </div>
           </div>
-          {formData.status === 'allocated' && (
-            <div className="space-y-4 p-4 bg-slate-50 rounded-xl border border-slate-200">
-              <Select 
-                label="Imóvel Alocado" 
-                id="propertyId" 
-                value={formData.propertyId} 
-                onChange={e => {
-                  const propId = e.target.value;
-                  setFormData({...formData, propertyId: propId});
-                }} 
-                options={[
-                  { label: 'Nenhum', value: '' },
-                  ...properties.map(p => {
-                    const statusLabel = 
-                      p.status === 'renovation' ? '(EM REFORMA)' : 
-                      p.status === 'rented' ? '(OCUPADA)' : 
-                      '(DISPONÍVEL)';
-                    
-                    // Prohibit 2 tenants: disable if rented and not the current tenant's property
-                    const isOccupiedByOther = p.status === 'rented' && p.currentTenantId !== editingTenant?.id;
-
-                    return { 
-                      label: `${p.name} ${statusLabel}`, 
-                      value: p.id,
-                      disabled: isOccupiedByOther
-                    };
-                  })
-                ]}
-              />
-
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Configuração Financeira</label>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button type="button" className="text-slate-400 hover:text-indigo-500 transition-colors">
-                      <HelpCircle className="w-3.5 h-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-[300px] p-4 bg-white border border-slate-200 shadow-xl rounded-2xl">
-                    <p className="text-xs leading-relaxed text-slate-600">
-                      <span className="font-bold text-slate-800">Depósito Caução (Garantia):</span> valor retido como garantia contratual, não considerado receita. Pode ser devolvido ao final do contrato ou utilizado para cobrir danos e pendências do inquilino.
-                      <br /><br />
-                      <span className="font-bold text-slate-800">Aluguel:</span> valor mensal pelo uso do imóvel, considerado receita.
-                      <br /><br />
-                      <span className="italic text-[10px]">Isso segue a Lei do Inquilinato (Lei nº 8.245/1991).</span>
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-            
-            <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl space-y-4">
-              <CurrencyInput 
-                label="Depósito Caução (Garantia Total)" 
-                id="depositValue" 
-                value={formData.depositValue} 
-                onChange={val => setFormData({...formData, depositValue: val})} 
-              />
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Parcelas</label>
-                  <Select 
-                    id="depositInstallments" 
-                    value={String(formData.depositInstallments)} 
-                    onChange={e => setFormData({...formData, depositInstallments: Number(e.target.value)})} 
-                    options={[
-                      { label: 'À Vista', value: '1' },
-                      { label: '2x', value: '2' },
-                      { label: '3x', value: '3' },
-                      { label: '4x', value: '4' },
-                      { label: '5x', value: '5' },
-                      { label: '6x', value: '6' },
-                    ]}
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Dia Venc. Caução</label>
-                  <Input 
-                    type="number" 
-                    id="depositDay" 
-                    value={String(formData.depositDay)} 
-                    onChange={e => setFormData({...formData, depositDay: Number(e.target.value)})} 
-                    min="1" max="31"
-                  />
+          </div>
+          
+          {formData.status === 'archived' && (editingTenant?.depositBalance || 0) > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-bold text-amber-800">Atenção ao Caução!</h4>
+                <p className="text-xs text-amber-700 mt-1">
+                  O inquilino possui um saldo de <b>R$ {(editingTenant.depositBalance || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</b> em garantias pagas.
+                  Lembre-se de combinar a devolução com ele antes de arquivar o contrato.
+                </p>
+                <div className="mt-2 text-xs text-amber-600 bg-amber-100 p-2 rounded inline-block">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      className="rounded border-amber-300 text-amber-600 focus:ring-amber-500 w-4 h-4"
+                      onChange={(e) => setFormData({...formData, _createRefundReminder: e.target.checked})}
+                    />
+                    <b>Criar lembrete de devolução / registrar como Despesa pendente</b>
+                  </label>
                 </div>
               </div>
-              
-              {formData.depositInstallments > 1 && formData.depositValue > 0 && (
-                <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
-                  <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-tight">
-                    {formData.depositInstallments} parcelas de R$ {(formData.depositValue / formData.depositInstallments).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                  </p>
-                </div>
-              )}
-              <p className="text-[10px] text-slate-400 font-medium px-1 italic">* O Caução será classificado como Garantia/Passivo e não entrará no faturamento.</p>
             </div>
-          </div>
-        </div>
-      )}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Anexar Contrato (PDF/Foto)</label>
-            <div className="flex items-center gap-3 p-3 border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-              <input type="file" onChange={e => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  const reader = new FileReader();
-                  reader.onloadend = async () => {
-                    const base64 = reader.result as string;
-                    if (isDriveConnected) {
-                      toast.promise(
-                        uploadToDrive(file.name, base64, file.type, formData.name || 'Geral'),
-                        {
-                          loading: 'Enviando contrato para o Google Drive...',
-                          success: (data) => {
-                            setFormData({...formData, contractFile: data.webViewLink, evidenceName: file.name, thumbnailLink: data.thumbnailLink});
-                            return 'Contrato salvo no Google Drive!';
-                          },
-                          error: 'Erro ao enviar para o Google Drive.'
-                        }
-                      );
-                    } else {
-                      setFormData({...formData, contractFile: base64, evidenceName: file.name});
-                    }
-                  };
-                  reader.readAsDataURL(file);
-                }
-              }} className="text-xs file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100" />
-              {formData.contractFile && (
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="text-emerald-500 w-4 h-4" />
-                  {(formData.contractFile.startsWith('data:image') || formData.thumbnailLink || (formData.evidenceName && /\.(jpg|jpeg|png|webp)$/i.test(formData.evidenceName))) && (
-                    <img 
-                      src={formData.thumbnailLink || formData.contractFile} 
-                      className="w-10 h-10 rounded-lg object-cover border border-slate-200 shadow-sm" 
-                      alt="Preview"
-                      onError={(e) => (e.currentTarget.style.display = 'none')}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+          )}
+
+          {formData.status === 'allocated' && (
+             <div className="bg-slate-50 border border-slate-100 p-4 rounded-2xl grid grid-cols-1 md:grid-cols-2 gap-4">
+               <div className="flex flex-col gap-1.5 md:col-span-2">
+                 <label className="text-xs font-bold text-slate-700 uppercase tracking-wider ml-1">
+                   Cobrança de Aluguel e Caução
+                 </label>
+               </div>
+               <div className="flex flex-col gap-1.5">
+                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                   Valor do Aluguel Combinado
+                 </label>
+                 <CurrencyInput 
+                   id="rentValue" 
+                   value={formData.rentValue || 0} 
+                   onChange={val => setFormData({...formData, rentValue: val})} 
+                   required 
+                 />
+               </div>
+               <div className="flex flex-col gap-1.5">
+                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                   Dia de Pagamento
+                 </label>
+                 <Input 
+                   id="paymentDay" 
+                   type="number" 
+                   value={formData.paymentDay || ''} 
+                   onChange={e => setFormData({...formData, paymentDay: Number(e.target.value)})} 
+                   required 
+                   placeholder="Ex: 5"
+                 />
+               </div>
+               
+               <div className="flex flex-col gap-1.5 md:col-span-2">
+                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                   Data do Primeiro Vencimento do Aluguel
+                   <InfoTooltip text="Selecione a data exata de vencimento do primeiro aluguel." />
+                 </label>
+                 <Input 
+                   id="firstRentDueDate" 
+                   type="date" 
+                   value={formData.firstRentDueDate || ''} 
+                   onChange={e => setFormData({...formData, firstRentDueDate: e.target.value})} 
+                 />
+                 <p className="text-[10px] text-slate-400 italic ml-1">Se não informado, o vencimento do primeiro aluguel será calculado automaticamente no próximo dia de pagamento.</p>
+               </div>
+               
+               <div className="md:col-span-2 mt-2">
+                 <label className="flex items-center gap-3 cursor-pointer">
+                   <input 
+                     type="checkbox" 
+                     className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" 
+                     checked={formData.chargeLateFees} 
+                     onChange={e => setFormData({...formData, chargeLateFees: e.target.checked})} 
+                   />
+                   <span className="text-sm font-semibold text-slate-800">Cobrar juros e multas por atraso</span>
+                 </label>
+               </div>
+               
+               {formData.chargeLateFees && (
+                 <>
+                   <div className="flex flex-col gap-1.5">
+                     <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                       Multa Fixa (%)
+                     </label>
+                     <Input 
+                       id="lateFeePenalty" 
+                       type="number" 
+                       step="0.01"
+                       min="0"
+                       value={formData.lateFeePenalty || ''} 
+                       onChange={e => setFormData({...formData, lateFeePenalty: Number(e.target.value)})} 
+                     />
+                   </div>
+                   <div className="flex flex-col gap-1.5">
+                     <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                       Mora Diária (%)
+                     </label>
+                     <Input 
+                       id="lateFeeDaily" 
+                       type="number" 
+                       step="0.01"
+                       min="0"
+                       value={formData.lateFeeDaily || ''} 
+                       onChange={e => setFormData({...formData, lateFeeDaily: Number(e.target.value)})} 
+                     />
+                   </div>
+                 </>
+               )}
+
+               <div className="md:col-span-2 border-t border-slate-200 mt-2 mb-2"></div>
+
+               <div className="flex flex-col gap-1.5 md:col-span-2">
+                 <Select
+                   id="initialPaymentType"
+                   value={formData.initialPaymentType || 'rent'}
+                   onChange={e => setFormData({...formData, initialPaymentType: e.target.value as any})}
+                   options={[
+                     { label: 'Sem Caução (Apenas primeiro aluguel)', value: 'rent' },
+                     { label: 'Exigir Caução / Garantia', value: 'deposit' }
+                   ]}
+                 />
+               </div>
+               
+               {formData.initialPaymentType === 'deposit' && (
+                 <>
+                   <div className="flex flex-col gap-1.5">
+                     <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                       Valor do Caução Total
+                     </label>
+                     <div className="relative">
+                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">R$</span>
+                       <input 
+                         type="text"
+                         inputMode="decimal"
+                         className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-slate-700 text-sm"
+                         placeholder="0,00"
+                         value={formData.depositValue ? formData.depositValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : ''}
+                         onChange={e => {
+                           const val = e.target.value.replace(/\D/g, '');
+                           const num = Number(val) / 100;
+                           setFormData({...formData, depositValue: num});
+                         }}
+                       />
+                     </div>
+                   </div>
+                   <div className="flex flex-col gap-1.5">
+                     <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                       Parcelamento do Caução
+                     </label>
+                     <Select
+                       id="depositInstallments"
+                       value={String(formData.depositInstallments || 1)}
+                       onChange={e => setFormData({...formData, depositInstallments: Number(e.target.value)})}
+                       options={[
+                         { label: 'À Vista (1x)', value: '1' },
+                         { label: '2x', value: '2' },
+                         { label: '3x', value: '3' },
+                         { label: '4x', value: '4' },
+                         { label: '5x', value: '5' },
+                         { label: '6x', value: '6' },
+                       ]}
+                     />
+                   </div>
+                   <div className="flex flex-col gap-1.5 md:col-span-2">
+                     <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                       Data do Primeiro Pagamento do Caução
+                     </label>
+                     <Input 
+                       id="depositDueDate" 
+                       type="date" 
+                       value={formData.depositDueDate || ''} 
+                       onChange={e => setFormData({...formData, depositDueDate: e.target.value})} 
+                     />
+                     <p className="text-[10px] text-slate-400 italic ml-1">Se não informado, usará a data de entrada.</p>
+                   </div>
+                 </>
+               )}
+             </div>
+          )}
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Observações</label>
             <textarea 
               className="flex min-h-[100px] w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm transition-all focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 outline-none placeholder:text-slate-400"
               placeholder="Alguma observação importante sobre o inquilino..."
-              value={formData.observations}
+              value={formData.observations || ''}
               onChange={e => setFormData({...formData, observations: e.target.value})}
             />
           </div>
@@ -2030,6 +3284,33 @@ const TenantsView = ({ tenants, properties, payments, addTenant, updateTenant, d
             <Button variant="outline" onClick={() => setIsModalOpen(false)} className="py-3" disabled={isSubmitting}>Cancelar</Button>
           </div>
         </form>
+      </Modal>
+
+      <Modal 
+        isOpen={isNoPropertiesPromptOpen} 
+        onClose={() => setIsNoPropertiesPromptOpen(false)} 
+        title="Nenhum Imóvel Disponível"
+      >
+        <div className="space-y-6">
+          <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 flex gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+            <div className="text-sm text-amber-800">
+              <p className="font-bold">Aviso</p>
+              <p>Não há imóveis disponíveis ("Vagos") no momento.</p>
+            </div>
+          </div>
+          <p className="text-sm text-slate-600 px-1">
+            Você quer prosseguir criando o inquilino com o status de <strong>Em Espera</strong> ou quer cancelar e disponibilizar um imóvel primeiro?
+          </p>
+          <div className="pt-4 flex gap-3">
+            <Button className="flex-1 py-3" onClick={proceedToCreateTenant}>
+              Prosseguir (Em Espera)
+            </Button>
+            <Button variant="outline" onClick={() => setIsNoPropertiesPromptOpen(false)} className="py-3 text-slate-600">
+              Cancelar
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
@@ -2080,6 +3361,7 @@ const FinancialView = ({
 }: FinancialViewProps) => {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isNewPaymentModalOpen, setIsNewPaymentModalOpen] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPaymentDetailModalOpen, setIsPaymentDetailModalOpen] = useState(false);
   const [isExpenseDetailModalOpen, setIsExpenseDetailModalOpen] = useState(false);
@@ -2179,8 +3461,34 @@ const FinancialView = ({
       });
     });
 
-    // Sort all items by date (newest first)
-    return items.sort((a, b) => b.date.getTime() - a.date.getTime());
+    // Sort all items based on priority: 1. Late, 2. Pending, 3. Partial, 4. Paid/Cancelled
+    return items.sort((a, b) => {
+      const getPriority = (status: string) => {
+        if (status === 'late') return 1;
+        if (status === 'pending') return 2;
+        if (status === 'partial') return 3;
+        return 4; // paid, cancelled
+      };
+      
+      const statusA = a.type === 'payment' ? a.data.status : a.status;
+      const statusB = b.type === 'payment' ? b.data.status : b.status;
+      
+      const priorityA = getPriority(statusA);
+      const priorityB = getPriority(statusB);
+
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+
+      // Within the same priority:
+      if (priorityA === 1 || priorityA === 2 || priorityA === 3) {
+        // For late, pending, and partial: show the closest due date first
+        return a.date.getTime() - b.date.getTime();
+      } else {
+        // For paid and others: show most recently created/paid (newest first)
+        return b.date.getTime() - a.date.getTime();
+      }
+    });
   }, [payments, agreements, filterPropertyId, filterType, searchQuery, tenants, properties]);
 
   const handleAddExpense = async (e: React.FormEvent) => {
@@ -2206,6 +3514,49 @@ const FinancialView = ({
       toast.error('Erro ao salvar a despesa. Por favor, tente novamente.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleScanInvoice = async (e: React.ChangeEvent<HTMLInputElement>, isExpense: boolean) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsScanning(true);
+    toast.loading('Lendo documento com IA...', { id: 'scan-invoice' });
+
+    try {
+      const reader = new FileReader();
+      const base64 = await new Promise<string>((resolve) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(file);
+      });
+
+      const extractedData = await scanInvoice(base64);
+      if (extractedData) {
+        if (isExpense) {
+          setExpenseForm(prev => ({
+            ...prev,
+            amount: extractedData.amount || prev.amount,
+            description: extractedData.description || prev.description,
+            date: extractedData.date || prev.date
+          }));
+        } else {
+          setPaymentForm(prev => ({
+            ...prev,
+            amount: extractedData.amount || prev.amount,
+            description: extractedData.description || prev.description,
+            dueDate: extractedData.date || prev.dueDate
+          }));
+        }
+        toast.success('Dados preenchidos pela IA!', { id: 'scan-invoice' });
+      } else {
+        toast.error('Não foi possível extrair dados da imagem.', { id: 'scan-invoice' });
+      }
+    } catch (error: any) {
+      console.error("Scan Error:", error);
+      toast.error(error.message || 'Erro ao processar imagem.', { id: 'scan-invoice' });
+    } finally {
+      setIsScanning(false);
     }
   };
 
@@ -2264,17 +3615,107 @@ const FinancialView = ({
         </div>
       </header>
 
-      <FinancialSummary 
-        properties={properties} 
-        tenants={tenants} 
-        payments={payments} 
-        expenses={expenses} 
-        agreements={agreements}
-        onConfirmPayment={onConfirmPayment} 
-        onOpenTenantDetail={onOpenTenantDetail}
-      />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+        <div className="lg:col-span-1 space-y-6">
+          <PaymentAlerts 
+            properties={properties} 
+            tenants={tenants} 
+            payments={payments} 
+            onConfirmPayment={onConfirmPayment} 
+            onOpenTenantDetail={onOpenTenantDetail} 
+          />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Despesas Recentes</h2>
+              <div className="flex gap-2">
+                <select 
+                  className="text-[10px] h-7 px-1 bg-slate-50 border border-slate-200 rounded font-bold text-slate-500 outline-none focus:ring-1 focus:ring-primary/20"
+                  value={filterExpensePropertyId}
+                  onChange={e => setFilterExpensePropertyId(e.target.value)}
+                >
+                  <option value="">Todas</option>
+                  {properties.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="text-[10px] h-7 px-2 uppercase font-bold tracking-wider"
+                  onClick={() => setIsAllExpensesModalOpen(true)}
+                >
+                  Ver Tudo
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-4">
+              {expenses
+                .filter(e => !filterExpensePropertyId || e.propertyId === filterExpensePropertyId)
+                .sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime())
+                .slice(0, 10)
+                .map(e => {
+                const prop = properties.find(pr => pr.id === e.propertyId);
+                return (
+                  <div key={e.id} className="flex items-center justify-between p-3 rounded-lg border bg-accent/20 hover:bg-accent/30 transition-colors cursor-pointer group" onClick={() => {
+                    setSelectedExpense(e);
+                    setIsExpenseDetailModalOpen(true);
+                  }}>
+                    <div>
+                      <p className="text-xs text-muted-foreground uppercase font-bold">
+                        {e.type === 'repair' ? 'Manutenção' : 
+                         e.type === 'renovation' ? 'Reforma' : 
+                         e.type === 'tax' ? 'Imposto' : 
+                         e.type === 'fine' ? 'Multa' : 'Outro'}
+                      </p>
+                      <p className="font-medium group-hover:text-primary transition-colors flex items-center gap-2">
+                        {e.description}
+                        {(e.evidence || e.evidenceLocation) && <Paperclip className="w-3 h-3 text-slate-400" />}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">{prop?.name} • {format(parseISO(e.date), 'dd/MM/yyyy')}</p>
+                      {(e.evidence || e.evidenceLocation) && (
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          {e.evidence && (
+                            <a href={e.evidence} target="_blank" rel="noreferrer" className="text-[10px] text-primary flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                              <ImageIcon className="w-3 h-3" /> Ver Anexo
+                            </a>
+                          )}
+                          {e.evidenceLocation && (
+                            e.evidenceLocation.startsWith('http') ? (
+                              <a href={e.evidenceLocation} target="_blank" rel="noreferrer" className="text-[10px] text-primary flex items-center gap-1 hover:underline" onClick={e => e.stopPropagation()}>
+                                <MapPin className="w-3 h-3" /> Link Externo
+                              </a>
+                            ) : (
+                              <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                                <MapPin className="w-3 h-3" /> {e.evidenceLocation}
+                              </span>
+                            )
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <p className="font-bold text-destructive">- R$ {e.amount.toLocaleString()}</p>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 border-none bg-transparent"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          setExpenseToDelete(e);
+                          setIsDeleteExpenseModalOpen(true);
+                        }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
+
         <div className="lg:col-span-2 space-y-6">
           <Card className="p-4 bg-slate-50 border-slate-200">
             <div className="flex flex-col md:flex-row gap-4">
@@ -2387,9 +3828,19 @@ const FinancialView = ({
                         </div>
 
                         <div className="flex items-center justify-between sm:justify-end gap-6 sm:gap-12">
-                          <div className="text-right">
+                          <div className="text-right flex flex-col items-end">
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vencimento</p>
-                            <p className="text-sm font-medium text-slate-700">{format(parseISO(p.dueDate), 'dd/MM/yyyy')}</p>
+                            <p className="text-sm font-medium text-slate-700 flex items-center gap-1">
+                              {format(parseISO(p.dueDate), 'dd/MM/yyyy')}
+                              {p.originalDueDate && (
+                                <span className="inline-flex items-center text-amber-500 cursor-help" title={`Data de vencimento original (${format(parseISO(p.originalDueDate), 'dd/MM/yyyy')}) coincidia com fim de semana ou feriado e foi ajustada para o próximo dia útil.`}>
+                                  <Info className="w-3.5 h-3.5" />
+                                </span>
+                              )}
+                            </p>
+                            {p.originalDueDate && (
+                              <span className="text-[9px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded leading-none mt-0.5">Útil Posterior</span>
+                            )}
                           </div>
                           <div className="text-right min-w-[100px]">
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor</p>
@@ -2911,97 +4362,17 @@ const FinancialView = ({
             </div>
           </Card>
         </div>
-
-        <Card className="p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold">Despesas Recentes</h2>
-            <div className="flex gap-2">
-              <select 
-                className="text-[10px] h-7 px-1 bg-slate-50 border border-slate-200 rounded font-bold text-slate-500 outline-none focus:ring-1 focus:ring-primary/20"
-                value={filterExpensePropertyId}
-                onChange={e => setFilterExpensePropertyId(e.target.value)}
-              >
-                <option value="">Todas</option>
-                {properties.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                className="text-[10px] h-7 px-2 uppercase font-bold tracking-wider"
-                onClick={() => setIsAllExpensesModalOpen(true)}
-              >
-                Ver Tudo
-              </Button>
-            </div>
-          </div>
-          <div className="space-y-4">
-            {expenses
-              .filter(e => !filterExpensePropertyId || e.propertyId === filterExpensePropertyId)
-              .sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime())
-              .slice(0, 10)
-              .map(e => {
-              const prop = properties.find(pr => pr.id === e.propertyId);
-              return (
-                <div key={e.id} className="flex items-center justify-between p-3 rounded-lg border bg-accent/20 hover:bg-accent/30 transition-colors cursor-pointer group" onClick={() => {
-                  setSelectedExpense(e);
-                  setIsExpenseDetailModalOpen(true);
-                }}>
-                  <div>
-                    <p className="text-xs text-muted-foreground uppercase font-bold">
-                      {e.type === 'repair' ? 'Manutenção' : 
-                       e.type === 'renovation' ? 'Reforma' : 
-                       e.type === 'tax' ? 'Imposto' : 
-                       e.type === 'fine' ? 'Multa' : 'Outro'}
-                    </p>
-                    <p className="font-medium group-hover:text-primary transition-colors flex items-center gap-2">
-                      {e.description}
-                      {(e.evidence || e.evidenceLocation) && <Paperclip className="w-3 h-3 text-slate-400" />}
-                    </p>
-                    <p className="text-[10px] text-muted-foreground">{prop?.name} • {format(parseISO(e.date), 'dd/MM/yyyy')}</p>
-                    {(e.evidence || e.evidenceLocation) && (
-                      <div className="flex flex-wrap gap-2 mt-1">
-                        {e.evidence && (
-                          <a href={e.evidence} target="_blank" rel="noreferrer" className="text-[10px] text-primary flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                            <ImageIcon className="w-3 h-3" /> Ver Anexo
-                          </a>
-                        )}
-                        {e.evidenceLocation && (
-                          e.evidenceLocation.startsWith('http') ? (
-                            <a href={e.evidenceLocation} target="_blank" rel="noreferrer" className="text-[10px] text-primary flex items-center gap-1 hover:underline" onClick={e => e.stopPropagation()}>
-                              <MapPin className="w-3 h-3" /> Link Externo
-                            </a>
-                          ) : (
-                            <span className="text-[10px] text-slate-500 flex items-center gap-1">
-                              <MapPin className="w-3 h-3" /> {e.evidenceLocation}
-                            </span>
-                          )
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <p className="font-bold text-destructive">- R$ {e.amount.toLocaleString()}</p>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50 border-none bg-transparent"
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setExpenseToDelete(e);
-                        setIsDeleteExpenseModalOpen(true);
-                      }}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
       </div>
+
+      <FinancialSummary 
+        properties={properties} 
+        tenants={tenants} 
+        payments={payments} 
+        expenses={expenses} 
+        agreements={agreements}
+        onConfirmPayment={onConfirmPayment} 
+        onOpenTenantDetail={onOpenTenantDetail}
+      />
 
       <Modal isOpen={isPaymentDetailModalOpen} onClose={() => setIsPaymentDetailModalOpen(false)} title="Detalhes do Pagamento">
         {selectedPayment && (
@@ -3037,12 +4408,28 @@ const FinancialView = ({
                 </div>
               </div>
 
+              {selectedPayment.originalDueDate && (
+                <div className="p-4 bg-amber-50 rounded-2xl border border-amber-200 text-amber-800 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-bold text-amber-900">Vencimento Ajustado Automaticamente</p>
+                    <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                      Este vencimento estava originalmente previsto para o dia <strong>{format(parseISO(selectedPayment.originalDueDate), 'dd/MM/yyyy')}</strong>. 
+                      Como esta data caiu em um fim de semana ou feriado nacional brasileiro, o prazo foi postergado automaticamente para o próximo dia útil subsequente (<strong>{format(parseISO(selectedPayment.dueDate), 'dd/MM/yyyy')}</strong>), garantindo que o inquilino possa pagar sem qualquer tipo de multa ou atraso.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">Vencimento</p>
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center gap-2">
                     <Calendar className="w-4 h-4 text-slate-400" />
-                    <p className="text-sm">{format(parseISO(selectedPayment.dueDate), 'dd/MM/yyyy')}</p>
+                    <p className="text-sm">
+                      {format(parseISO(selectedPayment.dueDate), 'dd/MM/yyyy')}
+                      {selectedPayment.originalDueDate && ' (Ajustado)'}
+                    </p>
                   </div>
                 </div>
                 <div className="space-y-1">
@@ -3260,6 +4647,27 @@ const FinancialView = ({
 
       <Modal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} title="Nova Despesa">
         <form onSubmit={handleAddExpense} className="space-y-4">
+          <div className="flex items-center gap-3 p-3 bg-indigo-50/50 border border-dashed border-indigo-200 rounded-xl">
+            <div className="flex-1">
+              <label className="text-xs font-semibold text-indigo-700 uppercase tracking-wider flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5" /> Escanear Comprovante (IA)
+              </label>
+              <p className="text-[10px] text-slate-500 mt-0.5">Envie a foto da conta e a IA preencherá os dados.</p>
+            </div>
+            <div className="relative">
+              <input 
+                type="file" 
+                accept="image/*"
+                onChange={e => handleScanInvoice(e, true)}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                disabled={isScanning}
+              />
+              <Button type="button" variant="outline" size="sm" className="text-indigo-600 border-indigo-200 hover:bg-indigo-100 pointer-events-none" disabled={isScanning}>
+                {isScanning ? 'Lendo...' : 'Anexar Foto'}
+              </Button>
+            </div>
+          </div>
+          
           <Select 
             label="Imóvel" 
             id="prop" 
@@ -3271,7 +4679,7 @@ const FinancialView = ({
             ]}
             required
           />
-          <Input label="Descrição" id="desc" value={expenseForm.description} onChange={e => setExpenseForm({...expenseForm, description: e.target.value})} required />
+          <Input label="Descrição" id="desc" value={expenseForm.description || ''} onChange={e => setExpenseForm({...expenseForm, description: e.target.value})} required />
           <div className="grid grid-cols-2 gap-4">
             <CurrencyInput 
               label="Valor" 
@@ -3280,7 +4688,7 @@ const FinancialView = ({
               onChange={val => setExpenseForm({...expenseForm, amount: val})} 
               required 
             />
-            <Input label="Data" id="date" type="date" value={expenseForm.date} onChange={e => setExpenseForm({...expenseForm, date: e.target.value})} required />
+            <Input label="Data" id="date" type="date" value={expenseForm.date || ''} onChange={e => setExpenseForm({...expenseForm, date: e.target.value})} required />
           </div>
           <Select 
             label="Tipo" 
@@ -3328,12 +4736,23 @@ const FinancialView = ({
                           }
                         );
                       } else {
-                        setExpenseForm({
-                          ...expenseForm, 
-                          evidence: base64,
-                          evidenceName: file.name,
-                          thumbnailLink: ''
-                        });
+                        if (file.type.startsWith('image/')) {
+                          compressImage(base64).then(compressed => {
+                            setExpenseForm({
+                              ...expenseForm, 
+                              evidence: compressed,
+                              evidenceName: file.name,
+                              thumbnailLink: ''
+                            });
+                          });
+                        } else {
+                          setExpenseForm({
+                            ...expenseForm, 
+                            evidence: base64,
+                            evidenceName: file.name,
+                            thumbnailLink: ''
+                          });
+                        }
                       }
                     };
                     reader.readAsDataURL(file);
@@ -3523,6 +4942,27 @@ const FinancialView = ({
 
       <Modal isOpen={isNewPaymentModalOpen} onClose={() => setIsNewPaymentModalOpen(false)} title="Novo Recebimento">
         <form onSubmit={handleAddPayment} className="space-y-4">
+          <div className="flex items-center gap-3 p-3 bg-indigo-50/50 border border-dashed border-indigo-200 rounded-xl">
+            <div className="flex-1">
+              <label className="text-xs font-semibold text-indigo-700 uppercase tracking-wider flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5" /> Escanear Fatura/Boleto (IA)
+              </label>
+              <p className="text-[10px] text-slate-500 mt-0.5">Envie a foto e a IA extrai valor, descrição e data.</p>
+            </div>
+            <div className="relative">
+              <input 
+                type="file" 
+                accept="image/*"
+                onChange={e => handleScanInvoice(e, false)}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                disabled={isScanning}
+              />
+              <Button type="button" variant="outline" size="sm" className="text-indigo-600 border-indigo-200 hover:bg-indigo-100 pointer-events-none" disabled={isScanning}>
+                {isScanning ? 'Lendo...' : 'Anexar Foto'}
+              </Button>
+            </div>
+          </div>
+
           <Select 
             label="Inquilino" 
             id="tenant" 
@@ -3544,7 +4984,7 @@ const FinancialView = ({
             ]}
             required
           />
-          <Input label="Descrição" id="pdesc" value={paymentForm.description} onChange={e => setPaymentForm({...paymentForm, description: e.target.value})} required />
+          <Input label="Descrição" id="pdesc" value={paymentForm.description || ''} onChange={e => setPaymentForm({...paymentForm, description: e.target.value})} required />
           <CurrencyInput 
             label="Valor" 
             id="pamt" 
@@ -3552,7 +4992,7 @@ const FinancialView = ({
             onChange={val => setPaymentForm({...paymentForm, amount: val})} 
             required 
           />
-          <Input label="Data de Vencimento" id="pdate" type="date" value={paymentForm.dueDate} onChange={e => setPaymentForm({...paymentForm, dueDate: e.target.value})} required />
+          <Input label="Data de Vencimento" id="pdate" type="date" value={paymentForm.dueDate || ''} onChange={e => setPaymentForm({...paymentForm, dueDate: e.target.value})} required />
           <Select 
             label="Tipo" 
             id="ptype" 
@@ -3656,9 +5096,37 @@ const ReceivablesView = ({
   const [filterType, setFilterType] = useState<'all' | 'rent' | 'agreement'>('all');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'late'>('all');
   const [activeTab, setActiveTab] = useState<'pending' | 'receipts'>('pending');
+  const [expandedPaymentGroups, setExpandedPaymentGroups] = useState<Record<string, boolean>>({});
 
   const [receiptModalPayment, setReceiptModalPayment] = useState<Payment | null>(null);
   const [receiptType, setReceiptType] = useState<'simple' | 'detailed'>('simple');
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+
+  const handleDownloadPDF = async () => {
+    const input = document.getElementById('receipt-content');
+    if (!input || !receiptModalPayment) return;
+    
+    setIsGeneratingPDF(true);
+    try {
+      const canvas = await html2canvas(input, { scale: 2, useCORS: true, logging: false });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+      const imgProps = pdf.getImageProperties(imgData);
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`recibo_${receiptModalPayment.id?.substring(0, 8)}.pdf`);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+    } finally {
+      setIsGeneratingPDF(false);
+    }
+  };
 
   useEffect(() => {
     if (highlightedPaymentId) {
@@ -3697,9 +5165,11 @@ const ReceivablesView = ({
     return pendingPayments.filter(p => {
       const tenant = tenants.find(t => t.id === p.tenantId);
       const property = properties.find(pr => pr.id === p.propertyId);
+      const tenantName = tenant?.name || p.tenantNameSnapshot || 'Inquilino Excluído';
+      const propertyName = property?.name || p.propertyNameSnapshot || 'Imóvel Excluído';
       const matchesSearch = !searchQuery || 
-        tenant?.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        property?.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tenantName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        propertyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         p.description?.toLowerCase().includes(searchQuery.toLowerCase());
       
       const matchesType = filterType === 'all' || 
@@ -3726,12 +5196,26 @@ const ReceivablesView = ({
     return paidPayments.filter(p => {
       const tenant = tenants.find(t => t.id === p.tenantId);
       const property = properties.find(pr => pr.id === p.propertyId);
+      const tenantName = tenant?.name || p.tenantNameSnapshot || 'Inquilino Excluído';
+      const propertyName = property?.name || p.propertyNameSnapshot || 'Imóvel Excluído';
       return !searchQuery || 
-        tenant?.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        property?.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tenantName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        propertyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         p.description?.toLowerCase().includes(searchQuery.toLowerCase());
     });
   }, [paidPayments, tenants, properties, searchQuery]);
+
+  const groupedPaidPayments = useMemo(() => {
+    const groups: Record<string, typeof filteredPaidPayments> = {};
+    filteredPaidPayments.forEach(p => {
+      const date = p.paidDate || p.dueDate;
+      const monthYear = format(parseISO(date), "MMMM yyyy", { locale: ptBR });
+      const header = monthYear.charAt(0).toUpperCase() + monthYear.slice(1);
+      if (!groups[header]) groups[header] = [];
+      groups[header].push(p);
+    });
+    return Object.entries(groups).map(([month, payments]) => ({ month, payments }));
+  }, [filteredPaidPayments]);
 
   const stats = useMemo(() => {
     const today = new Date();
@@ -3797,18 +5281,41 @@ const ReceivablesView = ({
         </Card>
       </div>
 
-      <div className="flex gap-4 border-b mb-6">
+      <div className="relative flex p-2 bg-slate-100/80 backdrop-blur-md rounded-2xl mb-8 w-full shadow-[inset_0_1px_2px_rgba(0,0,0,0.05)] ring-1 ring-slate-200/50 items-center justify-between gap-2 sm:gap-3 overflow-x-auto hide-scrollbar">
         <button
           onClick={() => setActiveTab('pending')}
-          className={cn("pb-3 font-semibold text-sm border-b-2 transition-colors", activeTab === 'pending' ? "border-emerald-500 text-emerald-600" : "border-transparent text-slate-500 hover:text-slate-700")}
+          className={cn(
+            "relative px-4 sm:px-10 py-3 sm:py-4 rounded-xl text-sm font-black transition-all duration-500 flex items-center gap-2 sm:gap-3 whitespace-nowrap flex-1 justify-center z-10",
+            activeTab === 'pending' 
+              ? "bg-white text-emerald-600 shadow-xl shadow-emerald-500/10 ring-1 ring-emerald-500/20 transform scale-[1.01]" 
+              : "text-slate-500 hover:text-slate-800 hover:bg-white/50"
+          )}
         >
-          A Receber ({pendingPayments.length})
+          <div className={cn("p-1.5 rounded-lg transition-colors", activeTab === 'pending' ? "bg-emerald-500 text-white" : "bg-slate-200 text-slate-500")}>
+            <DollarSign className="w-4 h-4" />
+          </div>
+          <span className="tracking-tight uppercase text-[10px] sm:text-[12px] font-black">A Receber</span>
+          <div className={cn(
+            "ml-1 px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-black transition-all duration-300",
+            activeTab === 'pending' ? "bg-emerald-100 text-emerald-700 animate-pulse" : "bg-slate-200 text-slate-500"
+          )}>
+            {pendingPayments.length}
+          </div>
         </button>
+        
         <button
           onClick={() => setActiveTab('receipts')}
-          className={cn("pb-3 font-semibold text-sm border-b-2 transition-colors", activeTab === 'receipts' ? "border-emerald-500 text-emerald-600" : "border-transparent text-slate-500 hover:text-slate-700")}
+          className={cn(
+            "relative px-4 sm:px-10 py-3 sm:py-4 rounded-xl text-sm font-black transition-all duration-500 flex items-center gap-2 sm:gap-3 whitespace-nowrap flex-1 justify-center z-10",
+            activeTab === 'receipts' 
+              ? "bg-white text-indigo-600 shadow-xl shadow-indigo-500/10 ring-1 ring-indigo-500/20 transform scale-[1.01]" 
+              : "text-slate-500 hover:text-slate-800 hover:bg-white/50"
+          )}
         >
-          Histórico e Recibos
+          <div className={cn("p-1.5 rounded-lg transition-colors", activeTab === 'receipts' ? "bg-indigo-500 text-white" : "bg-slate-200 text-slate-500")}>
+            <Receipt className="w-4 h-4" />
+          </div>
+          <span className="tracking-tight uppercase text-[10px] sm:text-[12px] font-black">Histórico e Recibos</span>
         </button>
       </div>
 
@@ -3847,90 +5354,159 @@ const ReceivablesView = ({
           </div>}
         </div>
 
-        {activeTab === 'pending' && <div className="space-y-4">
+        {activeTab === 'pending' && <div className="space-y-6">
           {filteredPayments.length > 0 ? (
-            filteredPayments.map(p => {
-                const tenant = tenants.find(t => t.id === p.tenantId);
-                const property = properties.find(pr => pr.id === p.propertyId);
-                const isLate = p.status === 'late';
+            Object.values(filteredPayments.reduce((acc, p) => {
+              const key = p.propertyId || 'other';
+              if (!acc[key]) acc[key] = [];
+              acc[key].push(p);
+              return acc;
+            }, {} as Record<string, typeof filteredPayments>)).map(group => {
+              group.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+              const p = group[0];
+              const restPayments = group.slice(1);
+              const hasMore = restPayments.length > 0;
+              const isExpanded = expandedPaymentGroups[p.propertyId] || false;
+              
+              const toggleGroup = () => {
+                setExpandedPaymentGroups(prev => ({...prev, [p.propertyId]: !prev[p.propertyId]}));
+              };
+
+              const renderPayment = (payment: typeof p, isSub: boolean) => {
+                const tenant = tenants.find(t => t.id === payment.tenantId);
+                const property = properties.find(pr => pr.id === payment.propertyId);
+                const tenantName = tenant?.name || payment.tenantNameSnapshot || 'Inquilino Excluído';
+                const propertyName = property?.name || payment.propertyNameSnapshot || 'Imóvel Excluído';
+                const isLate = payment.status === 'late';
                 
                 return (
                   <div 
-                    id={`payment-${p.id}`}
-                    key={p.id} 
+                    id={`payment-${payment.id}`}
+                    key={payment.id} 
                     className={cn(
-                      "p-4 rounded-2xl border transition-all hover:shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-4",
-                      isLate ? "bg-rose-50/30 border-rose-100" : "bg-white border-slate-100",
-                      highlightedPaymentId === p.id && "ring-4 ring-primary ring-offset-2 scale-[1.02] shadow-xl z-10 bg-primary/5 border-primary"
+                      "p-5 border transition-all duration-300 flex flex-col sm:flex-row sm:items-center justify-between gap-5 relative group bg-white",
+                      isSub ? "rounded-b-2xl border-x border-b border-t-0" : "rounded-3xl",
+                      isLate 
+                        ? (isSub ? "bg-rose-50/30 border-rose-100" : "bg-gradient-to-br from-rose-50/50 to-white border-rose-100 hover:border-rose-300 shadow-sm") 
+                        : (isSub ? "border-slate-100" : "border-slate-100 hover:border-indigo-100 hover:shadow-xl hover:shadow-indigo-500/5"),
+                      highlightedPaymentId === payment.id && "ring-4 ring-indigo-500 ring-offset-2 scale-[1.02] shadow-2xl z-10 bg-indigo-50/50 border-indigo-200"
                     )}
                   >
-                    <div className="flex items-center gap-4">
+                    {isLate && <div className={cn("absolute top-0 left-0 h-full bg-rose-500", isSub ? "w-1" : "w-1.5")} />}
+                    <div className="flex items-center gap-5">
                         <div className="flex items-center justify-center min-w-0">
                           <div className={cn(
-                            "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0",
-                            p.type === 'agreement' ? "bg-blue-100 text-blue-600" : 
-                            p.type === 'deposit' ? "bg-amber-100 text-amber-600" : 
-                            "bg-indigo-100 text-indigo-600"
+                            "rounded-2xl flex items-center justify-center shrink-0 shadow-sm transition-transform duration-300 group-hover:scale-110",
+                            isSub ? "w-10 h-10" : "w-14 h-14",
+                            payment.type === 'agreement' ? "bg-blue-50 text-blue-600 border border-blue-100" : 
+                            payment.type === 'deposit' ? "bg-amber-50 text-amber-600 border border-amber-100" : 
+                            "bg-indigo-50 text-indigo-600 border border-indigo-100"
                           )}>
-                            {p.type === 'agreement' ? <FileText className="w-6 h-6" /> : 
-                             p.type === 'deposit' ? <ShieldCheck className="w-6 h-6" /> : 
-                             <Home className="w-6 h-6" />}
+                            {payment.type === 'agreement' ? <FileText className={isSub ? "w-5 h-5" : "w-7 h-7"} /> : 
+                             payment.type === 'deposit' ? <ShieldCheck className={isSub ? "w-5 h-5" : "w-7 h-7"} /> : 
+                             <Home className={isSub ? "w-5 h-5" : "w-7 h-7"} />}
                           </div>
                         </div>
                         <div>
-                          <div className="flex items-center flex-wrap gap-2 mb-0.5">
-                            <h3 className="font-bold text-slate-900">{property?.name}</h3>
+                          <div className="flex items-center flex-wrap gap-2 mb-1">
+                            {!isSub && <h3 className="font-black text-slate-900 tracking-tight text-base">{propertyName}</h3>}
+                            {isSub && <h3 className="font-bold text-slate-700 tracking-tight text-sm">Parcela Subsequente</h3>}
                             <span className={cn(
-                              "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-                              p.type === 'agreement' ? "bg-blue-100 text-blue-700" : 
-                              p.type === 'deposit' ? "bg-amber-100 text-amber-700 border border-amber-200" : 
-                              "bg-indigo-100 text-indigo-700"
+                              "px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border shadow-sm",
+                              payment.type === 'agreement' ? "bg-blue-50 text-blue-700 border-blue-200" : 
+                              payment.type === 'deposit' ? "bg-amber-50 text-amber-700 border-amber-200" : 
+                              "bg-indigo-50 text-indigo-700 border-indigo-200"
                             )}>
-                              {p.type === 'agreement' ? 'Acordo' : p.type === 'deposit' ? 'Caução (Garantia)' : 'Aluguel'}
+                              {payment.type === 'agreement' ? 'Acordo' : payment.type === 'deposit' ? 'Garantia' : 'Aluguel'}
                             </span>
                             {isLate && (
-                            <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px] font-bold uppercase tracking-wider">
+                            <span className="px-2.5 py-1 rounded-full bg-rose-500 text-white text-[9px] font-black uppercase tracking-widest shadow-md shadow-rose-200 animate-pulse">
                               Atrasado
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-3 text-xs text-slate-500">
-                          <button 
-                            onClick={() => tenant && onOpenTenantDetail(tenant)}
-                            className="flex items-center gap-1 hover:text-primary transition-colors font-medium"
-                          >
-                            <UserIcon className="w-3 h-3" /> {tenant?.name}
-                          </button>
-                          <span className="text-slate-300">|</span>
-                          <span className="flex items-center gap-1">
-                            <Calendar className="w-3 h-3" /> Vence em {format(parseISO(p.dueDate), 'dd/MM/yyyy')}
-                          </span>
+                        <div className="flex items-center gap-4 text-[10px] text-slate-500 mt-2">
+                           <span className="flex items-center gap-1 font-bold">
+                             <Calendar className="w-3 h-3" /> Vence em {format(parseISO(payment.dueDate), 'dd/MM/yyyy')}
+                           </span>
+                           {payment.description && (
+                             <>
+                               <span className="text-slate-300">|</span>
+                               <span className="truncate max-w-[150px] italic">{payment.description}</span>
+                             </>
+                           )}
                         </div>
-                        {p.description && (
-                          <p className="text-[10px] text-slate-400 mt-1 italic">{p.description}</p>
-                        )}
                       </div>
                     </div>
 
                     <div className="flex items-center justify-between sm:justify-end gap-6 border-t sm:border-none pt-3 sm:pt-0">
                       <div className="text-right">
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor a Receber</p>
-                        <p className="text-lg font-bold text-slate-900">R$ {p.amount.toLocaleString()}</p>
+                        <p className="text-lg font-bold text-slate-900">R$ {payment.amount.toLocaleString()}</p>
                       </div>
-                      <Button 
-                        className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-lg shadow-emerald-200/50 font-bold px-6"
-                        onClick={() => {
-                          setConfirmingPayment(p);
-                          setIsPaymentModalOpen(true);
-                        }}
-                      >
-                        Confirmar
-                      </Button>
+                      <div className="flex gap-2">
+                        {tenant && tenant.contact && (
+                          <a
+                            href={getWhatsAppLink(
+                              tenant.contact, 
+                              `Olá ${tenant.name.split(' ')[0]}, ${isLate ? 'identificamos que o' : 'lembramos que o'} pagamento de R$ ${payment.amount.toLocaleString()} referente a ${property?.name || 'aluguel'} ${isLate ? 'está em atraso.' : `vence no dia ${format(parseISO(payment.dueDate), 'dd/MM/yyyy')}.`} Por favor, em caso de dúvida entre em contato.`
+                            )}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="h-10 px-4 sm:px-3 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white border border-emerald-200 hover:border-emerald-500 rounded-xl flex items-center justify-center transition-colors shadow-sm"
+                            title="Enviar cobrança via WhatsApp"
+                          >
+                            <MessageSquare className="w-5 h-5 sm:w-4 sm:h-4" />
+                          </a>
+                        )}
+                        <Button 
+                          size={isSub ? "sm" : "md"}
+                          className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-lg shadow-emerald-200/50 font-bold px-6"
+                          onClick={() => {
+                            setConfirmingPayment(payment);
+                            setIsPaymentModalOpen(true);
+                          }}
+                        >
+                          Confirmar
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 );
-              })
-            ) : (
+              };
+
+              return (
+                <div key={`group-${p.propertyId}`} className="relative border border-slate-100 rounded-3xl bg-slate-50/50 shadow-sm p-1.5 flex flex-col">
+                   {renderPayment(p, false)}
+                   
+                   {hasMore && (
+                     <div className="px-2 pt-2 pb-1 bg-transparent flex justify-center">
+                       <button onClick={toggleGroup} className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-indigo-600 hover:text-indigo-800 transition-colors p-2 bg-indigo-50/50 hover:bg-indigo-100 rounded-full">
+                         {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                         {isExpanded ? "Ocultar Parcelas" : `Ver Mais ${restPayments.length} Parcela${restPayments.length > 1 ? 's' : ''}`}
+                       </button>
+                     </div>
+                   )}
+                   
+                   <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="pl-6 sm:pl-12 pr-2 pb-2 space-y-2 mt-2">
+                          <div className="w-px h-full absolute left-6 sm:left-12 top-20 bg-indigo-100 -z-10" />
+                          {restPayments.map(rp => renderPayment(rp, true))}
+                        </div>
+                      </motion.div>
+                    )}
+                   </AnimatePresence>
+                </div>
+              );
+            })
+          ) : (
               <div className="text-center py-20 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
                 <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
                   <CheckCircle2 className="w-10 h-10 text-slate-200" />
@@ -3941,59 +5517,75 @@ const ReceivablesView = ({
             )}
           </div>}
 
-          {activeTab === 'receipts' && <div className="space-y-4">
-            {filteredPaidPayments.length > 0 ? (
-              filteredPaidPayments.map(p => {
-                const tenant = tenants.find(t => t.id === p.tenantId);
-                const property = properties.find(pr => pr.id === p.propertyId);
-                
-                return (
-                  <div 
-                    key={p.id} 
-                    className="p-4 rounded-2xl border bg-slate-50/50 border-slate-100 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                  >
-                    <div className="flex items-center gap-4 opacity-75">
-                      <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 bg-slate-200 text-slate-500">
-                        {p.type === 'agreement' ? <FileText className="w-6 h-6" /> : <Home className="w-6 h-6" />}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <h3 className="font-bold text-slate-900 line-through decoration-slate-300">{property?.name}</h3>
-                          <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-600 text-[10px] font-bold uppercase tracking-wider">
-                            Recebido
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 text-xs text-slate-500">
-                          <span className="flex items-center gap-1 font-medium">
-                            <UserIcon className="w-3 h-3" /> {tenant?.name}
-                          </span>
-                          <span className="text-slate-300">|</span>
-                          <span className="flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-500" /> {p.paidDate ? format(parseISO(p.paidDate), 'dd/MM/yyyy') : 'Pago'}
-                          </span>
-                        </div>
-                        {p.description && (
-                          <p className="text-[10px] text-slate-400 mt-1 italic">{p.description}</p>
-                        )}
-                      </div>
-                    </div>
+          {activeTab === 'receipts' && <div className="space-y-8">
+            {groupedPaidPayments.length > 0 ? (
+              groupedPaidPayments.map(group => (
+                <div key={group.month} className="space-y-4">
+                  <h3 className="text-lg font-black text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-2">
+                    <Calendar className="w-5 h-5 text-indigo-500" />
+                    {group.month}
+                    <span className="ml-2 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-bold">
+                      {group.payments.length} recebimentos
+                    </span>
+                  </h3>
+                  <div className="space-y-3">
+                    {group.payments.map(p => {
+                      const tenant = tenants.find(t => t.id === p.tenantId);
+                      const property = properties.find(pr => pr.id === p.propertyId);
+                      const tenantName = tenant?.name || p.tenantNameSnapshot || 'Inquilino Excluído';
+                      const propertyName = property?.name || p.propertyNameSnapshot || 'Imóvel Excluído';
+                      
+                      return (
+                        <div 
+                          key={p.id} 
+                          className="p-4 rounded-2xl border bg-white border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md hover:shadow-indigo-500/5 group flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
+                        >
+                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500"></div>
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 bg-slate-50 text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors">
+                              {p.type === 'agreement' ? <FileText className="w-6 h-6" /> : <Home className="w-6 h-6" />}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2 mb-0.5">
+                                <h3 className="font-bold text-slate-900 group-hover:text-indigo-900 transition-colors">{propertyName}</h3>
+                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wider">
+                                  Recebido
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-3 text-xs text-slate-500">
+                                <span className="flex items-center gap-1 font-medium text-slate-700">
+                                  <UserIcon className="w-3 h-3" /> {tenantName}
+                                </span>
+                                <span className="text-slate-300">|</span>
+                                <span className="flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Pago em: {p.paidDate ? format(parseISO(p.paidDate), 'dd/MM/yyyy') : 'N/A'}
+                                </span>
+                              </div>
+                              {p.description && (
+                                <p className="text-[10px] text-slate-400 mt-1">{p.description}</p>
+                              )}
+                            </div>
+                          </div>
 
-                    <div className="flex items-center justify-between sm:justify-end gap-6 border-t sm:border-none pt-3 sm:pt-0">
-                      <div className="text-right">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor Recebido</p>
-                        <p className="text-lg font-bold text-slate-600 line-through decoration-slate-300">R$ {p.amount.toLocaleString()}</p>
-                      </div>
-                      <Button 
-                        variant="outline"
-                        className="gap-2 font-bold px-6"
-                        onClick={() => setReceiptModalPayment(p)}
-                      >
-                        <Receipt className="w-4 h-4" /> Gerar Recibo
-                      </Button>
-                    </div>
+                          <div className="flex items-center justify-between sm:justify-end gap-6 border-t sm:border-none pt-3 sm:pt-0">
+                            <div className="text-right">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor Recebido</p>
+                              <p className="text-lg font-black text-slate-800 group-hover:text-indigo-600 transition-colors">R$ {p.amount.toLocaleString()}</p>
+                            </div>
+                            <Button 
+                              variant="outline"
+                              className="gap-2 font-bold px-6 border-slate-200 text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 hover:border-indigo-200"
+                              onClick={() => setReceiptModalPayment(p)}
+                            >
+                              <Receipt className="w-4 h-4" /> Recibo
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })
+                </div>
+              ))
             ) : (
               <div className="text-center py-20 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
                 <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
@@ -4030,7 +5622,7 @@ const ReceivablesView = ({
                  </button>
                </div>
 
-               <div className="p-8 bg-white border-2 border-slate-100 rounded-[2rem] shadow-sm print:border-none print:p-0">
+               <div id="receipt-content" className="p-8 bg-white border-2 border-slate-100 rounded-[2rem] shadow-sm print:border-none print:p-0">
                  {receiptType === 'simple' ? (
                    <>
                      <div className="text-center space-y-2 border-b-2 border-dashed border-slate-100 pb-8 print:pb-6 mb-8 print:mb-6">
@@ -4167,7 +5759,12 @@ const ReceivablesView = ({
                        <p className="leading-relaxed mt-2">
                          Referente ao pagamento de '{receiptModalPayment.description || (receiptModalPayment.type === 'rent' ? 'Aluguel' : 'Acordo')}' do imóvel descrito acima, correspondente ao período com vencimento em:
                        </p>
-                       <p className="font-medium"><strong>{format(parseISO(receiptModalPayment.dueDate), 'dd/MM/yyyy')}</strong></p>
+                       <p className="font-medium"><strong>{format(parseISO(receiptModalPayment.dueDate), 'dd/MM/yyyy')}</strong>
+                        {receiptModalPayment.originalDueDate && (
+                          <span className="block text-[10px] mt-1 bg-amber-50 text-amber-800 border border-amber-200 rounded px-1.5 py-0.5 font-semibold print:bg-transparent print:border-amber-500">
+                            (Vencimento original: {format(parseISO(receiptModalPayment.originalDueDate), 'dd/MM/yyyy')} coincidia com fim de semana ou feriado e foi alterado para o próximo dia útil)
+                          </span>
+                        )}</p>
                      </div>
 
                      <div className="space-y-4">
@@ -4266,14 +5863,358 @@ const ReceivablesView = ({
                  )}
                </div>
                
-               <div className="flex justify-end gap-3 print:hidden">
+               <div className="flex flex-wrap justify-end gap-3 print:hidden">
                  <Button variant="outline" onClick={() => { setReceiptModalPayment(null); setReceiptType('simple'); }}>Fechar</Button>
-                 <Button className="bg-slate-900 text-white" onClick={() => window.print()}> <Receipt className="w-4 h-4 mr-2" /> Imprimir / Salvar PDF</Button>
+                 <Button variant="outline" className="border-slate-300 text-slate-700" onClick={() => window.print()}> <Receipt className="w-4 h-4 mr-2" /> Imprimir</Button>
+                 <Button className="bg-slate-900 text-white" onClick={handleDownloadPDF} disabled={isGeneratingPDF}> 
+                   {isGeneratingPDF ? (
+                     <div className="w-4 h-4 mr-2 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                   ) : (
+                     <Download className="w-4 h-4 mr-2" />
+                   )}
+                   {isGeneratingPDF ? 'Gerando...' : 'Baixar PDF'}
+                 </Button>
                </div>
              </div>
            );
         })()}
       </Modal>
+    </div>
+  );
+};
+
+interface AlertsViewProps {
+  properties: Property[];
+  tenants: Tenant[];
+  payments: Payment[];
+  agreements: Agreement[];
+  tickets: Ticket[];
+  contracts: Contract[];
+  isAlertSnoozed: (id: string) => boolean;
+  handleSnoozeAlert: (id: string) => void;
+  handleNavigate: (tab: any, highlightId?: string) => void;
+  openJustifyRenovation: (p: Property) => void;
+}
+
+const AlertsView = ({ properties, tenants, payments, agreements, tickets, contracts, isAlertSnoozed, handleSnoozeAlert, handleNavigate, openJustifyRenovation }: AlertsViewProps) => {
+  const alerts = useMemo(() => {
+    const list: { id: string; priority: 'high' | 'medium' | 'low'; type: 'critical' | 'warning' | 'info'; category: string; title: string; description: React.ReactNode; icon: any; action?: { label: string; tab?: string; highlightId?: string; onClick?: () => void } }[] = [];
+    const today = new Date();
+
+    // 0.5 Contracts Expiration Alerts (30 days, 15 days, 5 days daily, and expired)
+    contracts.forEach(contract => {
+      if (contract.status === 'active' && contract.endDate) {
+        const endDate = parseISO(contract.endDate);
+        const diffDays = differenceInDays(endDate, startOfDay(today));
+        const tenant = tenants.find(t => t.id === contract.tenantId);
+        const property = properties.find(p => p.id === contract.propertyId);
+
+        if (diffDays >= 0) {
+          if (diffDays <= 30 && diffDays > 15) {
+            list.push({
+              id: `contract-exp-30-${contract.id}`,
+              priority: 'medium',
+              type: 'warning',
+              category: 'Vencimento de Contrato',
+              title: tenant?.name || 'Contrato',
+              description: <span>Falta menos de um mês (<strong className="font-bold">{diffDays} dias</strong>) para o vencimento do contrato de locação do imóvel <strong className="font-bold">{property?.name || ''}</strong>. (Vence em {format(endDate, 'dd/MM/yyyy')}).</span>,
+              icon: FileWarning,
+              action: { label: 'Ver Contratos', tab: 'contracts', highlightId: contract.id }
+            });
+          } else if (diffDays <= 15 && diffDays > 5) {
+            list.push({
+              id: `contract-exp-15-${contract.id}`,
+              priority: 'medium',
+              type: 'warning',
+              category: 'Vencimento de Contrato',
+              title: tenant?.name || 'Contrato',
+              description: <span>Atenção: Faltam apenas <strong className="font-bold">{diffDays} dias</strong> para o vencimento do contrato de locação do imóvel <strong className="font-bold">{property?.name || ''}</strong>. (Vence em {format(endDate, 'dd/MM/yyyy')}).</span>,
+              icon: FileWarning,
+              action: { label: 'Ver Contratos', tab: 'contracts', highlightId: contract.id }
+            });
+          } else if (diffDays <= 5) {
+            list.push({
+              id: `contract-exp-daily-${contract.id}-${diffDays}`,
+              priority: 'high',
+              type: 'critical',
+              category: 'Aviso Urgente: Contrato Vencendo',
+              title: tenant?.name || 'Contrato',
+              description: diffDays === 0
+                ? <span>O contrato de aluguel do imóvel <strong className="font-bold">{property?.name || ''}</strong> <span className="text-rose-600 font-extrabold uppercase">VENCE HOJE!</span> Renove ou regularize imediatamente.</span>
+                : <span>Alerta Diário: Faltam apenas <strong className="font-bold text-rose-600">{diffDays} dias</strong> para o contrato do imóvel <strong className="font-bold">{property?.name || ''}</strong> vencer. (Vence em {format(endDate, 'dd/MM/yyyy')}).</span>,
+              icon: AlertTriangle,
+              action: { label: 'Ver Contratos', tab: 'contracts', highlightId: contract.id }
+            });
+          }
+        } else {
+          list.push({
+            id: `contract-expired-${contract.id}`,
+            priority: 'high',
+            type: 'critical',
+            category: 'Contrato Vencido',
+            title: tenant?.name || 'Contrato',
+            description: <span>O contrato de aluguel do imóvel <strong className="font-bold">{property?.name || ''}</strong> está expirado desde {format(endDate, 'dd/MM/yyyy')} (<strong className="text-rose-600">{Math.abs(diffDays)} dias vencido</strong>).</span>,
+            icon: AlertTriangle,
+            action: { label: 'Ver Contratos', tab: 'contracts', highlightId: contract.id }
+          });
+        }
+      }
+    });
+
+    // 1. Documents (High/Medium)
+    properties.forEach(prop => {
+      if (prop.documents) {
+        prop.documents.forEach(doc => {
+          if (doc.status === 'expired') {
+            list.push({ id: `doc-exp-${prop.id}-${doc.id}`, priority: 'high', type: 'critical', category: 'Documento Expirado', title: prop.name, description: <span>O documento <strong className="font-bold">{doc.name}</strong> está expirado. {doc.isRequired && <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 text-[9px] font-black tracking-widest uppercase">Obrigatório</span>}</span>, icon: FileWarning, action: { label: 'Atualizar Imóvel', tab: 'properties', highlightId: `property-${prop.id}` } });
+          } else if (doc.status === 'missing') {
+            list.push({ id: `doc-mis-${prop.id}-${doc.id}`, priority: doc.isRequired ? 'high' : 'medium', type: 'warning', category: 'Documento Pendente', title: prop.name, description: <span>Falta anexar o documento <strong className="font-bold">{doc.name}</strong>. {doc.isRequired && <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 text-[9px] font-black tracking-widest uppercase">Obrigatório</span>}</span>, icon: FileQuestion, action: { label: 'Editar Documentos', tab: 'properties', highlightId: `property-${prop.id}` } });
+          }
+        });
+      }
+      
+      // Properties under renovation > 1 week without updates
+      if (prop.status === 'renovation' && prop.updatedAt) {
+          const updateDate = parseISO(prop.updatedAt);
+          const diffDays = differenceInDays(today, updateDate);
+          if (diffDays > 7) {
+              list.push({
+                  id: `prop-maint-${prop.id}`,
+                  priority: 'medium',
+                  type: 'warning',
+                  category: 'Reforma Prolongada',
+                  title: prop.name,
+                  description: `O imóvel está em reforma há ${diffDays} dias sem nenhuma atualização registrada no sistema.`,
+                  icon: Home,
+                  action: { label: 'Justificar Demora', onClick: () => openJustifyRenovation(prop) }
+              });
+          }
+      }
+    });
+
+    // 2. Tenants (Low/Info)
+    tenants.forEach(tenant => {
+        if (tenant.status === 'waiting') {
+            list.push({
+                id: `tenant-prospect-${tenant.id}`,
+                priority: 'low',
+                type: 'info',
+                category: 'Inquilino Sem Alocação',
+                title: tenant.name,
+                description: 'Este inquilino está cadastrado mas ainda não foi alocado em nenhum imóvel.',
+                icon: Users,
+                action: { label: 'Alocar Inquilino', tab: 'tenants', highlightId: `tenant-${tenant.id}` }
+            });
+        }
+    });
+
+    // 3. Late Payments (High/Critical)
+    const todayStr = format(today, 'yyyy-MM-dd');
+    const latePayments = payments.filter(p => p.status === 'late' || (p.status === 'pending' && p.dueDate < todayStr));
+    latePayments.forEach(p => {
+        const tenant = tenants.find(t => t.id === p.tenantId);
+        const property = properties.find(pr => pr.id === p.propertyId);
+        list.push({
+            id: `pay-late-${p.id}`,
+            priority: 'high',
+            type: 'critical',
+            category: 'Pagamento em Atraso',
+            title: tenant?.name || 'Inquilino',
+            description: <span>Atraso do valor <strong className="font-bold text-rose-600">R$ {p.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong> referente a {p.type === 'rent' ? 'Aluguel' : p.type === 'agreement' ? 'Acordo' : 'Garantia'} do imóvel {property?.name || ''}.</span>,
+            icon: AlertTriangle,
+            action: { label: 'Ver Cobrança', tab: 'receivables', highlightId: p.id }
+        });
+    });
+
+    // 4. Upcoming Agreement Payments (Info)
+    const nextAgreements = payments.filter(p => p.type === 'agreement' && p.status === 'pending');
+    nextAgreements.forEach(p => {
+        const dueDate = parseISO(p.dueDate);
+        const diffDays = differenceInDays(dueDate, today);
+        if (diffDays >= 0 && diffDays <= 7) {
+            const tenant = tenants.find(t => t.id === p.tenantId);
+            list.push({
+                id: `agr-next-${p.id}`,
+                priority: 'low',
+                type: 'info',
+                category: 'Lembrete de Acordo',
+                title: tenant?.name || 'Inquilino',
+                description: <span>A parcela do acordo no valor de <strong className="font-bold">R$ {p.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong> vencerá em {diffDays === 0 ? 'hoje' : diffDays === 1 ? 'amanhã' : `${diffDays} dias`}.</span>,
+                icon: FileText,
+                action: { label: 'Ver Parcela', tab: 'receivables', highlightId: p.id }
+            });
+        }
+    });
+
+    // 5. Tickets (Chamados / Manutenção) with SLA
+    tickets.forEach(ticket => {
+        if (ticket.status === 'open' || ticket.status === 'in_progress') {
+            const created = parseISO(ticket.createdAt || new Date().toISOString());
+            const slaDate = addDays(created, ticket.slaDays);
+            const daysToSla = differenceInDays(slaDate, today);
+            
+            let type: 'critical' | 'warning' | 'info' = 'info';
+            let priority: 'high' | 'medium' | 'low' = 'low';
+            
+            if (daysToSla < 0) {
+                type = 'critical';
+                priority = 'high';
+            } else if (daysToSla <= 2) {
+                type = 'warning';
+                priority = 'medium';
+            }
+
+            const tenant = tenants.find(t => t.id === ticket.tenantId);
+            const property = properties.find(p => p.id === ticket.propertyId);
+            
+            list.push({
+                id: `ticket-${ticket.id}`,
+                priority,
+                type,
+                category: 'Chamado de Manutenção',
+                title: `${ticket.title} - ${property?.name || ''}`,
+                description: daysToSla < 0 
+                  ? `SLA estourado há ${Math.abs(daysToSla)} dia(s)! Iniciado por ${tenant?.name || 'Inquilino'}.` 
+                  : `Faltam ${daysToSla} dia(s) para o limite da solução. Iniciado por ${tenant?.name || 'Inquilino'}.`,
+                icon: AlertTriangle,
+                action: { label: 'Acessar Chamados', tab: 'tickets' }
+            });
+        }
+    });
+
+    // 6. Dica Semanal (Info)
+    const currentWeekTime = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000));
+    const tips = [
+      "Cadastre todos os documentos obrigatórios dos seus imóveis no Hub Estratégico (Documentos & Auditoria) para evitar problemas.",
+      "Use o Consultor Jurídico IA no Hub Estratégico para esclarecer dúvidas sobre a Lei do Inquilinato antes de assinar contratos.",
+      "Vai registrar dezenas de imóveis? Use a 'Importação em Lote' no Hub Estratégico colando os dados direto do Excel e poupe tempo.",
+      "Anexe comprovantes nos pagamentos. Se o Google Drive estiver conectado (Configurações), eles serão salvos automaticamente na nuvem.",
+      "Ao remover um inquilino, o sistema oferece a opção do Acerto Final onde você pode utilizar o saldo da caução e abater valores pendentes.",
+      "Recebeu um contrato antigo PDF ou imagem? Use o Leitor de Contratos via IA do Hub para extrair os dados de locação num piscar de olhos.",
+      "No módulo de Contratos Inteligentes, você pode gerar Modelos Padrão e até gerar cópias prontas em PDF de relatórios na Dashboard."
+    ];
+    const weeklyTip = tips[currentWeekTime % tips.length];
+    list.push({
+        id: `weekly-tip-${currentWeekTime}`,
+        priority: 'low',
+        type: 'info',
+        category: 'Dica do Gerente Imobiliário',
+        title: 'Dica da Semana',
+        description: weeklyTip,
+        icon: Sparkles
+    });
+
+    return list.sort((a, b) => {
+        const priorities = { high: 0, medium: 1, low: 2 };
+        return priorities[a.priority] - priorities[b.priority];
+    });
+  }, [properties, tenants, payments, agreements, tickets, contracts]);
+
+  return (
+    <div className="space-y-8 max-w-4xl mx-auto pb-8">
+      <header className="mb-4">
+        <h1 className="text-3xl font-bold tracking-tight text-slate-900 flex items-center gap-3">
+          <Bell className="w-8 h-8 text-amber-500" /> Inteligência e Alertas
+        </h1>
+        <p className="text-slate-500 mt-2">Visão geral inteligente de pendências, alertas e próximos passos da sua gestão.</p>
+      </header>
+      
+        {alerts.filter(a => !isAlertSnoozed(a.id)).length === 0 ? (
+          <Card className="p-12 border-dashed flex flex-col items-center text-center bg-slate-50/50">
+            <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-4">
+              <CheckCircle2 className="w-8 h-8" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900">Tudo Regularizado!</h3>
+            <p className="text-slate-500 mt-2">Sua gestão está impecável, não há nenhum alerta ou pendência no momento.</p>
+          </Card>
+        ) : (
+          <div className="grid gap-4">
+            {alerts.filter(a => !isAlertSnoozed(a.id)).map(alert => (
+              <Card key={alert.id} className={cn(
+                "p-5 border-l-4 transition-all hover:bg-slate-50 group relative cursor-pointer",
+                alert.type === 'critical' ? "border-l-rose-500" : 
+                alert.type === 'warning' ? "border-l-amber-500" : 
+                "border-l-blue-500"
+              )} onClick={() => {
+                handleSnoozeAlert(alert.id);
+                if (alert.action) {
+                  if (alert.action.onClick) {
+                    alert.action.onClick();
+                  } else if (alert.action.tab) {
+                    handleNavigate(alert.action.tab, alert.action.highlightId);
+                  }
+                }
+              }}>
+                {/* Action/Info Label */}
+                <div className="absolute top-4 right-4 flex gap-2">
+                  <span className={cn(
+                    "text-[10px] uppercase font-black tracking-widest px-2 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity",
+                    alert.action ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-500"
+                  )}>
+                    {alert.action ? "Ação" : "Info"}
+                  </span>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); handleSnoozeAlert(alert.id); }}
+                    className="p-1.5 bg-slate-100 hover:bg-emerald-100 text-slate-400 hover:text-emerald-600 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10"
+                    title="Marcar como Visualizado (Lembrarei em 2 dias se não resolvido)"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex sm:items-center flex-col sm:flex-row gap-4 mb-2">
+                  <div className={cn(
+                    "p-3 rounded-2xl shrink-0 self-start sm:self-auto",
+                    alert.type === 'critical' ? "bg-rose-100 text-rose-600" : 
+                    alert.type === 'warning' ? "bg-amber-100 text-amber-600" :
+                    "bg-blue-100 text-blue-600"
+                  )}>
+                    <alert.icon className="w-5 h-5" />
+                  </div>
+                  <div className="flex-1 pr-24">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className={cn(
+                          "text-[10px] uppercase font-black tracking-widest px-2 py-0.5 rounded-md",
+                          alert.type === 'critical' ? "bg-rose-50 text-rose-500" : 
+                          alert.type === 'warning' ? "bg-amber-50 text-amber-600" :
+                          "bg-blue-50 text-blue-500"
+                      )}>
+                          {alert.category}
+                      </span>
+                      <span className={cn(
+                        "text-[10px] uppercase font-bold px-2 py-0.5 rounded-md",
+                        alert.action ? "bg-indigo-50 text-indigo-600 border border-indigo-100" : "bg-slate-50 text-slate-500 border border-slate-100"
+                      )}>
+                        {alert.action ? "Requer Ação" : "Informativo"}
+                      </span>
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900 leading-tight">
+                      {alert.title}
+                    </h3>
+                    <p className="text-slate-600 text-sm mt-1 leading-relaxed">
+                      {alert.description}
+                    </p>
+                  </div>
+                </div>
+                {alert.action && (
+                  <div className="flex justify-start sm:justify-end mt-4">
+                    <Button variant={alert.type === 'critical' ? 'danger' : 'primary'} size="sm" className="w-full sm:w-auto" onClick={(e) => {
+                      e.stopPropagation();
+                      handleSnoozeAlert(alert.id);
+                      if (alert.action!.onClick) {
+                        alert.action!.onClick();
+                      } else if (alert.action!.tab) {
+                        handleNavigate(alert.action!.tab, alert.action!.highlightId);
+                      }
+                    }}>
+                      {alert.action.label} <ChevronRight className="w-4 h-4 ml-1" />
+                    </Button>
+                  </div>
+                )}
+              </Card>
+            ))}
+          </div>
+        )}
     </div>
   );
 };
@@ -4295,6 +6236,8 @@ interface SettingsViewProps {
   onConnectDrive: () => void;
   onDisconnectDrive: () => void;
   setPreviewReceipt: (preview: { url: string; name: string; isImage: boolean } | null) => void;
+  isInstallable: boolean;
+  handleInstallClick: () => void;
 }
 
 const SettingsView = ({ 
@@ -4313,10 +6256,137 @@ const SettingsView = ({
   driveError,
   onConnectDrive,
   onDisconnectDrive,
-  setPreviewReceipt
+  setPreviewReceipt,
+  isInstallable,
+  handleInstallClick
 }: SettingsViewProps) => {
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [newPasswordInput, setNewPasswordInput] = useState(securityPassword);
+  const [botLogs, setBotLogs] = useState<string[]>([]);
+  const [isBotRunning, setIsBotRunning] = useState(false);
+
+  // Suprimir erro de WebSocket do Vite no console para não confundir o usuário
+  useEffect(() => {
+    const originalError = console.error;
+    console.error = (...args) => {
+      if (typeof args[0] === 'string' && args[0].includes('[vite] failed to connect to websocket')) return;
+      originalError.apply(console, args);
+    };
+    return () => { console.error = originalError; };
+  }, []);
+
+  const startInstallBot = async () => {
+    setIsBotRunning(true);
+    setBotLogs(['🤖 Iniciando Diagnóstico Profundo...', '🔍 Verificando Kernels do Navegador...']);
+    
+    await new Promise(r => setTimeout(r, 1000));
+    
+    const logs: string[] = [];
+    
+    // Check 1: Secure Context
+    if (window.isSecureContext) {
+      logs.push('✅ Conexão Segura (HTTPS) detectada.');
+    } else {
+      logs.push('❌ ERRO: Conexão não segura. PWA requer HTTPS.');
+    }
+
+    // Check 1.5: Manifest
+    try {
+      const resp = await fetch('/manifest.json');
+      if (resp.ok) {
+        logs.push('✅ Manifesto (manifest.json) localizado e ok.');
+      } else {
+        logs.push(`❌ ERRO: Manifesto inacessível (${resp.status}).`);
+      }
+    } catch (e) {
+      logs.push('❌ ERRO: Falha ao validar manifesto via rede.');
+    }
+
+    // Check 1.6: Service Worker API
+    if ('serviceWorker' in navigator) {
+      logs.push('✅ Navegador suporta Service Workers.');
+      const regs = await navigator.serviceWorker.getRegistrations();
+      logs.push(`ℹ️ Protocolos SW ativos: ${regs.length}`);
+      
+      // Tentar re-registrar o SW se estiver zero
+      if (regs.length === 0) {
+        logs.push('⚙️ Tentando registrar Service Worker forçadamente...');
+        try {
+          await navigator.serviceWorker.register('/sw.js?v=71');
+          logs.push('✅ SW registrado forçadamente!');
+        } catch (e: any) {
+          logs.push(`❌ Erro ao registrar SW: ${e.message}`);
+        }
+      }
+    } else {
+      logs.push('❌ ERRO: Navegador não suporta Service Workers.');
+    }
+
+    // Check 2: Iframe
+    if (window !== window.parent) {
+      logs.push('❌ BLOQUEIO: App rodando em Iframe (Editor).');
+      logs.push('💡 RESOLUÇÃO: Clique no ícone de "Abrir em nova aba" no topo direito do painel de desenvolvimento.');
+      setBotLogs(prev => [...prev, ...logs]);
+      setIsBotRunning(false);
+      return;
+    }
+
+    // Check 3: Standalone
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
+    if (isStandalone) {
+      logs.push('✨ SISTEMA: O App já está rodando como Nativo.');
+      setBotLogs(prev => [...prev, ...logs]);
+      setIsBotRunning(false);
+      return;
+    }
+
+    // Check 4: Install Signal
+    if ((window as any).deferredPWA) {
+      logs.push('✅ SINAL VERDE: O navegador já enviou o convite de instalação.');
+    } else {
+      logs.push('⏳ AGUARDANDO: O navegador ainda não liberou o convite de instalação.');
+      logs.push('💡 DICA: O navegador pode demorar alguns segundos após o SW estar ativo.');
+    }
+
+    logs.push('🚀 Disparando gatilho de instalação nativa...');
+    setBotLogs(prev => [...prev, ...logs]);
+
+    setTimeout(() => {
+      try {
+        if ((window as any).deferredPWA) {
+          setBotLogs(prev => [...prev, '⚙️ Executando popup de instalação...']);
+          handleInstallClick();
+          setBotLogs(prev => [...prev, '✅ Gatilho processado.']);
+          setIsBotRunning(false);
+        } else {
+          setBotLogs(prev => [
+            ...prev, 
+            '⚠️ IMPEDIMENTO: O sinal da instalação não ocorreu.',
+            'ℹ️ O Chrome exige que a página seja recarregada para liberar a instalação.',
+            '🔄 Recarregando a página em 4 segundos...'
+          ]);
+          
+          setTimeout(() => {
+            window.location.href = window.location.origin + window.location.pathname + '?pwa_repair=v71&t=' + Date.now();
+          }, 4000);
+        }
+      } catch(e: any) {
+        setBotLogs(prev => [...prev, `❌ Falha crítica: ${e.message}`]);
+        setIsBotRunning(false);
+      }
+    }, 2000);
+  };
+
+  const copyLogsToClipboard = () => {
+    const text = botLogs.join('\n');
+    navigator.clipboard.writeText(text);
+    toast.success('Logs copiados!');
+  };
+
+  const openInNewTab = () => {
+    const url = window.location.origin + window.location.pathname;
+    window.open(url, '_blank');
+  };
 
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [profileName, setProfileName] = useState(user?.displayName || '');
@@ -4415,23 +6485,142 @@ const SettingsView = ({
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Card className="p-6 border border-emerald-200 bg-emerald-50/50 flex flex-col items-start text-left relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
+              <Download className="w-24 h-24 text-emerald-500" />
+            </div>
+            <h3 className="text-base font-black mb-2 flex items-center gap-2 text-emerald-900 z-10 uppercase tracking-tight">
+              <Download className="w-5 h-5 text-emerald-600" /> Aplicativo Nativo (PWA)
+            </h3>
+            <p className="text-sm text-emerald-800/80 mb-6 flex-1 w-full text-left z-10 leading-relaxed font-medium">
+              Transforme este sistema em um aplicativo real no seu celular ou computador. Rápido, seguro e sem ocupar espaço.
+            </p>
+            
+            {isInstallable ? (
+              <div className="w-full space-y-4 z-10">
+                <Button 
+                  onClick={handleInstallClick}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black h-14 shadow-xl shadow-emerald-200 transition-all duration-300 rounded-2xl text-lg animate-pulse border-b-4 border-emerald-800"
+                >
+                  <Download className="w-6 h-6 mr-3" /> INSTALAR AGORA
+                </Button>
+                <div className="p-3 bg-emerald-100/50 rounded-xl border border-emerald-200 flex items-center justify-center gap-2">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
+                  <p className="text-[10px] text-emerald-800 font-black uppercase tracking-widest">Sinal de Instalação Liberado</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-6 w-full z-10">
+                <div className="bg-white/90 backdrop-blur-md p-5 rounded-2xl border border-emerald-100 shadow-sm space-y-4">
+                   <div className="flex items-center justify-between border-b border-emerald-50 pb-3">
+                     <h4 className="text-xs font-black text-emerald-900 uppercase tracking-widest flex items-center gap-2">
+                       <ShieldCheck className="w-4 h-4 text-emerald-500" /> Compatibilidade
+                     </h4>
+                     {window.isSecureContext ? (
+                       <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[9px] font-black uppercase">Seguro</span>
+                     ) : (
+                       <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[9px] font-black uppercase">Inseguro</span>
+                     )}
+                   </div>
+                   
+                   <ul className="text-[11px] text-slate-600 space-y-3 font-medium">
+                     <li className="flex gap-3">
+                       <div className="w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center text-[10px] font-black shrink-0">1</div>
+                       <span><strong>Abrir em Nova Guia:</strong> Se estiver no editor, saia do Iframe para instalar.</span>
+                     </li>
+                     <li className="flex gap-3">
+                       <div className="w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center text-[10px] font-black shrink-0">2</div>
+                       <span><strong>Menu Lateral:</strong> Clique nos <strong>3 pontos</strong> do Chrome e em <strong>"Instalar aplicativo"</strong>.</span>
+                     </li>
+                     <li className="flex gap-3">
+                       <div className="w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center text-[10px] font-black shrink-0">3</div>
+                       <span><strong>iPhone (iOS):</strong> Use o botão <strong>Compartilhar</strong> {'>'} <strong>Adicionar à Tela de Início</strong>.</span>
+                     </li>
+                   </ul>
+                   
+                   {!isInstallable && !window.matchMedia('(display-mode: standalone)').matches && (
+                     <div className="pt-2">
+                       <p className="text-[10px] text-slate-400 font-bold leading-tight italic">
+                         Nota: Se as opções acima não aparecerem, seu navegador pode não suportar IA-PWA nativo no momento.
+                       </p>
+                     </div>
+                   )}
+                </div>
+                
+                {!window.matchMedia('(display-mode: standalone)').matches && (
+                  <div className="space-y-3">
+                    <Button 
+                      variant="outline"
+                      onClick={openInNewTab}
+                      className="w-full border-2 border-indigo-200 text-indigo-700 bg-white hover:bg-indigo-50 font-black h-12 transition-all duration-300 shadow-sm rounded-xl"
+                    >
+                      <ExternalLink className="w-4 h-4 mr-2" /> ABRIR EM NOVA ABA (ESSENCIAL)
+                    </Button>
+
+                    <Button 
+                      variant="outline"
+                      disabled={isBotRunning}
+                      onClick={startInstallBot}
+                      className="w-full border-2 border-emerald-200 text-emerald-700 bg-white hover:bg-emerald-50 font-black h-12 transition-all duration-300 shadow-sm rounded-xl"
+                    >
+                      {isBotRunning ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-4 h-4 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+                          REVERSANDO KERNEL...
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-4 h-4 fill-emerald-500" /> FORÇAR REPARO DE INSTALAÇÃO
+                        </div>
+                      )}
+                    </Button>
+                    
+                    <p className="text-[9px] text-slate-400 text-center uppercase font-bold tracking-tighter">
+                      O robô irá limpar caches travados e forçar o navegador a liberar o download.
+                    </p>
+                  </div>
+                )}
+
+                {botLogs.length > 0 && (
+                  <div className="w-full bg-slate-900 rounded-2xl p-4 max-h-48 overflow-y-auto font-mono text-[10px] text-emerald-400 space-y-2 shadow-2xl border border-slate-700 relative group">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                        <span className="text-[9px] font-bold text-slate-500 uppercase">Console do Robô</span>
+                      </div>
+                      <button 
+                        onClick={copyLogsToClipboard}
+                        className="text-[9px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-600 transition-colors"
+                      >
+                        COPIAR LOGS
+                      </button>
+                    </div>
+                    {botLogs.map((log, i) => (
+                      <div key={i} className={cn("flex gap-2", log.includes('❌') ? 'text-red-400' : log.includes('⚠️') ? 'text-amber-400' : 'text-emerald-400')}>
+                        <span className="opacity-40">{'>'}</span>
+                        <span className="select-text">{log}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+
           <Card className="p-6 border border-slate-200 flex flex-col items-start text-left">
             <h3 className="text-base font-bold mb-2 flex items-center gap-2 text-slate-900">
-              <Cloud className="w-5 h-5 text-emerald-500" /> Integração Google Drive
+              <Cloud className="w-5 h-5 text-emerald-500" /> Sincronização Google Drive
             </h3>
-            <p className="text-sm text-slate-500 mb-6 flex-1 w-full text-left">
-              {isDriveConnected ? 'Status: Conectado. O sistema pode ler e salvar comprovantes e recibos.' : 'Conecte para salvar e visualizar arquivos de forma segura.'}
+            <p className="text-sm text-slate-500 mb-2 flex-1 w-full text-left">
+              A sincronização com o Google Drive agora acontece automaticamente durante o login.
             </p>
-            {!isDriveConnected ? (
-              <Button className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10" onClick={onConnectDrive}>
-                <Cloud className="w-4 h-4 mr-2" /> Conectar Google Drive
-              </Button>
-            ) : (
-              <Button className="w-full font-bold h-10" variant="outline" onClick={onDisconnectDrive}>
-                <CloudOff className="w-4 h-4 mr-2"/> Desconectar Drive
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              <span className={cn("w-2.5 h-2.5 rounded-full", isDriveConnected ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" : "bg-slate-300")} />
+              <p className="text-xs font-bold text-slate-700">
+                {isDriveConnected ? 'Status: Conectado. Comprovantes e recibos são salvos automaticamente.' : 'Status: Desconectado. Faça login novamente para liberar o acesso ao Drive.'}
+              </p>
+            </div>
             {driveError && <p className="text-[10px] text-red-500 mt-2 font-medium bg-red-50 p-2 rounded-lg w-full text-left">{driveError}</p>}
           </Card>
         </div>
@@ -4459,11 +6648,13 @@ const SettingsView = ({
                       agreements.map(a => {
                         const prop = properties.find(p => p.id === a.propertyId);
                         const tenant = tenants.find(t => t.id === a.tenantId);
+                        const propertyName = prop?.name || a.propertyNameSnapshot || 'Imóvel Excluído';
+                        const tenantName = tenant?.name || a.tenantNameSnapshot || 'Inquilino Excluído';
                         return (
                           <div key={a.id} className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                             <div>
                               <h4 className="text-sm font-bold text-slate-900">{a.description}</h4>
-                              <p className="text-[10px] text-slate-500 uppercase tracking-wider">{prop?.name} • {tenant?.name}</p>
+                              <p className="text-[10px] text-slate-500 uppercase tracking-wider">{propertyName} • {tenantName}</p>
                               <div className="flex flex-wrap items-center gap-2 mt-2">
                                 <span className={cn(
                                   "inline-flex px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-tight",
@@ -4523,16 +6714,16 @@ const SettingsView = ({
           </AnimatePresence>
         </div>
 
-        <Card className="p-4 border border-destructive/20 bg-red-50 flex items-center justify-between sm:flex-row flex-col gap-4 shadow-sm">
+        <Card className="p-4 border border-indigo-200 bg-indigo-50 flex items-center justify-between sm:flex-row flex-col gap-4 shadow-sm">
           <div className="flex items-center gap-4 w-full sm:w-auto text-left">
-            <div className="p-2 bg-white text-destructive rounded-lg border border-red-100 shrink-0"><Trash2 className="w-5 h-5" /></div>
+            <div className="p-2 bg-white text-indigo-600 rounded-lg border border-indigo-100 shrink-0"><DatabaseBackup className="w-5 h-5" /></div>
             <div>
-              <h3 className="text-sm font-bold text-destructive">Reset de Dados do Sistema</h3>
-              <p className="text-[10px] text-destructive/70 font-medium">Exclui permanentemente todos os registros vinculados à sua conta.</p>
+              <h3 className="text-sm font-bold text-indigo-900">Backup e Reinicialização</h3>
+              <p className="text-[10px] text-indigo-700/70 font-medium">Arquiva ciclos antigos e reinicia o sistema com segurança.</p>
             </div>
           </div>
-          <Button variant="danger" size="sm" onClick={() => setIsResetModalOpen(true)} className="whitespace-nowrap w-full sm:w-auto font-bold shrink-0 shadow-sm h-9">
-            <AlertCircle className="w-4 h-4 mr-1.5" /> Limpar Dados
+          <Button variant="outline" size="sm" onClick={() => setIsResetModalOpen(true)} className="whitespace-nowrap w-full sm:w-auto font-bold shrink-0 shadow-sm h-9 border-indigo-300 text-indigo-700 hover:bg-indigo-100">
+            <ShieldAlert className="w-4 h-4 mr-1.5" /> Iniciar Backup
           </Button>
         </Card>
         
@@ -4541,7 +6732,7 @@ const SettingsView = ({
             <LogoSVG className="w-8 h-8 opacity-75" />
           </div>
           <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Gerente Imobiliário</p>
-          <p className="text-[10px] font-medium text-slate-400 mt-1">Versão 4.1.1 <span className="mx-1.5 opacity-50">•</span> 02/05/2026</p>
+          <p className="text-[10px] font-medium text-slate-400 mt-1">Versão 5.3.0 <span className="mx-1.5 opacity-50">•</span> 17/05/2026</p>
         </div>
 
       </div>
@@ -4550,11 +6741,11 @@ const SettingsView = ({
         <div className="space-y-4">
           <div className="space-y-2">
             <label className="text-sm font-medium">Nome de Exibição</label>
-            <Input id="profile-name" value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="Seu nome" />
+            <Input id="profile-name" value={profileName || ''} onChange={e => setProfileName(e.target.value)} placeholder="Seu nome" />
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium">URL da Foto de Perfil</label>
-            <Input id="profile-photo" value={profilePhoto} onChange={e => setProfilePhoto(e.target.value)} placeholder="https://exemplo.com/foto.jpg" />
+            <Input id="profile-photo" value={profilePhoto || ''} onChange={e => setProfilePhoto(e.target.value)} placeholder="https://exemplo.com/foto.jpg" />
             <p className="text-[10px] text-muted-foreground">Insira o link para uma imagem pública para usar como foto de perfil.</p>
           </div>
           <div className="pt-4 flex gap-2 justify-end">
@@ -4583,7 +6774,11 @@ const AssistantCentral = ({
   setPreviewReceipt,
   user,
   addProperty,
-  addTenant
+  addTenant,
+  isAlertSnoozed,
+  handleSnoozeAlert,
+  handleNavigate,
+  isOnline
 }: { 
   properties: Property[];
   tenants: Tenant[];
@@ -4597,15 +6792,55 @@ const AssistantCentral = ({
   uploadToDrive: any;
   setPreviewReceipt: (p: any) => void;
   user: User | null;
-  addProperty: (p: Property) => Promise<void>;
-  addTenant: (t: Tenant) => Promise<void>;
+  addProperty: (p: any) => Promise<any>;
+  addTenant: (t: any) => Promise<any>;
+  isAlertSnoozed: (id: string) => boolean;
+  handleSnoozeAlert: (id: string) => void;
+  handleNavigate: (tab: any, highlightId?: string) => void;
+  isOnline: boolean;
 }) => {
   const [activeTab, setActiveTab] = useState<'chat' | 'integration'>('chat');
+  const [isFullScreen, setIsFullScreen] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'success' | 'error'>('all');
   const [diagnostics, setDiagnostics] = useState<any>(null);
-  const [chatHistory, setChatHistory] = useState<{role: 'user' | 'assistant' | 'system', content: string}[]>([
-    { role: 'assistant', content: 'Olá! Sou seu Assistente do Gerente Imobiliário. Como posso te ajudar hoje? Posso criar imóveis, inquilinos ou analisar seus dados.' }
-  ]);
+  const [chatHistory, setChatHistory] = useState<{role: 'user' | 'assistant' | 'system', content: string}[]>(() => {
+    const today = startOfDay(new Date());
+    const fiveDaysFromNow = addDays(today, 5);
+    
+    // Check late payments
+    const lateP = payments.filter(p => p.status === 'late' || (p.status === 'pending' && isBefore(parseISO(p.dueDate), today)));
+    const upcomingP = payments.filter(p => p.status === 'pending' && !isBefore(parseISO(p.dueDate), today) && !isAfter(parseISO(p.dueDate), fiveDaysFromNow));
+
+    let findings = [];
+    if (lateP.length > 0) findings.push(`${lateP.length} ${lateP.length === 1 ? 'pagamento atrasado' : 'pagamentos atrasados'}`);
+    if (upcomingP.length > 0) findings.push(`${upcomingP.length} ${upcomingP.length === 1 ? 'pagamento vencendo' : 'pagamentos vencendo'} nos próximos 5 dias`);
+
+    let proActiveMsg = 'Olá! Sou seu Assistente do Gerente Imobiliário. Como posso te ajudar hoje? Posso responder suas dúvidas sobre os imóveis, inquilinos e contratos.';
+    
+    if (findings.length > 0) {
+      proActiveMsg = `Olá! Fiz uma análise rápida e notei que os próximos 5 dias têm pendências. Encontrei:\n\n• ${findings.join('\n• ')}\n\nO que gostaria de fazer? Posso te ajudar a analisar ou enviar notificações de cobrança.`;
+    }
+
+    try {
+      const savedHistory = localStorage.getItem('intelligence_hub_chat_history');
+      if (savedHistory) {
+        const parsed = JSON.parse(savedHistory);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Keep up to exactly 10 pairs of messages (20 messages total)
+          return [...parsed.slice(-20)];
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse chat history', e);
+    }
+
+    return [{ role: 'assistant', content: proActiveMsg }];
+  });
+  
+  useEffect(() => {
+    localStorage.setItem('intelligence_hub_chat_history', JSON.stringify(chatHistory));
+  }, [chatHistory]);
+
   const [userInput, setUserInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -4680,12 +6915,20 @@ const AssistantCentral = ({
   };
 
   const sendMessage = async () => {
+    if (!isOnline) {
+      toast.error('Você está sem conexão com a internet. O Assistente Inteligente necessita de conexão para funcionar.');
+      return;
+    }
     if (!userInput.trim() || isLoading) return;
 
     const userMsg = userInput;
     setUserInput('');
     setChatHistory(prev => [...prev, { role: 'user', content: userMsg }]);
     setIsLoading(true);
+    
+    window.dispatchEvent(new CustomEvent('robot-state', { 
+      detail: { state: 'working', message: 'Pesquisando...' }
+    }));
 
     try {
       const response = await getManagerAgentResponse({
@@ -4703,390 +6946,185 @@ const AssistantCentral = ({
       } else {
         setChatHistory(prev => [...prev, { role: 'assistant', content: response as string }]);
       }
+      
+      window.dispatchEvent(new CustomEvent('robot-state', { 
+        detail: { state: 'idle', message: 'Aqui está sua resposta!', duration: 4000 }
+      }));
     } catch (err) {
       setChatHistory(prev => [...prev, { role: 'assistant', content: "Desculpe, tive um problema técnico. Pode repetir?" }]);
+      window.dispatchEvent(new CustomEvent('robot-state', { 
+        detail: { state: 'thinking', message: 'Oops! Tive um problema técnico.', duration: 5000 }
+      }));
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 h-[calc(100vh-160px)]">
-      {/* Sidebar - Quick Alerts & Drive Status */}
-      <div className="lg:col-span-4 space-y-6 flex flex-col h-full overflow-y-auto pr-2 custom-scrollbar no-scrollbar">
-        <header>
-          <h1 className="text-3xl font-bold tracking-tight">Assistente IA</h1>
-          <p className="text-slate-500 text-sm mt-1">Seu co-piloto para gestão imobiliária.</p>
-        </header>
+    <div className={cn(
+      "transition-all duration-300 w-full h-full",
+      isFullScreen ? "fixed inset-0 z-[100] bg-[#F8FAFC]" : "flex flex-col relative bg-white"
+    )}>
+      {/* Main Container - Chat Focus */}
+      <div className={cn("flex flex-col h-full relative overflow-hidden flex-1", isFullScreen ? "" : "bg-white")}>
+        <div className="absolute top-0 right-0 w-80 h-80 bg-indigo-500/5 blur-[120px] rounded-full pointer-events-none" />
+        <div className="absolute bottom-0 left-0 w-80 h-80 bg-emerald-500/5 blur-[120px] rounded-full pointer-events-none" />
 
-        {/* System Health / Drive Section */}
-        <Card className="p-5 border-indigo-100 bg-white">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Sincronização Cloud</h3>
-            <div className={cn("w-2 h-2 rounded-full", isDriveConnected ? "bg-emerald-500 animate-pulse" : "bg-slate-300")} />
-          </div>
-          <div className="space-y-4">
-            {!isDriveConnected && (
-              <Button onClick={onConnectDrive} size="sm" className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 shadow-sm">
-                <Cloud className="w-4 h-4" /> Conectar Drive
-              </Button>
-            )}
-            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
-              <span className="text-xs font-medium text-slate-600">Status</span>
-              <span className={cn("text-xs font-bold", isDriveConnected ? "text-emerald-600" : "text-slate-400")}>
-                {isDriveConnected ? "Conectado" : "Desconectado"}
+        {/* Chat Header */}
+        <div className="p-3 sm:px-4 sm:py-3 border-b border-slate-200 flex items-center justify-between bg-white relative z-20 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-600 shrink-0 relative">
+              <Sparkles className="w-5 h-5" />
+              <span className={cn("absolute bottom-0 right-0 w-3 h-3 border-2 border-white rounded-full", isOnline ? "bg-emerald-500" : "bg-rose-500 animate-pulse")}></span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-sm font-bold text-slate-800 leading-tight">Assistente do Gerente</span>
+              <span className={cn("text-[11px] font-medium", isOnline ? "text-emerald-300 bg-emerald-50 px-2 py-0.5 rounded-full text-emerald-700 inline-block w-fit" : "text-rose-600 animate-pulse bg-rose-50 px-2 py-0.5 rounded-full inline-block w-fit")}>
+                {isOnline ? "Online" : "Dispositivo Offline"}
               </span>
             </div>
-            
+          </div>
+          
+          <div className="flex items-center gap-1">
             <button 
-              onClick={() => setActiveTab('integration')}
-              className={cn(
-                "w-full py-2 px-3 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all flex items-center justify-center gap-2",
-                activeTab === 'integration' 
-                  ? "bg-indigo-600 text-white border-indigo-600" 
-                  : "bg-white text-indigo-600 border-indigo-100 hover:bg-indigo-50"
-              )}
+              onClick={() => setChatHistory([{ role: 'assistant', content: 'Histórico limpo. Como posso ajudar agora?' }])}
+              className="p-2 sm:p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 rounded-full transition-all"
+              title="Limpar Conversa"
             >
-              {activeTab === 'integration' ? <FolderOpen className="w-3 h-3" /> : <Folder className="w-3 h-3" />}
-              {activeTab === 'integration' ? 'Vendo Detalhes' : 'Ver Detalhes do Drive'}
+              <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
+            </button>
+            <button 
+              onClick={() => setIsFullScreen(!isFullScreen)}
+              className="p-2 sm:p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 rounded-full transition-all"
+              title={isFullScreen ? "Minimizar" : "Tela Cheia"}
+            >
+              {isFullScreen ? <Minimize2 className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize2 className="w-4 h-4 sm:w-5 sm:h-5" />}
+            </button>
+            <button 
+              onClick={() => handleNavigate('dashboard')}
+              className="p-2 sm:p-2.5 text-slate-500 hover:bg-rose-50 hover:text-rose-600 rounded-full transition-all"
+              title="Fechar/Minimizar"
+            >
+              <X className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
           </div>
-        </Card>
+        </div>
 
-        {/* AI Alerts Column */}
-        <div className="space-y-3">
-          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest px-1">Alertas do Sistema</h3>
-          
-          {properties.filter(p => p.status === 'renovation').map(p => (
-            <div key={p.id} className="p-4 bg-amber-50 border border-amber-100 rounded-2xl flex gap-3 animate-in fade-in slide-in-from-left-4">
-              <div className="p-2 bg-amber-100 text-amber-600 rounded-lg shrink-0 h-fit">
-                <Hammer className="w-4 h-4" />
+        {!isOnline && (
+          <div className="bg-rose-50 border-b border-rose-100 text-rose-900 px-4 py-2.5 text-xs font-semibold flex items-center justify-center gap-2 relative z-20 shadow-sm shrink-0">
+            <WifiOff className="w-4 h-4 text-rose-500 animate-pulse shrink-0" />
+            <span>Você está offline. O Assistente Inteligente precisa estar conectado à internet para analisar e responder suas perguntas.</span>
+          </div>
+        )}
+
+        {/* Messages Area */}
+        <div 
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto px-4 py-4 sm:py-6 space-y-4 custom-scrollbar relative z-10 w-full bg-[#efeae2]"
+          style={{ backgroundImage: 'radial-gradient(#d4cec5 1px, transparent 1px)', backgroundSize: '30px 30px' }}
+        >
+          {chatHistory.map((msg, idx) => (
+            <motion.div
+              key={idx}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={cn(
+                "flex flex-col w-full",
+                msg.role === 'user' ? "items-end" : "items-start"
+              )}
+            >
+              <div className={cn(
+                "px-4 py-3 sm:px-5 sm:py-3 shadow-sm leading-relaxed transition-all relative max-w-[90%] sm:max-w-[75%]",
+                msg.role === 'user' 
+                  ? "bg-[#d9fdd3] text-slate-800 rounded-[1.2rem] rounded-tr-sm" 
+                  : "bg-white text-slate-800 rounded-[1.2rem] rounded-tl-sm"
+              )}>
+                <div className={cn(
+                  "whitespace-pre-wrap break-words", 
+                  msg.role === 'assistant' ? "markdown-body text-[14px] sm:text-[15px] font-medium text-slate-800" : "text-[14px] sm:text-[15px] font-medium text-slate-800"
+                )}>
+                  <Markdown>{msg.content}</Markdown>
+                </div>
               </div>
-              <div className="flex-1">
-                <p className="text-xs font-bold text-amber-900">{p.name} em Reforma</p>
-                <p className="text-[10px] text-amber-700 mt-0.5">Sugestão: Definir prazo de entrega para evitar vacância prolongada.</p>
-              </div>
-            </div>
+            </motion.div>
           ))}
-
-          {tenants.filter(t => !t.cpf).slice(0, 2).map(t => (
-            <div key={t.id} className="p-4 bg-red-50 border border-red-100 rounded-2xl flex gap-3 animate-in fade-in slide-in-from-left-4">
-              <div className="p-2 bg-red-100 text-red-600 rounded-lg shrink-0 h-fit">
-                <AlertTriangle className="w-4 h-4" />
-              </div>
-              <div className="flex-1">
-                <p className="text-xs font-bold text-red-900">Inquilino: {t.name}</p>
-                <p className="text-[10px] text-red-700 mt-0.5">Pendente: CPF não cadastrado. Risco na emissão de contratos.</p>
-              </div>
-            </div>
-          ))}
-
-          {payments.filter(p => p.status === 'late').length > 0 && (
-            <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl flex gap-3 animate-in fade-in slide-in-from-left-4">
-              <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg shrink-0 h-fit">
-                <DollarSign className="w-4 h-4" />
-              </div>
-              <div className="flex-1">
-                <p className="text-xs font-bold text-indigo-900">Pagamentos em Atraso</p>
-                <p className="text-[10px] text-indigo-700 mt-0.5">Existem {payments.filter(p => p.status === 'late').length} pendências. Deseja que eu gere uma mensagem de cobrança?</p>
+          {isLoading && (
+            <div className="flex flex-col items-start w-full">
+              <div className="bg-white text-slate-500 px-4 py-3 rounded-[1.2rem] rounded-tl-sm shadow-sm inline-flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-bounce" />
+                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-bounce" style={{animationDelay: '0.1s'}} />
+                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-bounce" style={{animationDelay: '0.2s'}} />
               </div>
             </div>
           )}
         </div>
-      </div>
 
-      {/* Main Container - Chat Focus */}
-      <div className="lg:col-span-8 flex flex-col h-full bg-slate-900 rounded-[2.5rem] shadow-2xl relative overflow-hidden border border-slate-800">
-        <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 blur-[100px] rounded-full pointer-events-none" />
-        <div className="absolute bottom-0 left-0 w-64 h-64 bg-emerald-500/5 blur-[100px] rounded-full pointer-events-none" />
-
-        {/* Chat Header */}
-        <div className="p-5 border-b border-slate-800 flex items-center justify-between px-8 bg-slate-900/50 backdrop-blur-xl relative z-10">
-          <div className="flex items-center gap-6">
-            <button 
-              onClick={() => setActiveTab('chat')}
-              className={cn(
-                "flex items-center gap-3 py-1 transition-all",
-                activeTab === 'chat' ? "text-white opacity-100" : "text-slate-500 hover:text-slate-300 opacity-60"
-              )}
-            >
-              <div className={cn(
-                "w-8 h-8 rounded-xl flex items-center justify-center shadow-lg transition-all",
-                activeTab === 'chat' ? "bg-indigo-600 text-white shadow-indigo-500/20" : "bg-slate-800 text-slate-400"
-              )}>
-                <Sparkles className="w-4 h-4" />
-              </div>
-              <div className="text-left">
-                <h2 className="text-xs font-bold">Assistente Chat</h2>
-                {activeTab === 'chat' && <div className="flex items-center gap-1.5"><span className="w-1 h-1 bg-emerald-500 rounded-full animate-pulse" /><span className="text-[9px] font-medium text-slate-400 uppercase tracking-tighter">Online</span></div>}
-              </div>
-            </button>
-
-            <button 
-              onClick={() => setActiveTab('integration')}
-              className={cn(
-                "flex items-center gap-3 py-1 transition-all",
-                activeTab === 'integration' ? "text-white opacity-100" : "text-slate-500 hover:text-slate-300 opacity-60"
-              )}
-            >
-              <div className={cn(
-                "w-8 h-8 rounded-xl flex items-center justify-center shadow-lg transition-all",
-                activeTab === 'integration' ? "bg-emerald-600 text-white shadow-emerald-500/20" : "bg-slate-800 text-slate-400"
-              )}>
-                <Cloud className="w-4 h-4" />
-              </div>
-              <div className="text-left">
-                <h2 className="text-xs font-bold">Integração Drive</h2>
-                {activeTab === 'integration' && <div className="flex items-center gap-1.5"><span className="w-1 h-1 bg-indigo-500 rounded-full animate-pulse" /><span className="text-[9px] font-medium text-slate-400 uppercase tracking-tighter">Sincronizado</span></div>}
-              </div>
-            </button>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            {activeTab === 'integration' && (
-              <button 
-                onClick={() => {
-                  setIsRefreshing(true);
-                  loadDiagnostics();
-                  setTimeout(() => setIsRefreshing(false), 1000);
-                }}
-                className="p-2 text-slate-400 hover:text-white transition-colors"
-                title="Sincronizar Manualmente"
-              >
-                <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
-              </button>
-            )}
-            <button 
-              onClick={() => activeTab === 'chat' ? setChatHistory([{ role: 'assistant', content: 'Histórico limpo. Como posso ajudar agora?' }]) : setActiveTab('chat')}
-              className="p-2 text-slate-500 hover:text-white transition-colors"
-              title={activeTab === 'chat' ? "Limpar Conversa" : "Voltar para Chat"}
-            >
-              {activeTab === 'chat' ? <Trash2 className="w-4 h-4" /> : <X className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-
-        {activeTab === 'chat' ? (
-          <>
-            {/* Messages Area */}
-            <div 
-              ref={scrollRef}
-              className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar relative z-10"
-            >
-              {chatHistory.map((msg, idx) => (
-                <motion.div
-                  key={idx}
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  className={cn(
-                    "flex w-full mb-4",
-                    msg.role === 'user' ? "justify-end" : "justify-start"
-                  )}
+        {/* Pre-filled Suggestions */}
+        {chatHistory.length === 0 && (
+          <div className="px-4 pb-2 pt-2 relative z-10 bg-[#f0f2f5]">
+            <div className="flex flex-wrap gap-2 max-w-7xl mx-auto">
+              {[
+                "Quais são os índices recentes do IGP-M para reajuste de aluguel?",
+                "De acordo com a Lei do Inquilinato, o inquilino pode quebrar o contrato antes do prazo?",
+                "Gere um relatório de pendências dos meus inquilinos."
+              ].map((tip, i) => (
+                <button
+                  key={i}
+                  onClick={() => setUserInput(tip)}
+                  className="text-[11px] font-medium bg-white hover:bg-slate-50 text-slate-600 px-3 py-1.5 rounded-full transition-all border border-slate-200 whitespace-nowrap"
                 >
-                  <div className={cn(
-                    "max-w-[85%] px-5 py-3.5 rounded-3xl text-sm leading-relaxed",
-                    msg.role === 'user' 
-                      ? "bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-500/10" 
-                      : "bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none text-left"
-                  )}>
-                    <div className="whitespace-pre-wrap">
-                      <Markdown>{msg.content}</Markdown>
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
-              {isLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-slate-800 border border-slate-700 px-5 py-4 rounded-3xl rounded-tl-none">
-                    <div className="flex gap-1">
-                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1 }} className="w-1.5 h-1.5 bg-indigo-500 rounded-full" />
-                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-1.5 h-1.5 bg-indigo-500 rounded-full" />
-                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-1.5 h-1.5 bg-indigo-500 rounded-full" />
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Input Area */}
-            <div className="p-6 bg-slate-900 border-t border-slate-800 relative z-10">
-              <div className="relative">
-                <input 
-                  type="text" 
-                  placeholder="Digite sua mensagem aqui..."
-                  value={userInput}
-                  onChange={(e) => setUserInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                  className="w-full bg-slate-800 border border-slate-700 text-white px-6 py-4 rounded-3xl pr-16 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all placeholder:text-slate-500 text-sm"
-                />
-                <button 
-                  onClick={sendMessage}
-                  disabled={isLoading || !userInput.trim()}
-                  className="absolute right-2 top-2 p-3 bg-indigo-600 hover:bg-indigo-50 text-white rounded-2xl transition-all shadow-lg shadow-indigo-500/20"
-                >
-                  <Send className="w-4 h-4" />
+                  {tip}
                 </button>
-              </div>
-              <p className="text-[10px] text-center text-slate-500 mt-4 uppercase tracking-widest font-bold">Assistente Conectado ao Seu Banco de Dados</p>
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 overflow-y-auto p-8 space-y-8 relative z-10 custom-scrollbar">
-            {/* Folder Explorer Section */}
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-black text-white uppercase tracking-widest flex items-center gap-2">
-                    <FolderOpen className="w-4 h-4 text-emerald-400" /> Explorador de Arquivos no Drive
-                  </h3>
-                  <p className="text-[10px] text-slate-500 font-medium uppercase mt-1">Sincronização automática com sua conta do Google</p>
-                </div>
-                <div className="flex items-center gap-2 bg-slate-800 p-1 rounded-2xl border border-slate-700">
-                  <button
-                    onClick={() => setActiveFilter('all')}
-                    className={cn(
-                      "px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all",
-                      activeFilter === 'all' ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"
-                    )}
-                  >
-                    TUDO
-                  </button>
-                  <button
-                    onClick={() => setActiveFilter('error')}
-                    className={cn(
-                      "px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all",
-                      activeFilter === 'error' ? "bg-rose-600 text-white" : "text-slate-400 hover:text-white"
-                    )}
-                  >
-                    ERROS
-                  </button>
-                </div>
-              </div>
-
-              {/* Hierarchical Folder View */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {/* Root Folders Overview */}
-                {properties.map(prop => {
-                  const propLogs = syncLogs.filter(l => 
-                    l.fileName?.includes(prop.name) || 
-                    tenants.find(t => t.id === l.tenantId)?.propertyId === prop.id
-                  );
-                  
-                  if (propLogs.length === 0) return null;
-
-                  return (
-                    <motion.div 
-                      key={prop.id}
-                      whileHover={{ scale: 1.02 }}
-                      className="p-5 bg-slate-800/40 border border-slate-700 rounded-[2rem] hover:bg-slate-800 transition-all cursor-pointer group"
-                    >
-                      <div className="flex items-center gap-3 mb-4">
-                        <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-2xl group-hover:bg-indigo-500 group-hover:text-white transition-all">
-                          <Folder className="w-5 h-5 fill-current" />
-                        </div>
-                        <div className="min-w-0">
-                          <h4 className="text-xs font-black text-white truncate uppercase tracking-wider">{prop.name}</h4>
-                          <p className="text-[10px] text-slate-500 font-bold">{propLogs.length} arquivos</p>
-                        </div>
-                      </div>
-                      <div className="space-y-2 border-t border-slate-700/50 pt-3">
-                        {propLogs.slice(0, 3).map(log => (
-                          <div key={log.id} className="flex items-center justify-between group/item">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <FileText className="w-3 h-3 text-slate-500" />
-                              <span className="text-[10px] text-slate-400 truncate">{log.fileName}</span>
-                            </div>
-                            {log.url && (
-                              <button 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setPreviewReceipt({ url: log.url, name: log.fileName, isImage: !log.url.includes('/view') });
-                                }}
-                                className="opacity-0 group-hover/item:opacity-100 text-[9px] font-black text-indigo-400 hover:underline"
-                              >
-                                VER
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                        {propLogs.length > 3 && (
-                          <p className="text-[9px] text-slate-600 font-bold italic text-center mt-1">+ {propLogs.length - 3} outros arquivos</p>
-                        )}
-                      </div>
-                    </motion.div>
-                  );
-                })}
-
-                {/* Internal / Other Folder */}
-                <motion.div 
-                  whileHover={{ scale: 1.02 }}
-                  className="p-5 bg-slate-800/20 border border-slate-700/50 border-dashed rounded-[2rem] flex flex-col items-center justify-center text-center opacity-60 hover:opacity-100 transition-all"
-                >
-                  <div className="p-3 bg-slate-700/30 text-slate-500 rounded-2xl mb-3">
-                    <Plus className="w-5 h-5" />
-                  </div>
-                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Navegar no Drive</h4>
-                  <p className="text-[9px] text-slate-600 mt-1 max-w-[120px]">Acesse a pasta raiz para ver toda estrutura</p>
-                </motion.div>
-              </div>
-            </div>
-
-            {/* Health Info Section - Re-designed as Dashboard Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="p-8 bg-slate-800/30 border border-slate-700 rounded-[2.5rem] space-y-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-emerald-500/10 text-emerald-500 rounded-xl">
-                    <CheckCircle2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-black text-white uppercase tracking-widest leading-none">Status da Saúde</h3>
-                    <p className="text-[9px] text-slate-500 font-bold uppercase mt-1">Conexão Estabelecida</p>
-                  </div>
-                </div>
-                
-                <div className="space-y-4 pt-2">
-                  <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 flex items-center justify-between">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Erros Reportados</span>
-                    <span className={cn("text-xs font-black font-mono", errorCount > 0 ? "text-rose-500" : "text-emerald-400")}>{errorCount}</span>
-                  </div>
-                  <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 flex items-center justify-between">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Espaço em uso</span>
-                    <span className="text-xs font-black font-mono text-indigo-400">1.2 GB</span>
-                  </div>
-                  <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 flex items-center justify-between">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Último Backup</span>
-                    <span className="text-xs font-black font-mono text-slate-400">Agora mesmo</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-8 bg-indigo-600/10 border border-indigo-500/20 rounded-[2.5rem] relative overflow-hidden group">
-                <div className="absolute -right-4 -top-4 w-24 h-24 bg-indigo-500/20 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-1000" />
-                <h3 className="text-xs font-black text-indigo-300 uppercase tracking-widest flex items-center gap-2 mb-6">
-                  <Zap className="w-5 h-5 text-indigo-400" /> Resumo Inteligente
-                </h3>
-                <div className="space-y-4">
-                  <p className="text-sm font-medium text-indigo-100/90 leading-relaxed">
-                    "Detectamos que a pasta de <b>Contratos</b> é a mais acessada esta semana. Sugerimos criar um atalho na Dashboard principal para facilitar seu fluxo."
-                  </p>
-                  <div className="pt-4 flex items-center gap-3">
-                    <button className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-indigo-500/25">
-                      Seguir Recomendação
-                    </button>
-                    <span className="text-[9px] text-indigo-400 font-bold uppercase">Feedback da IA</span>
-                  </div>
-                </div>
-              </div>
+              ))}
             </div>
           </div>
         )}
+
+        {/* Input Area */}
+        <div className="p-3 sm:px-4 sm:py-3 bg-[#f0f2f5] relative z-20 shrink-0">
+          <div className="flex items-end gap-2 max-w-7xl mx-auto">
+            <div className="flex-1 rounded-2xl bg-white flex items-center overflow-hidden min-h-[44px]">
+              <textarea 
+                placeholder={isOnline ? "Digite uma mensagem..." : "Aguardando conexão..."}
+                value={userInput}
+                disabled={!isOnline}
+                onChange={(e) => {
+                  setUserInput(e.target.value);
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                  }
+                }}
+                rows={1}
+                className="w-full bg-transparent text-slate-800 px-4 py-3 focus:outline-none resize-none placeholder:text-slate-400 text-[15px] leading-snug custom-scrollbar max-h-[120px] disabled:opacity-50"
+              />
+            </div>
+            <button 
+              onClick={sendMessage} 
+              disabled={!isOnline || !userInput.trim() || isLoading} 
+              className="w-11 h-11 sm:w-12 sm:h-12 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full transition-all flex items-center justify-center shrink-0 disabled:opacity-50" 
+            >
+              <Send className="w-5 h-5 ml-0.5" />
+            </button>
+          </div>
+          <div className="text-center mt-2 pb-1">
+            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider inline-flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-emerald-400" />
+              IA Grounding & Local RAG
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );
 };
 
-const Card = ({ children, className, onClick }: { children: React.ReactNode; className?: string; onClick?: () => void }) => (
-  <div onClick={onClick} className={cn("bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden", className)}>
+const Card = ({ children, className, onClick, id }: { children: React.ReactNode; className?: string; onClick?: () => void; id?: string }) => (
+  <div id={id} onClick={onClick} className={cn("bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden", className)}>
     {children}
   </div>
 );
@@ -5148,6 +7186,7 @@ const Input = ({
   className,
   min,
   max,
+  step,
   disabled,
   onKeyDown
 }: { 
@@ -5161,11 +7200,17 @@ const Input = ({
   className?: string;
   min?: string | number;
   max?: string | number;
+  step?: string | number;
   disabled?: boolean;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
 }) => (
   <div className={cn("flex flex-col gap-1.5", className)}>
-    {label && <label htmlFor={id} className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">{label}</label>}
+    {label && (
+      <label htmlFor={id} className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+        {label}
+        {required && <span className="text-rose-500 ml-1" title="Campo obrigatório">*</span>}
+      </label>
+    )}
     <input
       id={id}
       type={type}
@@ -5177,6 +7222,7 @@ const Input = ({
       disabled={disabled}
       min={min}
       max={max}
+      step={step}
       className="flex h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm transition-all focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
     />
   </div>
@@ -5218,7 +7264,12 @@ const CurrencyInput = ({
 
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
-      {label && <label htmlFor={id} className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">{label}</label>}
+      {label && (
+        <label htmlFor={id} className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+          {label}
+          {required && <span className="text-rose-500 ml-1" title="Campo obrigatório">*</span>}
+        </label>
+      )}
       <div className="relative">
         <input
           id={id}
@@ -5251,7 +7302,12 @@ const Select = ({
   required?: boolean;
 }) => (
   <div className={cn("flex flex-col gap-1.5", className)}>
-    {label && <label htmlFor={id} className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">{label}</label>}
+    {label && (
+      <label htmlFor={id} className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+        {label}
+        {required && <span className="text-rose-500 ml-1" title="Campo obrigatório">*</span>}
+      </label>
+    )}
     <select
       id={id}
       value={value}
@@ -5315,12 +7371,12 @@ const SecurityCheckModal = ({
   const [input, setInput] = useState('');
   const [error, setError] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (input === correctPassword) {
       setError(false);
       setInput('');
-      onSuccess();
+      await onSuccess();
       onClose();
     } else {
       setError(true);
@@ -5395,57 +7451,328 @@ const SecurityCheckModal = ({
 
 // --- Main App ---
 
-import { getDriveAgentResponse, getManagerAgentResponse } from './services/geminiService';
+import { getDriveAgentResponse, getManagerAgentResponse, generateLeaseContract, scanInvoice, generateBackupSummary } from './services/geminiService';
 
 const DriveIntegrationModalPlaceholder = () => null;
 
+const UnifiedAlertsHub = ({ activeTab, setActiveTab, alertsProps, ticketsProps }: any) => {
+  return (
+    <div className="space-y-6 max-w-7xl mx-auto pb-8">
+       <div className="flex bg-slate-200/50 p-1.5 shadow-sm border border-slate-200 flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 rounded-2xl w-full sm:w-max mx-auto sm:mx-0">
+           <button
+               className={cn("flex-1 sm:flex-none px-6 py-3 text-sm sm:text-base font-bold rounded-xl transition-all duration-200 flex items-center justify-center gap-2", activeTab === 'alerts' ? "bg-white shadow-md text-indigo-700 ring-1 ring-indigo-100/50 scale-[1.02]" : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/80")}
+               onClick={() => setActiveTab('alerts')}
+           >
+               <Bell className={cn("w-5 h-5", activeTab === 'alerts' && "text-indigo-500")} /> Alertas Inteligentes
+           </button>
+           <button
+               className={cn("flex-1 sm:flex-none px-6 py-3 text-sm sm:text-base font-bold rounded-xl transition-all duration-200 flex items-center justify-center gap-2", activeTab === 'tickets' ? "bg-white shadow-md text-amber-700 ring-1 ring-amber-100/50 scale-[1.02]" : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/80")}
+               onClick={() => setActiveTab('tickets')}
+           >
+               <FileWarning className={cn("w-5 h-5", activeTab === 'tickets' && "text-amber-500")} /> Chamados de Inquilinos
+           </button>
+       </div>
+       {activeTab === 'alerts' ? (
+           <AlertsView {...alertsProps} />
+       ) : (
+           <TicketsView {...ticketsProps} />
+       )}
+    </div>
+  );
+};
+
+const UnifiedFinancialHub = ({ activeTab, setActiveTab, financialProps, receivablesProps }: any) => {
+   return (
+    <div className="space-y-6 max-w-7xl mx-auto pb-8">
+       <div className="flex bg-slate-200/50 p-1.5 shadow-sm border border-slate-200 flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 rounded-2xl w-full sm:w-max mx-auto sm:mx-0">
+           <button
+               className={cn("flex-1 sm:flex-none px-6 py-3 text-sm sm:text-base font-bold rounded-xl transition-all duration-200 flex items-center justify-center gap-2", activeTab === 'receivables' ? "bg-white shadow-md text-emerald-700 ring-1 ring-emerald-100/50 scale-[1.02]" : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/80")}
+               onClick={() => setActiveTab('receivables')}
+           >
+               <ArrowDownLeft className={cn("w-5 h-5", activeTab === 'receivables' && "text-emerald-500")} /> Entradas / Recebimentos
+           </button>
+           <button
+               className={cn("flex-1 sm:flex-none px-6 py-3 text-sm sm:text-base font-bold rounded-xl transition-all duration-200 flex items-center justify-center gap-2", activeTab === 'financial' ? "bg-white shadow-md text-rose-700 ring-1 ring-rose-100/50 scale-[1.02]" : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/80")}
+               onClick={() => setActiveTab('financial')}
+           >
+               <ArrowUpRight className={cn("w-5 h-5", activeTab === 'financial' && "text-rose-500")} /> Saídas / Despesas
+           </button>
+       </div>
+       {activeTab === 'receivables' ? (
+           <ReceivablesView {...receivablesProps} />
+       ) : (
+           <FinancialView {...financialProps} />
+       )}
+    </div>
+  );
+};
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [userRole, setUserRole] = useState<'admin' | 'tenant' | null>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'properties' | 'tenants' | 'financial' | 'settings' | 'receivables' | 'cloud' | 'help'>('dashboard');
-  const [highlightedPaymentId, setHighlightedPaymentId] = useState<string | null>(null);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [isInstallable, setIsInstallable] = useState(false);
-  const [showPwaGuide, setShowPwaGuide] = useState(false);
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      toast.success("Sua conexão foi restaurada! Os recursos de Inteligência Artificial e sincronização de dados estão ativos.", {
+        icon: '⚡',
+        duration: 5000
+      });
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      toast.error("Você está offline! O aplicativo ainda funciona offline, mas as funcionalidades de Inteligência Artificial e integrações na nuvem estão temporariamente indisponíveis.", {
+        icon: '🔌',
+         duration: 6000
+      });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const [userRole, setUserRole] = useState<'admin' | 'tenant' | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'intelligence_hub' | 'properties' | 'tenants' | 'contracts' | 'financial' | 'settings' | 'receivables' | 'cloud' | 'help' | 'alerts' | 'tickets' | 'import'>('dashboard');
+  const [initialContractTemplate, setInitialContractTemplate] = useState<string | null>(null);
+  const [initialPropertyIdForTenant, setInitialPropertyIdForTenant] = useState<string | null>(null);
+  const [initialTenantIdToEdit, setInitialTenantIdToEdit] = useState<string | null>(null);
+  const [highlightedPaymentId, setHighlightedPaymentId] = useState<string | null>(null);
+  const [expandedPaymentGroups, setExpandedPaymentGroups] = useState<Record<string, boolean>>({});
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+  const [pwaLogs, setPwaLogs] = useState<string[]>([]);
+  const [isFixingPwa, setIsFixingPwa] = useState(false);
+
+  const [isJustifyRenovationModalOpen, setIsJustifyRenovationModalOpen] = useState(false);
+  const [justifyingProperty, setJustifyingProperty] = useState<Property | null>(null);
+  const [renovationJustifyText, setRenovationJustifyText] = useState('');
+
+  const [avatarState, setAvatarState] = useState<'idle' | 'thinking' | 'working'>('idle');
+
+  // Logic to simulate robot interactions
+  useEffect(() => {
+    if (activeTab === 'cloud') {
+      setAvatarState('working');
+      const timer = setTimeout(() => setAvatarState('idle'), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [activeTab]);
+
+  const getAvatarSource = () => {
+    switch (avatarState) {
+      case 'thinking': return '/robot_thinking_3d.png';
+      case 'working': return '/robot_working_3d.png';
+      default: return '/friendly_robot_expert.png';
+    }
+  };
+
+  const [snoozedAlerts, setSnoozedAlerts] = useState<Record<string, { timestamp: number, duration: number }>>(() => {
+    try {
+      const saved = localStorage.getItem('imob_snoozed_alerts');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const handleSnoozeAlert = (alertId: string, durationMs: number = 172800000) => {
+    setSnoozedAlerts(prev => {
+      const updated = { ...prev, [alertId]: { timestamp: Date.now(), duration: durationMs } };
+      localStorage.setItem('imob_snoozed_alerts', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const isAlertSnoozed = (alertId: string) => {
+    const record = snoozedAlerts[alertId];
+    if (!record) return false;
+    return (Date.now() - record.timestamp) < (record.duration || 172800000);
+  };
+  
+  const handleSaveRenovationJustification = async () => {
+    if (!justifyingProperty || !user) return;
+    try {
+      await updateDoc(doc(db, 'properties', justifyingProperty.id!), {
+        renovationJustification: renovationJustifyText,
+        updatedAt: new Date().toISOString()
+      });
+      setIsJustifyRenovationModalOpen(false);
+      setJustifyingProperty(null);
+      setRenovationJustifyText('');
+      // also clear any active local snooze so it disappears naturally if handled
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `properties/${justifyingProperty.id}`);
+    }
+  };
+
+  const handleNavigate = (tab: any, highlightId?: string) => {
+    setActiveTab(tab);
+    if (highlightId) {
+      setHighlightedPaymentId(highlightId);
+      // Wait for tab transition before highlighting
+      setTimeout(() => {
+        const el = document.getElementById(highlightId);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('bg-amber-100', 'transition-colors', 'duration-500');
+          setTimeout(() => el.classList.remove('bg-amber-100'), 3000);
+        }
+      }, 300);
+    }
+  };
+
+  useEffect(() => {
+    // Check if we just completed a repair
+    const urlParams = new URLSearchParams(window.location.search);
+    const justRepairedInSession = sessionStorage.getItem('just_repaired') === 'true';
+    
+    if (urlParams.get('repair_done') === 'true' || justRepairedInSession) {
+      const runDetailedDiagnostics = async () => {
+        let swStatus = 'Não encontrado';
+        try {
+          if ('serviceWorker' in navigator) {
+            const reg = await navigator.serviceWorker.getRegistration();
+            if (reg) {
+              swStatus = reg.active ? '✅ Ativo' : (reg.waiting ? '⏳ Aguardando' : '🔧 Instalando');
+            }
+          }
+        } catch (e) { swStatus = '❌ Erro ao verificar'; }
+
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && (navigator as any).standalone);
+
+        const diagnostics = [
+          `🌐 Protocolo: ${window.location.protocol}`,
+          `⚙️ Service Worker: ${swStatus}`,
+          `📄 Manifest Header: ${!!document.querySelector('link[rel="manifest"]')}`,
+          `🤖 Captura Global: ${!!(window as any).deferredPWA ? '✅ DISPONÍVEL' : '❌ NÃO DISPARADA'}`,
+          `📱 Engine: ${navigator.userAgent.includes('Chrome') ? 'Chrome/Blink (OK)' : navigator.userAgent.includes('Firefox') ? 'Firefox' : 'Outro/Safari'}`,
+          `📏 Standalone: ${isStandalone ? '✅ Instalado (Rodando como App)' : 'Navegador'}`
+        ];
+        
+        setPwaLogs([
+          '🛠️ DIAGNÓSTICO TÉCNICO V61 (ELITE)...',
+          'ℹ️ Nova Identidade V61: Paths nativos do Manifesto corrigidos.',
+          ...diagnostics,
+          '--------------------------------',
+          isStandalone ? '🎉 VOCÊ JÁ ESTÁ NO APP OFICIAL! Atualizações são automáticas V60.' : '🔍 AGUARDANDO AUTORIZAÇÃO DO ANDROID...',
+          !isStandalone ? '⚠️ Se "Captura Global" for "NÃO DISPARADA", o Chrome não autorizou a instalação nativa.' : '✅ Sistema Nativo rodando com sucesso.',
+          !isStandalone ? '💡 DICA INFALÍVEL: Se o botão não funcionar, clique nos 3 pontos do navegador (canto superior direito) > "Instalar aplicativo" ou "Adicionar à tela inicial".' : ''
+        ].filter(Boolean));
+
+        // RECOVER PROMPT IF IT FIRED TOO EARLY
+        if ((window as any).deferredPWA && !deferredPrompt) {
+          console.log('Restoring captured prompt from global window');
+          setDeferredPrompt((window as any).deferredPWA);
+          setIsInstallable(true);
+          setPwaLogs(prev => [...prev, '⚡ SINAL RECUPERADO: Convite de instalação pronto!']);
+        }
+      };
+
+      runDetailedDiagnostics();
+      
+      const customHandler = (e: any) => {
+        if (e.detail && !deferredPrompt) {
+          setDeferredPrompt(e.detail);
+          setIsInstallable(true);
+          setPwaLogs(prev => [...prev, '⚡ SINAL CAPTURADO (KERNEL): Convite pronto!']);
+        }
+      };
+      window.addEventListener('pwa_signal_received', customHandler);
+      
+      sessionStorage.removeItem('just_repaired');
+      if (urlParams.get('repair_done')) {
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, newUrl);
+      }
+      return () => window.removeEventListener('pwa_signal_received', customHandler);
+    }
+
     const handler = (e: any) => {
+      console.log('✅ Evento beforeinstallprompt disparado!');
       e.preventDefault();
+      (window as any).deferredPWA = e;
       setDeferredPrompt(e);
       setIsInstallable(true);
-
-      // Auto-show guide for first-time visitors who are not in standalone
-      const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
-      const guideShown = localStorage.getItem('pwa_guide_shown');
-      if (!isStandalone && !guideShown) {
-         setShowPwaGuide(true);
-         localStorage.setItem('pwa_guide_shown', 'true');
+      setPwaLogs(prev => [...prev, '✅ SINAL VERDE: Navegador autorizou instalação nativa!']);
+      
+      // Se acabamos de vir de um reparo, não mostre modal mais
+      if (!(window.location.search.includes('repair_done') || sessionStorage.getItem('just_repaired'))) {
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
+        const guideShown = localStorage.getItem('pwa_guide_shown_v5');
+        if (!isStandalone && !guideShown) {
+           localStorage.setItem('pwa_guide_shown_v5', 'true');
+        }
       }
     };
 
     const installedHandler = () => {
       setIsInstallable(false);
       setDeferredPrompt(null);
-      localStorage.setItem('pwa_guide_shown', 'true');
+      (window as any).deferredPWA = null;
+      localStorage.setItem('pwa_guide_shown_v5', 'true');
+    };
+
+    const pwaCustomHandler = () => {
+      if ((window as any).deferredPWA) {
+        setDeferredPrompt((window as any).deferredPWA);
+        setIsInstallable(true);
+      }
     };
 
     window.addEventListener('beforeinstallprompt', handler);
     window.addEventListener('appinstalled', installedHandler);
+    window.addEventListener('pwa-installable', pwaCustomHandler);
+    
+    // Suporte para o sinal customizado vindo do index.html
+    const signalHandler = (e: any) => {
+      console.log('📡 Sinal PWA recebido do Kernel:', e.detail);
+      setDeferredPrompt(e.detail);
+      setIsInstallable(true);
+    };
+    window.addEventListener('pwa_signal_received', signalHandler);
+    
+    // Fallback: see if index.html already captured it
+    setTimeout(() => {
+      if ((window as any).deferredPWA) {
+        setDeferredPrompt((window as any).deferredPWA);
+        setIsInstallable(true);
+      }
+    }, 100);
     
     return () => {
       window.removeEventListener('beforeinstallprompt', handler);
       window.removeEventListener('appinstalled', installedHandler);
+      window.removeEventListener('pwa-installable', pwaCustomHandler);
     };
   }, []);
 
   const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setDeferredPrompt(null);
-      setIsInstallable(false);
+    const promptEvent = deferredPrompt || (window as any).deferredPWA;
+    
+    if (!promptEvent) {
+      toast.error('A instalação não está disponível no momento.');
+      return;
+    }
+    
+    try {
+      promptEvent.prompt();
+      const { outcome } = await promptEvent.userChoice;
+      
+      if (outcome === 'accepted') {
+        toast.success('Aplicativo sendo instalado!');
+        setDeferredPrompt(null);
+        (window as any).deferredPWA = null;
+        setIsInstallable(false);
+      }
+    } catch (err: any) {
+      console.error('PWA Error:', err);
+      toast.error(`Erro ao instalar: ${err.message}`);
     }
   };
 
@@ -5462,7 +7789,27 @@ export default function App() {
       try {
         const configDoc = await getDoc(doc(db, 'config', user.uid));
         if (configDoc.exists()) {
-          setSecurityPassword(configDoc.data().securityPassword || '1234');
+          const data = configDoc.data();
+          setSecurityPassword(data.securityPassword || '1234');
+          
+          if (data.googleDriveTokens) {
+            const storedTokens = localStorage.getItem('google_drive_tokens');
+            if (!storedTokens || storedTokens !== data.googleDriveTokens) {
+              console.log('[Drive] Restoring tokens from Firestore');
+              localStorage.setItem('google_drive_tokens', data.googleDriveTokens);
+              
+              // Only call /save-tokens to sync the session, do NOT trigger another event
+              // We dispatch the event anyway so that it rechecks Drive
+              fetch('/api/auth/google/save-tokens', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tokens: JSON.parse(data.googleDriveTokens), uid: user.uid }),
+                credentials: 'include'
+              }).finally(() => {
+                window.dispatchEvent(new Event('drive-connected'));
+              });
+            }
+          }
         }
       } catch (err) {
         console.error('Erro ao carregar configurações:', err);
@@ -5506,6 +7853,8 @@ export default function App() {
   const [settlementType, setSettlementType] = useState<'extra' | 'discount'>('extra');
   const [confirmingPayment, setConfirmingPayment] = useState<any | null>(null);
   const [paymentAmountInput, setPaymentAmountInput] = useState<number>(0);
+  const [waiveLateFee, setWaiveLateFee] = useState<boolean>(false);
+  const [waivedLateFeeReason, setWaivedLateFeeReason] = useState<string>('');
   const [paymentReceipt, setPaymentReceipt] = useState<string | null>(null);
   const [paymentReceiptLocation, setPaymentReceiptLocation] = useState<string>('');
   const [paymentReceiptName, setPaymentReceiptName] = useState<string>('');
@@ -5514,6 +7863,8 @@ export default function App() {
   const [paymentRemainderObservations, setPaymentRemainderObservations] = useState<string>('');
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
+  const [resetReason, setResetReason] = useState('');
+  const [backupStepMsg, setBackupStepMsg] = useState('');
   const [agreementForm, setAgreementForm] = useState<Partial<Agreement>>({
     tenantId: '',
     description: '',
@@ -5525,7 +7876,11 @@ export default function App() {
     evidence: '',
     evidenceName: '',
     evidenceLocation: '',
-    thumbnailLink: ''
+    thumbnailLink: '',
+    chargeLateFees: false,
+    lateFeePenalty: 10,
+    lateFeeDaily: 0.33,
+    lateFeeType: 'percentage'
   });
   
   const [isArchiveAgreementModalOpen, setIsArchiveAgreementModalOpen] = useState(false);
@@ -5613,6 +7968,14 @@ export default function App() {
 
   useEffect(() => {
     checkDriveStatus();
+    
+    const handleDriveConnected = () => {
+      console.log('drive-connected event received');
+      checkDriveStatus(3);
+    };
+    
+    window.addEventListener('drive-connected', handleDriveConnected);
+    return () => window.removeEventListener('drive-connected', handleDriveConnected);
   }, [checkDriveStatus]);
 
   useEffect(() => {
@@ -5642,7 +8005,20 @@ export default function App() {
               toast.error('Falha ao sincronizar sessão: ' + errData.error);
             } else {
               const result = await saveRes.json();
-              console.log('[Drive] Session synchronized successfully. Firestore saved:', result.firestoreSaved);
+              console.log('[Drive] Session synchronized successfully.', result);
+              
+              if (user) {
+                try {
+                  await setDoc(doc(db, 'config', user.uid), {
+                    googleDriveTokens: JSON.stringify(tokens),
+                    googleDriveConnected: true,
+                    updatedAt: new Date().toISOString()
+                  }, { merge: true });
+                  console.log('[Drive] Tokens saved to Firestore config via client');
+                } catch (e) {
+                  console.error('[Drive] Error saving tokens to Firestore config via client:', e);
+                }
+              }
               
               // Immediate check after sync
               setTimeout(() => checkDriveStatus(3), 500);
@@ -5701,10 +8077,28 @@ export default function App() {
 
   const handleDisconnectDrive = async () => {
     try {
-      const res = await fetch('/api/auth/google/logout', { method: 'POST', credentials: 'include' });
+      const res = await fetch('/api/auth/google/logout', { 
+        method: 'POST', 
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: user?.uid })
+      });
       if (res.ok) {
         localStorage.removeItem('google_drive_tokens');
         setIsDriveConnected(false);
+        
+        if (user) {
+          try {
+            await setDoc(doc(db, 'config', user.uid), {
+              googleDriveTokens: null,
+              googleDriveConnected: false,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+          } catch (e) {
+            console.error('Failed to clear tokens from config via client', e);
+          }
+        }
+        
         toast.success('Desconectado da conta Google com sucesso.');
       } else {
         throw new Error('Falha ao desconectar');
@@ -5730,13 +8124,40 @@ export default function App() {
         body: JSON.stringify({ fileName, fileData, mimeType, folderName, uid: user?.uid }),
         credentials: 'include'
       });
-      if (!res.ok) throw new Error('Upload failed');
+      
+      if (!res.ok) {
+        if (res.status === 401) {
+          localStorage.removeItem('google_drive_tokens');
+          setIsDriveConnected(false);
+          setDriveError('Conexão Google Drive expirada. Reconecte em Configurações.');
+          
+          if (user) {
+            try {
+              await setDoc(doc(db, 'config', user.uid), {
+                googleDriveConnected: false,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            } catch (fsErr) {
+              console.error('[Drive] Error auto-resetting config in Firestore:', fsErr);
+            }
+          }
+          throw new Error('Sessão do Google Drive expirou ou as credenciais são inválidas. reconecte nas Configurações.');
+        }
+        
+        try {
+          const errBody = await res.json();
+          throw new Error(errBody.error || 'Upload failed');
+        } catch {
+          throw new Error('Upload failed');
+        }
+      }
       const data = await res.json();
       addSyncLog({ fileName, status: 'success', url: data.webViewLink, type });
       return data;
     } catch (error: any) {
       console.error('Drive upload error:', error);
       addSyncLog({ fileName, status: 'error', error: error.message, type });
+      toast.error(`Erro ao subir para o Google Drive: ${error.message || 'Falha no upload'}`);
       throw error;
     }
   };
@@ -5752,6 +8173,9 @@ export default function App() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [agreements, setAgreements] = useState<Agreement[]>([]);
+  const [contracts, setContracts] = useState<Contract[]>([]);
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [stagingRecords, setStagingRecords] = useState<StagingRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Auth Listener
@@ -5830,6 +8254,9 @@ export default function App() {
     const qExpenses = userRole === 'admin' ? collection(db, 'expenses') : query(collection(db, 'expenses'), where('ownerId', '==', user.uid));
     const qPayments = userRole === 'admin' ? collection(db, 'payments') : query(collection(db, 'payments'), where('ownerId', '==', user.uid));
     const qAgreements = userRole === 'admin' ? collection(db, 'agreements') : query(collection(db, 'agreements'), where('ownerId', '==', user.uid));
+    const qContracts = userRole === 'admin' ? collection(db, 'contracts') : query(collection(db, 'contracts'), where('ownerId', '==', user.uid));
+    const qTickets = userRole === 'admin' ? collection(db, 'tickets') : query(collection(db, 'tickets'), where('ownerId', '==', user.uid));
+    const qStaging = userRole === 'admin' ? collection(db, 'staging_records') : query(collection(db, 'staging_records'), where('ownerId', '==', user.uid));
 
     const unsubProps = onSnapshot(qProps, (snap) => {
       setProperties(snap.docs.map(d => ({ id: d.id, ...d.data() } as Property)));
@@ -5852,14 +8279,59 @@ export default function App() {
       setAgreements(snap.docs.map(d => ({ id: d.id, ...d.data() } as Agreement)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'agreements'));
 
+    const unsubContracts = onSnapshot(qContracts, (snap) => {
+      setContracts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Contract)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'contracts'));
+
+    const unsubTickets = onSnapshot(qTickets, (snap) => {
+      setTickets(snap.docs.map(d => ({ id: d.id, ...d.data() } as Ticket)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'tickets'));
+
+    const unsubStaging = onSnapshot(qStaging, (snap) => {
+      setStagingRecords(snap.docs.map(d => ({ id: d.id, ...d.data() } as StagingRecord)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'staging_records'));
+
     return () => {
       unsubProps();
       unsubTenants();
       unsubExpenses();
       unsubPayments();
       unsubAgreements();
+      unsubContracts();
+      unsubTickets();
+      unsubStaging();
     };
-  }, [isAuthReady, user]);
+  }, [isAuthReady, user, userRole]);
+
+  // --- Deduplicate Primeiro Aluguel ---
+  useEffect(() => {
+    if (!user || payments.length === 0) return;
+    const deduplicate = async () => {
+      const grouped: Record<string, Payment[]> = {};
+      for (const p of payments) {
+        if (p.type === 'rent' && p.description === 'Primeiro Aluguel') {
+          const key = `${p.propertyId}_${p.tenantId}`;
+          if (!grouped[key]) grouped[key] = [];
+          grouped[key].push(p);
+        }
+      }
+      for (const key in grouped) {
+        if (grouped[key].length > 1) {
+          const sorted = grouped[key].sort((a, b) => {
+             if (a.status !== 'pending' && b.status === 'pending') return -1;
+             if (b.status !== 'pending' && a.status === 'pending') return 1;
+             return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+          });
+          for (let i = 1; i < sorted.length; i++) {
+             if (sorted[i].status === 'pending') {
+               await deleteDoc(doc(db, 'payments', sorted[i].id)).catch(console.error);
+             }
+          }
+        }
+      }
+    };
+    deduplicate();
+  }, [user, payments]);
 
   // Check for late payments
   useEffect(() => {
@@ -5892,28 +8364,146 @@ export default function App() {
 
   const sidebarItems = useMemo(() => {
     const pendingCount = payments.filter(p => p.status === 'pending' || p.status === 'late').length;
+    let alertsCount = 0;
+    let alertsHighestPriority: 'high' | 'medium' | 'low' = 'low';
+    const today = new Date();
+    
+    const isSnoozed = (alertId: string) => {
+      const record = snoozedAlerts[alertId];
+      if (!record) return false;
+      return (Date.now() - record.timestamp) < (record.duration || 172800000);
+    };
+
+    const addAlert = (id: string, priority: 'high' | 'medium' | 'low') => {
+      if (isSnoozed(id)) return;
+      alertsCount++;
+      if (priority === 'high') alertsHighestPriority = 'high';
+      else if (priority === 'medium' && alertsHighestPriority !== 'high') alertsHighestPriority = 'medium';
+    };
+
+    // 1. Documents and Property Maintenance
+    properties.forEach(prop => {
+      if (prop.documents) {
+        prop.documents.forEach(doc => {
+            if (doc.status === 'expired') {
+                addAlert(`doc-exp-${prop.id}-${doc.id}`, 'high');
+            } else if (doc.status === 'missing') {
+                addAlert(`doc-mis-${prop.id}-${doc.id}`, doc.isRequired ? 'high' : 'medium');
+            }
+        });
+      }
+      if (prop.status === 'renovation' && prop.updatedAt) {
+          const updateDate = parseISO(prop.updatedAt);
+          const diffDays = differenceInDays(today, updateDate);
+          if (diffDays > 7) {
+              addAlert(`prop-maint-${prop.id}`, 'medium');
+          }
+      }
+    });
+
+    // 2. Tenants prospect
+    const waitingTenants = tenants.filter(t => t.status === 'waiting');
+    waitingTenants.forEach(t => addAlert(`tenant-prospect-${t.id}`, 'low'));
+
+    // 3. Late payments
+    const todayStr = format(today, 'yyyy-MM-dd');
+    const latePayments = payments.filter(p => p.status === 'late' || (p.status === 'pending' && p.dueDate < todayStr));
+    latePayments.forEach(p => addAlert(`pay-late-${p.id}`, 'high'));
+
+    // 4. Upcoming agreements
+    const nextAgreements = payments.filter(p => p.type === 'agreement' && p.status === 'pending');
+    nextAgreements.forEach(p => {
+        const dueDate = parseISO(p.dueDate);
+        const diffDays = differenceInDays(dueDate, today);
+        if (diffDays >= 0 && diffDays <= 7) {
+            addAlert(`agr-next-${p.id}`, 'low');
+        }
+    });
+
+    // 5. Open tickets
+    tickets.forEach(ticket => {
+        if (ticket.status === 'open' || ticket.status === 'in_progress') {
+            const created = parseISO(ticket.createdAt || new Date().toISOString());
+            const slaDate = addDays(created, ticket.slaDays || 7);
+            const daysToSla = differenceInDays(slaDate, today);
+            
+            let priority: 'high' | 'medium' | 'low' = 'low';
+            if (daysToSla < 0) priority = 'high';
+            else if (daysToSla <= 2) priority = 'medium';
+            
+            addAlert(`ticket-${ticket.id}`, priority);
+        }
+    });
+
+    // 5.5 Contract expiration alerts
+    contracts.forEach(contract => {
+      if (contract.status === 'active' && contract.endDate) {
+        const endDate = parseISO(contract.endDate);
+        const diffDays = differenceInDays(endDate, startOfDay(today));
+        if (diffDays >= 0) {
+          if (diffDays === 30) {
+            addAlert(`contract-exp-30-${contract.id}`, 'medium');
+          } else if (diffDays === 15) {
+            addAlert(`contract-exp-15-${contract.id}`, 'medium');
+          } else if (diffDays <= 5) {
+            addAlert(`contract-exp-daily-${contract.id}-${diffDays}`, 'high');
+          }
+        } else {
+          addAlert(`contract-expired-${contract.id}`, 'high');
+        }
+      }
+    });
+
     const items = [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { id: 'receivables', label: 'Recebimentos', icon: CheckCircle2, badge: pendingCount > 0 ? pendingCount : null },
+      { id: 'intelligence_hub', label: 'Hub Estratégico & Jurídico', icon: Sparkles },
+      { id: 'alerts', label: 'Alertas', icon: Bell, badge: alertsCount > 0 ? alertsCount : null, badgeColor: alertsHighestPriority },
       { id: 'properties', label: 'Imóveis', icon: Home },
       { id: 'tenants', label: 'Inquilinos', icon: Users },
+      { id: 'contracts', label: 'Contratos', icon: FileText },
       { id: 'financial', label: 'Financeiro', icon: DollarSign },
-      { id: 'cloud', label: 'Assistente IA', icon: Sparkles, badge: syncLogs.filter(l => l.status === 'error').length || null },
       { id: 'settings', label: 'Configurações', icon: Settings },
     ];
     
     return items;
-  }, [payments, syncLogs]);
+  }, [payments, syncLogs, properties, tickets, tenants, snoozedAlerts, contracts]);
 
   // --- Actions ---
   
   useEffect(() => {
     if (confirmingPayment) {
-      setPaymentAmountInput(confirmingPayment.amount);
+      if (waiveLateFee) {
+        setPaymentAmountInput(confirmingPayment.amount);
+      } else {
+        const property = properties.find(p => p.id === confirmingPayment.propertyId);
+        const agreement = confirmingPayment.type === 'agreement' ? agreements.find(a => a.id === confirmingPayment.agreementId) : null;
+        const contract = contracts.find(c => c.tenantId === confirmingPayment.tenantId && c.propertyId === confirmingPayment.propertyId && c.status === 'active');
+        
+        // Prioritize agreement, then contract, then fallback to property (for older entries)
+        const configSource = agreement || contract || property;
+
+        const today = new Date();
+        const dueDate = parseISO(confirmingPayment.dueDate);
+        const isLate = differenceInDays(startOfDay(today), startOfDay(dueDate)) > 0;
+        
+        if (configSource && configSource.chargeLateFees && isLate) {
+          const daysLate = differenceInDays(startOfDay(today), startOfDay(dueDate));
+          let interest = 0;
+          if (configSource.lateFeeType === 'fixed') {
+             interest = (configSource.lateFeePenalty || 0) + ((configSource.lateFeeDaily || 0) * Math.max(0, daysLate));
+          } else {
+             interest = (confirmingPayment.amount * ((configSource.lateFeePenalty || 0) / 100)) + 
+                        (confirmingPayment.amount * ((configSource.lateFeeDaily || 0) / 100) * daysLate);
+          }
+          setPaymentAmountInput(Number((confirmingPayment.amount + interest).toFixed(2)));
+        } else {
+          setPaymentAmountInput(confirmingPayment.amount);
+        }
+      }
     } else {
       setPaymentAmountInput(0);
     }
-  }, [confirmingPayment]);
+  }, [confirmingPayment, properties, agreements, waiveLateFee]);
 
   const getNextDueDate = (day: number) => {
     const today = new Date();
@@ -5950,26 +8540,8 @@ export default function App() {
           propertyId: docRef.id,
           updatedAt: new Date().toISOString()
         }));
-
-        // Create separate entries for Rent and Deposit
-        // 1. Rent
-        await addDoc(collection(db, 'payments'), cleanObject({
-          propertyId: docRef.id,
-          tenantId: data.currentTenantId,
-          amount: data.rentValue || 0,
-          dueDate: data.paymentDay ? getNextDueDate(data.paymentDay) : format(addDays(new Date(), 30), 'yyyy-MM-dd'),
-          status: 'pending',
-          ownerId: user.uid,
-          type: 'rent',
-          description: 'Primeiro Aluguel',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }));
-
-        // 2. Deposit if applicable (need to check tenant data, but usually it's in the formData)
-        // Since addProperty logic is also used in the modal, we'll assume the caller passes deposit info if needed
-        // For now, these functions are mostly called from the main dashboard or dedicated views.
       }
+      return docRef.id;
     } catch (err) { handleFirestoreError(err, OperationType.CREATE, 'properties'); }
   };
 
@@ -5999,20 +8571,6 @@ export default function App() {
               updatedAt: new Date().toISOString()
             });
           }
-
-          // Create initial payment if status changed to rented
-          if (oldProp?.status !== 'rented') {
-            await addDoc(collection(db, 'payments'), {
-              propertyId: id,
-              tenantId: data.currentTenantId,
-              amount: data.rentValue || oldProp?.rentValue || 0,
-              dueDate: data.paymentDay ? getNextDueDate(data.paymentDay) : (oldProp?.paymentDay ? getNextDueDate(oldProp.paymentDay) : format(addDays(new Date(), 30), 'yyyy-MM-dd')),
-              status: 'pending',
-              ownerId: user?.uid,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            });
-          }
         }
       } else if (data.status !== 'rented' && oldProp?.status === 'rented' && oldProp?.currentTenantId) {
         // Property was rented but now is not, update tenant to waiting
@@ -6026,18 +8584,36 @@ export default function App() {
   };
 
   const deleteProperty = async (id: string) => {
-    if (!window.confirm('Tem certeza que deseja excluir este imóvel? Todas as informações vinculadas serão perdidas.')) return;
     setIsSubmitting(true);
     try {
+      const batch = writeBatch(db);
       const property = properties.find(p => p.id === id);
+      
+      // Update the current tenant if linked
       if (property?.currentTenantId) {
-        await updateDoc(doc(db, 'tenants', property.currentTenantId), {
+        batch.update(doc(db, 'tenants', property.currentTenantId), {
           status: 'waiting',
           propertyId: '',
           updatedAt: new Date().toISOString()
         });
       }
-      await deleteDoc(doc(db, 'properties', id));
+
+      // Save property name snapshots on financials
+      if (property?.name) {
+        expenses.filter(e => e.propertyId === id).forEach(e => batch.update(doc(db, 'expenses', e.id!), { propertyNameSnapshot: property.name }));
+        payments.filter(p => p.propertyId === id).forEach(p => batch.update(doc(db, 'payments', p.id!), { propertyNameSnapshot: property.name }));
+        agreements.filter(a => a.propertyId === id).forEach(a => batch.update(doc(db, 'agreements', a.id!), { propertyNameSnapshot: property.name }));
+      }
+
+      // Cancelar todos os pagamentos PENDENTES deste imóvel (opcional, mas seguro)
+      payments.filter(p => p.propertyId === id && p.status === 'pending' && p.type === 'rent').forEach(p => {
+        batch.update(doc(db, 'payments', p.id!), { status: 'cancelled', updatedAt: new Date().toISOString() });
+      });
+
+      // Delete the property itself
+      batch.delete(doc(db, 'properties', id));
+
+      await batch.commit();
     } catch (err) { 
       handleFirestoreError(err, OperationType.DELETE, `properties/${id}`); 
     } finally {
@@ -6057,8 +8633,140 @@ export default function App() {
     }
   };
 
+  const addStagingRecord = async (data: Partial<StagingRecord>) => {
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, 'staging_records'), {
+        ...data,
+        ownerId: user?.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      toast.success('Backup adicionado ao arquivo morto!');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'staging_records');
+      throw err;
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const deleteStagingRecord = async (id: string) => {
+    setIsSubmitting(true);
+    try {
+      await deleteDoc(doc(db, 'staging_records', id));
+      toast.success('Registro excluído do arquivo morto!');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `staging_records/${id}`);
+      throw err;
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const activateStagingRecord = async (record: StagingRecord) => {
+    if (!user || !record.id) return;
+    setIsSubmitting(true);
+    try {
+      const parsed = typeof record.parsedData === 'string' ? JSON.parse(record.parsedData) : record.parsedData;
+      if (!Array.isArray(parsed) || parsed.length < 2) {
+          toast.error("Formato de dados inválido ou vazio para ativação.");
+          return;
+      }
+      
+      let batch = writeBatch(db);
+      let importedCount = 0;
+      let operations = 0;
+
+      for (let i = 1; i < parsed.length; i++) {
+         const row = parsed[i];
+         if (!row || !row[0]) continue;
+         
+         const tenantName = row[0];
+         const propertyName = row[1];
+         let rentValue = 0;
+         if (row[2] && row[2] !== '-') {
+             const numStr = String(row[2]).replace(/[^\d.,]/g, '').replace(',', '.');
+             rentValue = parseFloat(numStr) || 0;
+         }
+         const address = row[3] !== '-' ? String(row[3]).trim() : '';
+         const occupancyDate = row[4] !== '-' ? String(row[4]).trim() : '';
+         const paymentsInfo = row[5] && row[5] !== '-' ? String(row[5]).trim() : '';
+         const expenses = row[6] && row[6] !== '-' ? String(row[6]).trim() : '';
+         
+         const propRef = doc(collection(db, 'properties'));
+         const tenantRef = doc(collection(db, 'tenants'));
+         
+         const hasValidProp = propertyName && propertyName !== '-';
+         const hasValidTenant = tenantName && tenantName !== '-';
+         
+         if (!hasValidProp && !hasValidTenant) continue;
+         
+         if (hasValidProp) {
+             const propertyData = cleanObject({
+                name: hasValidProp ? String(propertyName).trim() || `Imóvel Importado ${i}` : `Imóvel Importado ${i}`,
+                address: address,
+                rentValue: rentValue,
+                status: hasValidTenant ? 'rented' : 'vacant',
+                paymentDay: 10,
+                currentTenantId: hasValidTenant ? tenantRef.id : '',
+                ownerId: user.uid,
+                renovationJustification: expenses ? `Gastos e Manutenções: ${expenses}` : '',
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+             });
+             batch.set(propRef, propertyData);
+             operations++;
+         }
+         
+         if (hasValidTenant) {
+             const tenantData = cleanObject({
+                 name: hasValidTenant ? String(tenantName).trim() || `Inquilino Importado ${i}` : `Inquilino Importado ${i}`,
+                 status: hasValidProp ? 'allocated' : 'waiting',
+                 propertyId: hasValidProp ? propRef.id : '',
+                 contact: occupancyDate ? `Histórico de ocupação: ${occupancyDate}` : '',
+                 observations: paymentsInfo ? `Pagamentos e Histórico: ${paymentsInfo}` : '',
+                 ownerId: user.uid,
+                 createdAt: new Date().toISOString(),
+                 updatedAt: new Date().toISOString()
+             });
+             batch.set(tenantRef, tenantData);
+             operations++;
+         }
+         
+         importedCount++;
+
+         if (operations > 450) {
+             await batch.commit();
+             batch = writeBatch(db);
+             operations = 0;
+         }
+      }
+      
+      const recordRef = doc(db, 'staging_records', record.id);
+      batch.update(recordRef, { status: 'imported', updatedAt: new Date().toISOString() });
+      
+      await batch.commit();
+      toast.success(`${importedCount} registros ativados no sistema com sucesso!`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'bulk_import');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const addTenant = async (data: Partial<Tenant>) => {
     if (!user) return;
+    
+    // Check if property is in renovation
+    if (data.status === 'allocated' && data.propertyId) {
+      const property = properties.find(p => p.id === data.propertyId);
+      if (property?.status === 'renovation') {
+        const confirm = window.confirm("Este imóvel está em reforma. Tem certeza que deseja alugá-lo?");
+        if (!confirm) return;
+      }
+    }
+
     try {
       const docRef = await addDoc(collection(db, 'tenants'), cleanObject({
         ...data,
@@ -6069,43 +8777,87 @@ export default function App() {
 
       // If created as allocated with a property, update the property
       if (data.status === 'allocated' && data.propertyId) {
-        const property = properties.find(p => p.id === data.propertyId);
         await updateDoc(doc(db, 'properties', data.propertyId), cleanObject({
           status: 'rented',
           currentTenantId: docRef.id,
+          rentValue: data.rentValue,
+          paymentDay: data.paymentDay,
+          chargeLateFees: data.chargeLateFees,
+          lateFeePenalty: data.lateFeePenalty,
+          lateFeeDaily: data.lateFeeDaily,
+          lateFeeType: data.lateFeeType,
           updatedAt: new Date().toISOString()
         }));
 
-        const dueDate = property?.paymentDay ? getNextDueDate(property.paymentDay) : format(addDays(new Date(), 30), 'yyyy-MM-dd');
+        const dueDate = data.firstRentDueDate ? data.firstRentDueDate : (data.paymentDay ? getNextDueDate(data.paymentDay) : format(addDays(new Date(), 30), 'yyyy-MM-dd'));
+
+        // Automatically create a Contract document
+        const startDateStr = format(new Date(), 'yyyy-MM-dd');
+        const months = data.leaseDurationMonths || 12;
+        const endDateStr = format(addMonths(parseISO(startDateStr), months), 'yyyy-MM-dd');
+
+        const contractData = {
+          tenantId: docRef.id,
+          propertyId: data.propertyId,
+          startDate: startDateStr,
+          endDate: endDateStr,
+          leaseDurationMonths: months,
+          rentValue: data.rentValue || 0,
+          paymentDay: data.paymentDay || 1,
+          chargeLateFees: !!data.chargeLateFees,
+          lateFeePenalty: data.chargeLateFees ? data.lateFeePenalty : undefined,
+          lateFeeDaily: data.chargeLateFees ? data.lateFeeDaily : undefined,
+          lateFeeType: data.chargeLateFees ? data.lateFeeType || 'percentage' : undefined,
+          depositValue: data.initialPaymentType === 'deposit' ? data.depositValue : undefined,
+          depositInstallments: data.initialPaymentType === 'deposit' ? data.depositInstallments : undefined,
+          depositDay: data.initialPaymentType === 'deposit' ? (data.depositDueDate ? Number(data.depositDueDate.split('-')[2]) : data.paymentDay) : undefined,
+          observations: data.observations,
+          status: 'active',
+          ownerId: user.uid,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await addDoc(collection(db, 'contracts'), cleanObject(contractData));
 
         // 1. Rent entry (Revenue)
+        const rentAdj = adjustDateToNextBusinessDay(dueDate);
         await addDoc(collection(db, 'payments'), cleanObject({
           propertyId: data.propertyId,
           tenantId: docRef.id,
-          amount: property?.rentValue || 0,
-          dueDate: dueDate,
+          amount: data.rentValue || 0,
+          dueDate: rentAdj.adjustedDate,
+          originalDueDate: rentAdj.wasAdjusted ? rentAdj.originalDate : undefined,
           status: 'pending',
           ownerId: user.uid,
           type: 'rent',
           description: 'Primeiro Aluguel',
+          observations: rentAdj.wasAdjusted ? rentAdj.adjustmentReason : '',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }));
 
-        // 2. Deposit entries (Guarantee/Liability) if value > 0
-        if (data.depositValue && data.depositValue > 0) {
+        // 2. Deposit Entry if configured
+        if (data.initialPaymentType === 'deposit' && data.depositValue && data.depositValue > 0) {
           const installments = data.depositInstallments || 1;
-          const installmentAmount = data.depositValue / installments;
-          const depositDay = data.depositDay || 10;
+          const installmentValue = data.depositValue / installments;
+          
+          let depositStartDate = data.depositDueDate;
+          if (!depositStartDate) {
+            depositStartDate = dueDate;
+          }
 
           for (let i = 0; i < installments; i++) {
-            const dueDate = i === 0 ? format(new Date(), 'yyyy-MM-dd') : getDepositDueDate(depositDay, i);
+            const currentObjDate = parseISO(depositStartDate);
+            currentObjDate.setMonth(currentObjDate.getMonth() + i);
+            const installmentDueDate = format(currentObjDate, 'yyyy-MM-dd');
+            const depAdj = adjustDateToNextBusinessDay(installmentDueDate);
             
             await addDoc(collection(db, 'payments'), cleanObject({
               propertyId: data.propertyId,
               tenantId: docRef.id,
-              amount: installmentAmount,
-              dueDate: dueDate,
+              amount: installmentValue,
+              dueDate: depAdj.adjustedDate,
+              originalDueDate: depAdj.wasAdjusted ? depAdj.originalDate : undefined,
               status: 'pending',
               depositStatus: 'pending',
               ownerId: user.uid,
@@ -6113,6 +8865,7 @@ export default function App() {
               installmentNumber: i + 1,
               totalInstallments: installments,
               description: installments > 1 ? `Caução (Parcela ${i + 1}/${installments})` : 'Depósito Caução (Garantia)',
+              observations: depAdj.wasAdjusted ? depAdj.adjustmentReason : '',
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
             }));
@@ -6120,6 +8873,7 @@ export default function App() {
         }
       }
       toast.success('Inquilino cadastrado com sucesso!');
+      return docRef.id;
     } catch (err) { handleFirestoreError(err, OperationType.CREATE, 'tenants'); }
   };
 
@@ -6139,6 +8893,12 @@ export default function App() {
           await updateDoc(doc(db, 'properties', data.propertyId), cleanObject({
             status: 'rented',
             currentTenantId: id,
+            rentValue: data.rentValue !== undefined ? data.rentValue : oldTenant?.rentValue,
+            paymentDay: data.paymentDay !== undefined ? data.paymentDay : oldTenant?.paymentDay,
+            chargeLateFees: data.chargeLateFees !== undefined ? data.chargeLateFees : oldTenant?.chargeLateFees,
+            lateFeePenalty: data.lateFeePenalty !== undefined ? data.lateFeePenalty : oldTenant?.lateFeePenalty,
+            lateFeeDaily: data.lateFeeDaily !== undefined ? data.lateFeeDaily : oldTenant?.lateFeeDaily,
+            lateFeeType: data.lateFeeType !== undefined ? data.lateFeeType : oldTenant?.lateFeeType,
             updatedAt: new Date().toISOString()
           }));
 
@@ -6153,36 +8913,77 @@ export default function App() {
 
           // Create initial payment if status changed to allocated
           if (oldTenant?.status !== 'allocated') {
-            const dueDate = property?.paymentDay ? getNextDueDate(property.paymentDay) : format(addDays(new Date(), 30), 'yyyy-MM-dd');
+            const dueDate = data.firstRentDueDate ? data.firstRentDueDate : (data.paymentDay ? getNextDueDate(data.paymentDay) : format(addDays(new Date(), 30), 'yyyy-MM-dd'));
 
-            // 1. Rent entry
+            // Automatically create a Contract document
+            const startDateStr = format(new Date(), 'yyyy-MM-dd');
+            const months = data.leaseDurationMonths !== undefined ? data.leaseDurationMonths : (oldTenant?.leaseDurationMonths || 12);
+            const endDateStr = format(addMonths(parseISO(startDateStr), months), 'yyyy-MM-dd');
+
+            const contractData = {
+              tenantId: id,
+              propertyId: data.propertyId,
+              startDate: startDateStr,
+              endDate: endDateStr,
+              leaseDurationMonths: months,
+              rentValue: data.rentValue || 0,
+              paymentDay: data.paymentDay || 1,
+              chargeLateFees: !!data.chargeLateFees,
+              lateFeePenalty: data.chargeLateFees ? data.lateFeePenalty : undefined,
+              lateFeeDaily: data.chargeLateFees ? data.lateFeeDaily : undefined,
+              lateFeeType: data.chargeLateFees ? data.lateFeeType || 'percentage' : undefined,
+              depositValue: data.initialPaymentType === 'deposit' ? data.depositValue : undefined,
+              depositInstallments: data.initialPaymentType === 'deposit' ? data.depositInstallments : undefined,
+              depositDay: data.initialPaymentType === 'deposit' ? (data.depositDueDate ? Number(data.depositDueDate.split('-')[2]) : data.paymentDay) : undefined,
+              observations: data.observations,
+              status: 'active',
+              ownerId: user?.uid,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+            if (user?.uid) {
+              await addDoc(collection(db, 'contracts'), cleanObject(contractData));
+            }
+
+             // 1. Rent entry
+            const rentAdj = adjustDateToNextBusinessDay(dueDate);
             await addDoc(collection(db, 'payments'), cleanObject({
               propertyId: data.propertyId,
               tenantId: id,
-              amount: property?.rentValue || 0,
-              dueDate: dueDate,
+              amount: data.rentValue || 0,
+              dueDate: rentAdj.adjustedDate,
+              originalDueDate: rentAdj.wasAdjusted ? rentAdj.originalDate : undefined,
               status: 'pending',
               ownerId: user?.uid,
               type: 'rent',
               description: 'Primeiro Aluguel',
+              observations: rentAdj.wasAdjusted ? rentAdj.adjustmentReason : '',
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
             }));
 
             // 2. Deposit entry if exists
-            if (data.depositValue && data.depositValue > 0) {
+            if (data.initialPaymentType === 'deposit' && data.depositValue && data.depositValue > 0) {
               const installments = data.depositInstallments || 1;
-              const installmentAmount = data.depositValue / installments;
-              const depositDay = data.depositDay || 10;
+              const installmentValue = data.depositValue / installments;
+              
+              let depositStartDate = data.depositDueDate;
+              if (!depositStartDate) {
+                depositStartDate = dueDate;
+              }
 
               for (let i = 0; i < installments; i++) {
-                const dueDate = i === 0 ? format(new Date(), 'yyyy-MM-dd') : getDepositDueDate(depositDay, i);
+                const currentObjDate = parseISO(depositStartDate);
+                currentObjDate.setMonth(currentObjDate.getMonth() + i);
+                const installmentDueDate = format(currentObjDate, 'yyyy-MM-dd');
+                const depAdj = adjustDateToNextBusinessDay(installmentDueDate);
 
                 await addDoc(collection(db, 'payments'), cleanObject({
                   propertyId: data.propertyId,
                   tenantId: id,
-                  amount: installmentAmount,
-                  dueDate: dueDate,
+                  amount: installmentValue,
+                  dueDate: depAdj.adjustedDate,
+                  originalDueDate: depAdj.wasAdjusted ? depAdj.originalDate : undefined,
                   status: 'pending',
                   depositStatus: 'pending',
                   ownerId: user?.uid,
@@ -6190,6 +8991,7 @@ export default function App() {
                   installmentNumber: i + 1,
                   totalInstallments: installments,
                   description: installments > 1 ? `Caução (Parcela ${i + 1}/${installments})` : 'Depósito Caução (Garantia)',
+                  observations: depAdj.wasAdjusted ? depAdj.adjustmentReason : '',
                   createdAt: new Date().toISOString(),
                   updatedAt: new Date().toISOString()
                 }));
@@ -6205,6 +9007,21 @@ export default function App() {
           updatedAt: new Date().toISOString()
         }));
       }
+
+      if (data.status === 'archived' && data._createRefundReminder && (oldTenant?.depositBalance || 0) > 0) {
+        await addDoc(collection(db, 'expenses'), cleanObject({
+            propertyId: oldTenant?.propertyId || '',
+            description: `Devolução de Caução - Inquilino ${oldTenant?.name}`,
+            amount: oldTenant?.depositBalance,
+            date: format(new Date(), 'yyyy-MM-dd'),
+            type: 'other',
+            status: 'pending',
+            ownerId: user?.uid,
+            createdAt: new Date().toISOString()
+        }));
+        toast.success(`Uma despesa de devolução foi criada no valor de R$ ${(oldTenant?.depositBalance || 0).toFixed(2)}`);
+      }
+
     } catch (err) { handleFirestoreError(err, OperationType.UPDATE, `tenants/${id}`); }
   };
 
@@ -6236,6 +9053,10 @@ export default function App() {
           evidence: agreementForm.evidence,
           evidenceName: agreementForm.evidenceName,
           evidenceLocation: agreementForm.evidenceLocation,
+          chargeLateFees: agreementForm.chargeLateFees,
+          lateFeePenalty: agreementForm.lateFeePenalty,
+          lateFeeDaily: agreementForm.lateFeeDaily,
+          lateFeeType: agreementForm.lateFeeType,
           updatedAt: new Date().toISOString()
         }));
 
@@ -6317,6 +9138,10 @@ export default function App() {
           evidence: agreementForm.evidence,
           evidenceName: agreementForm.evidenceName,
           evidenceLocation: agreementForm.evidenceLocation,
+          chargeLateFees: agreementForm.chargeLateFees,
+          lateFeePenalty: agreementForm.lateFeePenalty,
+          lateFeeDaily: agreementForm.lateFeeDaily,
+          lateFeeType: agreementForm.lateFeeType,
           ownerId: user.uid,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -6374,7 +9199,11 @@ export default function App() {
         evidence: '',
         evidenceName: '',
         evidenceLocation: '',
-        thumbnailLink: ''
+        thumbnailLink: '',
+        chargeLateFees: false,
+        lateFeePenalty: 10,
+        lateFeeDaily: 0.33,
+        lateFeeType: 'percentage'
       });
     } catch (err) {
       handleFirestoreError(err, agreementForm.id ? OperationType.UPDATE : OperationType.CREATE, 'agreements');
@@ -6420,47 +9249,190 @@ export default function App() {
   const resetSystemData = async () => {
     if (!user) return;
     
-    if (resetConfirmText !== user.email) {
+    if (resetConfirmText.trim().toLowerCase() !== user.email?.toLowerCase()) {
       alert('Para confirmar o reset, digite seu e-mail exatamente como aparece no sistema.');
+      return;
+    }
+
+    if (!resetReason || resetReason.length < 10) {
+      alert('Por favor, informe um motivo válido longo e detalhado (mínimo 10 caracteres).');
       return;
     }
 
     setLoading(true);
     try {
-      const collections = ['properties', 'tenants', 'expenses', 'payments', 'agreements'];
+      const collections = ['properties', 'tenants', 'expenses', 'payments', 'agreements', 'contracts', 'tickets'];
+      
+      setBackupStepMsg('Organizando dados históricos...');
+      
+      // Gathering current snapshot data
+      const systemData: any = {};
+      const allDocsToProcess: { coll: string, id: string, data: any }[] = [];
+      const batchLimit = 500;
       
       for (const collName of collections) {
-        const q = query(collection(db, collName), where('ownerId', '==', user.uid));
+        let q;
+        if (userRole === 'admin') {
+          q = collection(db, collName);
+        } else {
+          q = query(collection(db, collName), where('ownerId', '==', user.uid));
+        }
+        const snap = await getDocs(q);
+        systemData[collName] = snap.docs.length;
+        snap.docs.forEach(d => {
+          allDocsToProcess.push({ coll: collName, id: d.id, data: d.data() });
+        });
+      }
+
+      systemData.payments = { count: systemData.payments || 0 };
+
+      // Generating Gemini Report
+      setBackupStepMsg('Gerando relatório final com Inteligência Artificial...');
+      const summaryText = await generateBackupSummary(systemData, resetReason);
+
+      // Generating JSON Payload
+      setBackupStepMsg('Gerando pacote compactado (JSON)...');
+      const backupPayload = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        reason: resetReason,
+        summary: summaryText,
+        data: allDocsToProcess
+      }, null, 2);
+
+      // Generating PDF
+      setBackupStepMsg('Montando Ata de Encerramento (PDF)...');
+      const docPdf = new jsPDF();
+      docPdf.setFontSize(16);
+      docPdf.text('Ata de Encerramento e Backup', 20, 20);
+      docPdf.setFontSize(10);
+      docPdf.text(`Data: ${new Date().toLocaleDateString('pt-BR')}`, 20, 30);
+      docPdf.text(`Motivo: ${resetReason}`, 20, 40);
+      
+      const splitText = docPdf.splitTextToSize(summaryText, 170);
+      docPdf.text(splitText, 20, 50);
+
+      const pdfBlob = docPdf.output('blob');
+      const pdfBase64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(pdfBlob);
+      });
+
+      const jsonBlob = new Blob([backupPayload], { type: 'application/json' });
+      const jsonBase64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(jsonBlob);
+      });
+
+      if (isDriveConnected && uploadToDrive) {
+        try {
+          setBackupStepMsg('Enviando arquivos para o Google Drive...');
+          await uploadToDrive(`Backup_Relatorio_${Date.now()}.pdf`, pdfBase64, 'application/pdf', 'Gerente imobiliário Backups', 'receipt');
+          await uploadToDrive(`Backup_Dados_${Date.now()}.json`, jsonBase64, 'application/json', 'Gerente imobiliário Backups', 'receipt');
+        } catch (driveErr) {
+          console.error('[Reset] Google Drive backup failed. Falling back to browser downloads.', driveErr);
+          toast.error('O upload de backup no Google Drive falhou. Iniciando download dos arquivos localmente no navegador por segurança.');
+          
+          // Fallback: browser download
+          const urlJSON = URL.createObjectURL(jsonBlob);
+          const aJSON = document.createElement('a');
+          aJSON.href = urlJSON;
+          aJSON.download = `Backup_Dados_${Date.now()}.json`;
+          aJSON.click();
+          
+          const urlPDF = URL.createObjectURL(pdfBlob);
+          const aPDF = document.createElement('a');
+          aPDF.href = urlPDF;
+          aPDF.download = `Backup_Relatorio_${Date.now()}.pdf`;
+          aPDF.click();
+        }
+      } else {
+        // Fallback: browser download
+        const urlJSON = URL.createObjectURL(jsonBlob);
+        const aJSON = document.createElement('a');
+        aJSON.href = urlJSON;
+        aJSON.download = `Backup_Dados_${Date.now()}.json`;
+        aJSON.click();
+        
+        const urlPDF = URL.createObjectURL(pdfBlob);
+        const aPDF = document.createElement('a');
+        aPDF.href = urlPDF;
+        aPDF.download = `Backup_Relatorio_${Date.now()}.pdf`;
+        aPDF.click();
+      }
+
+      // We use chunks here to bypass firestore limits, but wait, copying all to archives
+      setBackupStepMsg('Movendo dados para o Arquivo Perpétuo...');
+      
+      for (const collName of collections) {
+        let q;
+        if (userRole === 'admin') {
+          q = collection(db, collName);
+        } else {
+          q = query(collection(db, collName), where('ownerId', '==', user.uid));
+        }
+        
         const snap = await getDocs(q);
         
-        const deletePromises = snap.docs.map(d => deleteDoc(doc(db, collName, d.id)));
+        const deletePromises = snap.docs.map(async (d) => {
+            // write to archives
+            await setDoc(doc(db, `archived_${collName}`, d.id), {
+               ...(d.data() as object),
+               __archivedAt: new Date().toISOString(),
+               __archiveReason: resetReason
+            });
+            // delete from active
+            await deleteDoc(doc(db, collName, d.id));
+        });
         await Promise.all(deletePromises);
       }
       
-      alert('Sistema resetado com sucesso! Todos os dados foram removidos.');
+      alert('Ciclo com sucesso! Todos os dados foram arquivados e seu backup foi salvo.');
       setIsResetModalOpen(false);
       setResetConfirmText('');
+      setResetReason('');
+      setBackupStepMsg('');
       setActiveTab('dashboard');
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, 'system-reset');
     } finally {
       setLoading(false);
+      setBackupStepMsg('');
     }
   };
 
   const deleteTenant = async (id: string) => {
-    if (!window.confirm('Tem certeza que deseja excluir este inquilino?')) return;
     setIsSubmitting(true);
     try {
+      const batch = writeBatch(db);
       const property = properties.find(p => p.currentTenantId === id);
+      
+      // Update property to vacant if tenant currently occupies it
       if (property) {
-        await updateDoc(doc(db, 'properties', property.id), {
+        batch.update(doc(db, 'properties', property.id!), {
           status: 'vacant',
           currentTenantId: '',
           updatedAt: new Date().toISOString()
         });
       }
-      await deleteDoc(doc(db, 'tenants', id));
+
+      // Save tenant name snapshots on financials
+      const tenant = tenants.find(t => t.id === id);
+      if (tenant?.name) {
+        payments.filter(p => p.tenantId === id).forEach(p => batch.update(doc(db, 'payments', p.id!), { tenantNameSnapshot: tenant.name }));
+        agreements.filter(a => a.tenantId === id).forEach(a => batch.update(doc(db, 'agreements', a.id!), { tenantNameSnapshot: tenant.name }));
+      }
+
+      // Cancelar todos os pagamentos PENDENTES deste inquilino
+      payments.filter(p => p.tenantId === id && p.status === 'pending' && p.type === 'rent').forEach(p => {
+        batch.update(doc(db, 'payments', p.id!), { status: 'cancelled', updatedAt: new Date().toISOString() });
+      });
+
+      // Finally delete the tenant
+      batch.delete(doc(db, 'tenants', id));
+
+      await batch.commit();
     } catch (err) { 
       handleFirestoreError(err, OperationType.DELETE, `tenants/${id}`); 
     } finally {
@@ -6482,8 +9454,17 @@ export default function App() {
   const addPayment = async (data: Partial<Payment>) => {
     if (!user) return;
     try {
+      let finalData = { ...data };
+      if (data.dueDate) {
+        const adj = adjustDateToNextBusinessDay(data.dueDate);
+        if (adj.wasAdjusted) {
+          finalData.dueDate = adj.adjustedDate;
+          finalData.originalDueDate = adj.originalDate;
+          finalData.observations = adj.adjustmentReason + (data.observations ? ' ' + data.observations : '');
+        }
+      }
       await addDoc(collection(db, 'payments'), cleanObject({
-        ...data,
+        ...finalData,
         ownerId: user.uid,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -6491,12 +9472,12 @@ export default function App() {
     } catch (err) { handleFirestoreError(err, OperationType.CREATE, 'payments'); }
   };
 
-  const markPaymentAsPaid = async (paymentId: string, paidAmount?: number, receiptUrl?: string, evidenceName?: string, evidenceLocation?: string, remainderDueDate?: string, remainderObservations?: string, thumbnailLink?: string) => {
+  const markPaymentAsPaid = async (paymentId: string, paidAmount?: number, receiptUrl?: string, evidenceName?: string, evidenceLocation?: string, remainderDueDate?: string, remainderObservations?: string, thumbnailLink?: string, waivedLateFee?: boolean, waivedLateFeeReason?: string) => {
     try {
       const payment = payments.find(p => p.id === paymentId);
       if (!payment) return;
 
-      const isPartial = paidAmount !== undefined && paidAmount < payment.amount;
+      const isPartial = paidAmount !== undefined && paidAmount < payment.amount && !waivedLateFee;
       const amountToPay = paidAmount !== undefined ? paidAmount : payment.amount;
 
       // Update current payment as paid (or partial)
@@ -6509,6 +9490,8 @@ export default function App() {
         evidenceName: evidenceName || null,
         evidenceLocation: evidenceLocation || null,
         thumbnailLink: thumbnailLink || null,
+        waivedLateFee: waivedLateFee || null,
+        waivedLateFeeReason: waivedLateFeeReason || null,
         updatedAt: new Date().toISOString()
       }));
 
@@ -6528,16 +9511,20 @@ export default function App() {
           
         const newDescription = `Restante: ${baseDescription} (${nextPart}ª parte de R$ ${originalAmountForRemainder.toLocaleString()})`;
 
+        const inputRemainderDueDate = remainderDueDate || payment.dueDate;
+        const remainderAdj = adjustDateToNextBusinessDay(inputRemainderDueDate);
+
         await addDoc(collection(db, 'payments'), cleanObject({
           propertyId: payment.propertyId,
           tenantId: payment.tenantId,
           amount: remainder,
-          dueDate: remainderDueDate || payment.dueDate,
+          dueDate: remainderAdj.adjustedDate,
+          originalDueDate: remainderAdj.wasAdjusted ? remainderAdj.originalDate : undefined,
           status: 'pending',
           ownerId: payment.ownerId,
           type: payment.type || 'rent',
           description: newDescription,
-          observations: `Pagamento parcial de R$ ${amountToPay.toLocaleString()} realizado em ${format(new Date(), 'dd/MM/yyyy')}.${remainderObservations ? ' Obs: ' + remainderObservations : ''}`,
+          observations: `Pagamento parcial de R$ ${amountToPay.toLocaleString()} realizado em ${format(new Date(), 'dd/MM/yyyy')}.${remainderObservations ? ' Obs: ' + remainderObservations : ''}${remainderAdj.wasAdjusted ? ' / ' + remainderAdj.adjustmentReason : ''}`,
           agreementId: payment.agreementId || null,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -6585,13 +9572,14 @@ export default function App() {
 
   const confirmRemoveTenant = async () => {
     if (!removeTenantData || !user) return;
-    
-    executeWithSecurity(async () => {
-      const { propertyId, tenantId, action } = removeTenantData;
 
-      try {
+    const { propertyId, tenantId, action } = removeTenantData;
+
+    try {
+        const batch = writeBatch(db);
+
         // 1. Update Property to vacant
-        await updateDoc(doc(db, 'properties', propertyId), {
+        batch.update(doc(db, 'properties', propertyId), {
           status: 'vacant',
           currentTenantId: '',
           updatedAt: new Date().toISOString()
@@ -6599,26 +9587,52 @@ export default function App() {
 
         // 2. Update or Delete Tenant
         if (action === 'delete') {
-          await deleteDoc(doc(db, 'tenants', tenantId));
+          const tenant = tenants.find(t => t.id === tenantId);
+          if (tenant?.name) {
+             payments.filter(p => p.tenantId === tenantId).forEach(p => {
+               if (p.id) batch.update(doc(db, 'payments', p.id), { tenantNameSnapshot: tenant.name });
+             });
+             agreements.filter(a => a.tenantId === tenantId).forEach(a => {
+               if (a.id) batch.update(doc(db, 'agreements', a.id), { tenantNameSnapshot: tenant.name });
+             });
+          }
+          batch.delete(doc(db, 'tenants', tenantId));
         } else {
-          await updateDoc(doc(db, 'tenants', tenantId), {
+          batch.update(doc(db, 'tenants', tenantId), {
             status: action,
             propertyId: '',
             updatedAt: new Date().toISOString()
           });
         }
 
-        // 3. Cancel pending payments for this tenant and property
+        // 3. Cancel ONLY pending rents for this tenant and property (keep agreements and late payments)
         const pendingPayments = payments.filter(p => 
           p.tenantId === tenantId && 
           p.propertyId === propertyId && 
-          (p.status === 'pending' || p.status === 'late')
+          p.status === 'pending' &&
+          p.type === 'rent'
         );
 
         for (const p of pendingPayments) {
           if (p.id) {
-            await updateDoc(doc(db, 'payments', p.id), {
+            batch.update(doc(db, 'payments', p.id), {
               status: 'cancelled',
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+        
+        // 3.5 End active contracts
+        const activeContracts = contracts.filter(c => 
+          c.tenantId === tenantId && 
+          c.propertyId === propertyId && 
+          c.status === 'active'
+        );
+        for (const contract of activeContracts) {
+          if (contract.id) {
+            batch.update(doc(db, 'contracts', contract.id), {
+              status: 'ended',
+              endDate: format(new Date(), 'yyyy-MM-dd'),
               updatedAt: new Date().toISOString()
             });
           }
@@ -6627,7 +9641,8 @@ export default function App() {
         // 4. Handle settlement payment if any
         if (settlementAmount > 0) {
           const finalAmount = settlementType === 'extra' ? settlementAmount : -settlementAmount;
-          await addDoc(collection(db, 'payments'), {
+          const newPaymentRef = doc(collection(db, 'payments'));
+          batch.set(newPaymentRef, {
             propertyId,
             tenantId,
             amount: finalAmount,
@@ -6641,12 +9656,13 @@ export default function App() {
           });
         }
 
+        await batch.commit();
+
         setIsRemoveTenantModalOpen(false);
         setRemoveTenantData(null);
-      } catch (err) { 
+    } catch (err) { 
         handleFirestoreError(err, OperationType.UPDATE, `properties/${propertyId}`); 
-      }
-    });
+    }
   };
 
   const DepositManager = ({ tenant, payments, onUpdatePayment }: { tenant: Tenant; payments: Payment[]; onUpdatePayment: (id: string, data: Partial<Payment>) => Promise<void> }) => {
@@ -6927,16 +9943,56 @@ export default function App() {
     }
 
     switch (activeTab) {
+      case 'intelligence_hub':
+        return <IntelligenceHubView properties={properties} updateProperty={updateProperty} addProperty={addProperty} addTenant={addTenant} onNavigateToCreated={() => setActiveTab('properties')} onOpenContractTemplate={(type) => { setInitialContractTemplate(type); setActiveTab('contracts'); }} stagingRecords={stagingRecords} onSaveStagingRecord={addStagingRecord} onDeleteStagingRecord={deleteStagingRecord} onActivateStagingRecord={activateStagingRecord} isOnline={isOnline} />;
       case 'dashboard':
-        return <HomeView properties={properties} tenants={tenants} payments={payments} expenses={expenses} agreements={agreements} onConfirmPayment={redirectToReceivables} onOpenTenantDetail={handleOpenTenantDetail} />;
+        return (() => {
+          const alertsItem = sidebarItems.find(i => i.id === 'alerts') as any;
+          return <HomeView properties={properties} tenants={tenants} payments={payments} expenses={expenses} agreements={agreements} onConfirmPayment={redirectToReceivables} onOpenTenantDetail={handleOpenTenantDetail} onOpenAlerts={() => setActiveTab('alerts')} globalAlertsCount={alertsItem?.badge} globalAlertsPriority={alertsItem?.badgeColor || 'low'} />;
+        })();
       case 'properties':
-        return <PropertiesView properties={properties} tenants={tenants} payments={payments} addProperty={addProperty} updateProperty={updateProperty} deleteProperty={deleteProperty} removeTenantFromProperty={removeTenantFromProperty} onSecurityCheck={executeWithSecurity} />;
+        return <PropertiesView 
+          properties={properties} 
+          tenants={tenants} 
+          payments={payments} 
+          expenses={expenses} 
+          addProperty={addProperty} 
+          updateProperty={updateProperty} 
+          deleteProperty={deleteProperty} 
+          removeTenantFromProperty={removeTenantFromProperty} 
+          onSecurityCheck={executeWithSecurity} 
+          onOpenLegal={() => setActiveTab('intelligence_hub')} 
+          addExpense={addExpense} 
+          deleteExpense={deleteExpense} 
+          uploadToDrive={uploadToDrive}
+          onNavigateToCreateTenant={(propertyId) => {
+            setInitialPropertyIdForTenant(propertyId);
+            setActiveTab('tenants');
+          }}
+          onNavigateToEditTenant={(tenantId) => {
+            setInitialTenantIdToEdit(tenantId);
+            setActiveTab('tenants');
+          }}
+        />;
+      case 'contracts':
+        return (
+          <ContractsView
+            contracts={contracts}
+            properties={properties}
+            tenants={tenants}
+            onSecurityCheck={executeWithSecurity}
+            isDriveConnected={isDriveConnected}
+            uploadToDrive={uploadToDrive}
+            initialOpenTemplate={initialContractTemplate}
+          />
+        );
       case 'tenants':
         return (
           <TenantsView 
             tenants={tenants} 
             properties={properties} 
             payments={payments} 
+            contracts={contracts}
             addTenant={addTenant} 
             updateTenant={updateTenant} 
             deleteTenant={deleteTenant} 
@@ -6945,46 +10001,82 @@ export default function App() {
             isDriveConnected={isDriveConnected}
             uploadToDrive={uploadToDrive}
             setPreviewReceipt={setPreviewReceipt}
+            initialPropertyId={initialPropertyIdForTenant}
+            onClearInitialPropertyId={() => setInitialPropertyIdForTenant(null)}
+            initialTenantIdToEdit={initialTenantIdToEdit}
+            onClearInitialTenantIdToEdit={() => setInitialTenantIdToEdit(null)}
           />
         );
       case 'receivables':
-        return (
-          <ReceivablesView 
-            properties={properties} 
-            tenants={tenants} 
-            payments={payments} 
-            agreements={agreements} 
-            setConfirmingPayment={setConfirmingPayment} 
-            setIsPaymentModalOpen={setIsPaymentModalOpen} 
-            onOpenTenantDetail={handleOpenTenantDetail}
-            highlightedPaymentId={highlightedPaymentId}
-            setHighlightedPaymentId={setHighlightedPaymentId}
-            isDriveConnected={isDriveConnected}
-            uploadToDrive={uploadToDrive}
-          />
-        );
       case 'financial':
         return (
-          <FinancialView 
-            properties={properties} 
-            tenants={tenants} 
-            payments={payments} 
-            expenses={expenses} 
-            agreements={agreements}
-            addExpense={addExpense} 
-            deleteExpense={deleteExpense}
-            addPayment={addPayment} 
-            markPaymentAsPaid={markPaymentAsPaid} 
-            setIsAgreementModalOpen={setIsAgreementModalOpen}
-            onConfirmPayment={redirectToReceivables}
-            setArchivingAgreement={setArchivingAgreement}
-            setIsArchiveAgreementModalOpen={setIsArchiveAgreementModalOpen}
-            setIsRevertModalOpen={setIsRevertModalOpen}
-            setRevertingPayment={setRevertingPayment}
-            onOpenTenantDetail={handleOpenTenantDetail}
-            isDriveConnected={isDriveConnected}
-            uploadToDrive={uploadToDrive}
-            setPreviewReceipt={setPreviewReceipt}
+          <UnifiedFinancialHub 
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            receivablesProps={{
+              properties,
+              tenants,
+              payments,
+              agreements,
+              setConfirmingPayment,
+              setIsPaymentModalOpen,
+              onOpenTenantDetail: handleOpenTenantDetail,
+              highlightedPaymentId,
+              setHighlightedPaymentId,
+              isDriveConnected,
+              uploadToDrive
+            }}
+            financialProps={{
+              properties,
+              tenants,
+              payments,
+              expenses,
+              agreements,
+              addExpense,
+              deleteExpense,
+              addPayment,
+              markPaymentAsPaid,
+              setIsAgreementModalOpen,
+              onConfirmPayment: redirectToReceivables,
+              setArchivingAgreement,
+              setIsArchiveAgreementModalOpen,
+              setIsRevertModalOpen,
+              setRevertingPayment,
+              onOpenTenantDetail: handleOpenTenantDetail,
+              isDriveConnected,
+              uploadToDrive,
+              setPreviewReceipt
+            }}
+          />
+        );
+      case 'alerts':
+      case 'tickets':
+        return (
+          <UnifiedAlertsHub 
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            alertsProps={{
+              properties,
+              tenants,
+              payments,
+              agreements,
+              tickets,
+              contracts,
+              isAlertSnoozed,
+              handleSnoozeAlert,
+              handleNavigate,
+              openJustifyRenovation: (p: Property) => {
+                setJustifyingProperty(p);
+                setIsJustifyRenovationModalOpen(true);
+              }
+            }}
+            ticketsProps={{
+              tickets,
+              properties,
+              tenants,
+              user,
+              handleNavigate
+            }}
           />
         );
       case 'settings':
@@ -7006,6 +10098,8 @@ export default function App() {
             onConnectDrive={handleConnectDrive}
             onDisconnectDrive={handleDisconnectDrive}
             setPreviewReceipt={setPreviewReceipt}
+            isInstallable={isInstallable}
+            handleInstallClick={handleInstallClick}
           />
         );
       case 'cloud':
@@ -7025,16 +10119,59 @@ export default function App() {
             user={user}
             addProperty={addProperty}
             addTenant={addTenant}
+            isAlertSnoozed={isAlertSnoozed}
+            handleSnoozeAlert={handleSnoozeAlert}
+            handleNavigate={handleNavigate}
+            isOnline={isOnline}
           />
         );
       case 'help':
         return <HelpView />;
       default:
-        return <HomeView properties={properties} tenants={tenants} payments={payments} expenses={expenses} agreements={agreements} onConfirmPayment={redirectToReceivables} onOpenTenantDetail={handleOpenTenantDetail} />;
+        return (() => {
+          const alertsItem = sidebarItems.find(i => i.id === 'alerts') as any;
+          return <HomeView properties={properties} tenants={tenants} payments={payments} expenses={expenses} agreements={agreements} onConfirmPayment={redirectToReceivables} onOpenTenantDetail={handleOpenTenantDetail} onOpenAlerts={() => setActiveTab('alerts')} globalAlertsCount={alertsItem?.badge} globalAlertsPriority={alertsItem?.badgeColor || 'low'} />;
+        })();
     }
   };
 
-  if (!isAuthReady) return <div className="h-screen flex items-center justify-center"><Clock className="animate-spin text-indigo-500 w-12 h-12" /></div>;
+  if (!isAuthReady) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center bg-slate-950 p-4 relative overflow-hidden">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-[100px] pointer-events-none mix-blend-screen" />
+        <div className="absolute bottom-1/4 right-1/4 w-[30rem] h-[30rem] bg-indigo-500/10 rounded-full blur-[100px] pointer-events-none mix-blend-screen" />
+        
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.8, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 300, damping: 20 }}
+          className="flex flex-col items-center gap-8 z-10"
+        >
+          <motion.img 
+            src="/robot_thinking_3d.png" 
+            alt="Robô Assistente" 
+            className="w-40 h-40 object-contain drop-shadow-[0_0_15px_rgba(255,255,255,0.1)]"
+            animate={{ 
+              y: [0, -10, 0],
+            }}
+            transition={{ 
+              repeat: Infinity, 
+              duration: 2.5,
+              ease: "easeInOut" 
+            }}
+          />
+          <div className="flex flex-col items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-white">Olá! Preparando seu ambiente...</h1>
+            <div className="flex gap-2.5 mt-2">
+              <motion.div className="w-2.5 h-2.5 bg-emerald-500 rounded-full" animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1, delay: 0 }} />
+              <motion.div className="w-2.5 h-2.5 bg-emerald-500 rounded-full" animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} />
+              <motion.div className="w-2.5 h-2.5 bg-emerald-500 rounded-full" animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} />
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -7056,7 +10193,7 @@ export default function App() {
             <h1 className="text-3xl font-black text-white tracking-tight leading-none mb-2">
               <span className="text-emerald-400">GERENTE</span> <span className="text-indigo-400">IMOBILIÁRIO</span>
             </h1>
-            <p className="text-slate-400 font-medium tracking-tight">Controle total dos seus imóveis. <span className="text-[10px] opacity-30">v4.1.1</span></p>
+            <p className="text-slate-400 font-medium tracking-tight">Controle total dos seus imóveis. <span className="text-[10px] opacity-30">v5.3.0</span></p>
           </div>
           <div className="bg-white/5 p-2 rounded-2xl border border-white/5 shadow-inner">
             <Auth key="login-form" user={user} />
@@ -7068,101 +10205,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row">
-      {/* PWA Installation Assistant Modal */}
-      <Modal 
-        isOpen={showPwaGuide} 
-        onClose={() => setShowPwaGuide(false)} 
-        title="Assistente de Instalação PWA v4.1.1"
-      >
-        <div className="space-y-6">
-          <div className="flex items-center gap-4 p-4 bg-indigo-50 border border-indigo-100 rounded-[2rem] shadow-inner mb-2">
-            <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-lg shrink-0">
-               <LogoSVG className="w-8 h-8" />
-            </div>
-            <div>
-              <h3 className="font-black text-indigo-900 tracking-tight leading-4">Agente de Suporte</h3>
-              <p className="text-[10px] uppercase font-bold text-indigo-500 tracking-widest mt-1">Monitoramento Ativo</p>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <p className="text-sm font-medium text-slate-600 leading-relaxed">
-              Olá! Identifiquei que você está acessando pelo navegador. Para uma experiência completa de **Gerente Imobiliário**, instale nosso aplicativo nativo.
-            </p>
-
-            <div className="grid gap-3">
-              <div className="p-4 bg-white border border-slate-100 rounded-2xl shadow-sm space-y-2">
-                <div className="flex items-center gap-2 mb-1">
-                  <Monitor className="w-4 h-4 text-emerald-500" />
-                  <span className="font-bold text-xs uppercase tracking-wider text-slate-800">Android / Chrome</span>
-                </div>
-                <p className="text-xs text-slate-500">1. Clique no botão azul **"Instalar Aplicativo"** abaixo.<br/>2. Ou clique nos <span className="font-extrabold">3 pontos</span> do navegador e escolha <span className="font-extrabold underline">"Instalar aplicativo"</span>.</p>
-              </div>
-
-              <div className="p-4 bg-white border border-slate-100 rounded-2xl shadow-sm space-y-2">
-                <div className="flex items-center gap-2 mb-1">
-                  <Smartphone className="w-4 h-4 text-indigo-500" />
-                  <span className="font-bold text-xs uppercase tracking-wider text-slate-800">iOS / Safari (iPhone)</span>
-                </div>
-                <p className="text-xs text-slate-500">1. Toque no botão de **Compartilhar** (ícone do quadrado com seta pra cima).<br/>2. Role para baixo e selecione <span className="font-extrabold underline">"Adicionar à Tela de Início"</span>.</p>
-              </div>
-            </div>
-
-            <div className="pt-4 flex flex-col gap-3">
-              {isInstallable ? (
-                <Button 
-                  onClick={() => {
-                    handleInstallClick();
-                  }}
-                  className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-base shadow-xl rounded-2xl flex items-center justify-center gap-3 active:scale-95 transition-all"
-                >
-                  <Download className="w-6 h-6" /> INSTALAR AGORA
-                </Button>
-              ) : (
-                <div className="p-4 bg-slate-100 rounded-2xl border border-slate-200 flex items-center justify-center gap-3">
-                   <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                   <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Aguardando gatilho do navegador...</span>
-                </div>
-              )}
-              
-              <Button 
-                variant="outline" 
-                onClick={() => setShowPwaGuide(false)} 
-                className="w-full py-3 rounded-xl text-slate-400 border-slate-200"
-              >
-                Talvez depois
-              </Button>
-            </div>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Floating Installation Assistant Toggle */}
-      {!window.matchMedia('(display-mode: standalone)').matches && (
-        <motion.button
-          initial={{ scale: 0, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          onClick={() => setShowPwaGuide(true)}
-          className="fixed bottom-24 right-6 md:bottom-32 md:right-10 z-[60] w-14 h-14 bg-indigo-600 text-white rounded-full shadow-[0_10px_40px_rgba(79,70,229,0.4)] flex items-center justify-center group"
-          title="Assistente de Instalação"
-        >
-          <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full border-2 border-white flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
-             <span className="text-[10px] font-black leading-none">1</span>
-          </div>
-          <motion.div
-            animate={{ rotate: [0, 10, -10, 0] }}
-            transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-          >
-            <Download className="w-6 h-6" />
-          </motion.div>
-          <div className="absolute right-full mr-4 bg-slate-900 text-white px-3 py-1.5 rounded-xl whitespace-nowrap text-xs font-bold opacity-0 translate-x-4 group-hover:opacity-100 group-hover:translate-x-0 transition-all pointer-events-none">
-             Instalar Aplicativo Nativo
-          </div>
-        </motion.button>
-      )}
-
       {/* Receipt Preview Modal */}
       <Modal 
         isOpen={!!previewReceipt} 
@@ -7221,16 +10263,33 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button 
-            onClick={() => setActiveTab('cloud')}
-            className={cn(
-              "p-2 rounded-xl transition-all active:scale-95",
-              isDriveConnected ? "text-emerald-400 bg-emerald-500/10" : "text-slate-400 bg-slate-800/50"
-            )}
-            title="Central Cloud"
-          >
-            {isDriveConnected ? <Cloud className="w-5 h-5" /> : <CloudOff className="w-5 h-5" />}
-          </button>
+          {(() => {
+            const alertsItem = sidebarItems.find(i => i.id === 'alerts') as any;
+            const alertsBadge = alertsItem?.badge;
+            const alertsColor = alertsItem?.badgeColor || 'low';
+            return (
+              <button 
+                onClick={() => setActiveTab('alerts')}
+                className={cn(
+                  "relative p-2 rounded-xl transition-all active:scale-95 text-slate-400 bg-slate-800/50 hover:bg-slate-800",
+                  activeTab === 'alerts' && "text-amber-400 bg-amber-500/10"
+                )}
+                title="Central de Alertas"
+              >
+                <Bell className="w-5 h-5" />
+                {alertsBadge && (
+                  <span className={cn(
+                    "absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 flex items-center justify-center rounded-full text-[9px] font-black shadow-[0_0_0_2px_#0f172a]",
+                    alertsColor === 'high' ? "bg-rose-500 text-white" :
+                    alertsColor === 'medium' ? "bg-amber-500 text-amber-950" :
+                    "bg-blue-500 text-white"
+                  )}>
+                    {alertsBadge}
+                  </span>
+                )}
+              </button>
+            );
+          })()}
         </div>
       </header>
 
@@ -7321,13 +10380,21 @@ export default function App() {
                         {item.label}
                       </span>
 
-                      {item.badge && (
+                      {(item as any).badge && (
                         <span className={cn(
                           "shrink-0 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase shadow-sm transition-all duration-300",
                           "md:opacity-0 md:-translate-x-2 md:absolute md:right-0 md:group-hover:opacity-100 md:group-hover:translate-x-0 md:group-hover:relative md:group-hover:left-0",
-                          isActive ? "bg-white text-emerald-600" : "bg-emerald-100 text-emerald-600"
+                          isActive 
+                            ? (item.id === 'alerts' && (item as any).badgeColor === 'high' ? "bg-white text-rose-600" :
+                               item.id === 'alerts' && (item as any).badgeColor === 'medium' ? "bg-white text-amber-600" :
+                               item.id === 'alerts' && (item as any).badgeColor === 'low' ? "bg-white text-blue-600" :
+                               "bg-white text-emerald-600")
+                            : (item.id === 'alerts' && (item as any).badgeColor === 'high' ? "bg-rose-100 text-rose-600" :
+                               item.id === 'alerts' && (item as any).badgeColor === 'medium' ? "bg-amber-100 text-amber-600" :
+                               item.id === 'alerts' && (item as any).badgeColor === 'low' ? "bg-blue-100 text-blue-600" :
+                               "bg-emerald-100 text-emerald-600")
                         )}>
-                          {item.badge}
+                          {(item as any).badge}
                         </span>
                       )}
                     </div>
@@ -7403,41 +10470,64 @@ export default function App() {
             {renderContent()}
           </motion.div>
         </AnimatePresence>
+
+        <CustomRobotAssistant alertsCount={(() => {
+           const alertsItem = sidebarItems.find(i => i.id === 'alerts') as any;
+           return alertsItem?.badge || 0;
+        })()} onOpenAssistant={() => setActiveTab('cloud')} />
       </main>
 
       {/* Global Modals */}
-      <Modal isOpen={isResetModalOpen} onClose={() => setIsResetModalOpen(false)} title="Autorização de Limpeza">
+      <Modal isOpen={isResetModalOpen} onClose={() => setIsResetModalOpen(false)} title="Backup e Reinicialização do Sistema">
         <div className="space-y-6">
-          <div className="p-4 bg-red-50 border border-red-100 rounded-xl flex gap-3">
-            <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
-            <div className="text-sm text-red-800">
-              <p className="font-bold uppercase tracking-tight">Ação Irreversível!</p>
-              <p>Todos os dados serão apagados permanentemente. Para confirmar, você deve se identificar.</p>
+          <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl flex gap-3">
+            <DatabaseBackup className="w-5 h-5 text-indigo-500 shrink-0" />
+            <div className="text-sm text-indigo-900">
+              <p className="font-bold uppercase tracking-tight">Arquivamento de Ciclo</p>
+              <p>Os dados serão movidos para históricos e um relatório inteligente (PDF) será gerado. Apenas o e-mail verificado pode autorizar.</p>
             </div>
           </div>
 
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase">Digite seu e-mail para confirmar:</label>
+              <label className="text-xs font-semibold text-slate-500 uppercase">Motivo Funcional (Obrigatório):</label>
+              <textarea 
+                className="w-full min-h-[80px] p-3 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 hover:border-slate-300 resize-none font-medium text-slate-800"
+                placeholder="Exemplo: Fim do ano fiscal 2026. A carteira de clientes está sendo fechada..."
+                value={resetReason}
+                onChange={e => setResetReason(e.target.value)}
+                disabled={loading}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase">Confirme seu E-mail:</label>
               <Input 
                 id="reset-email-confirm"
                 placeholder={user?.email || ''} 
                 value={resetConfirmText} 
                 onChange={e => setResetConfirmText(e.target.value)} 
+                disabled={loading}
               />
-              <p className="text-[10px] text-muted-foreground italic">Solicitamos seu e-mail como confirmação de segurança para esta ação crítica.</p>
             </div>
+
+            {loading && backupStepMsg && (
+              <div className="p-3 bg-slate-50 rounded-lg flex items-center gap-3">
+                <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0"></div>
+                <p className="text-xs font-bold text-slate-600 animate-pulse">{backupStepMsg}</p>
+              </div>
+            )}
 
             <div className="pt-2 flex gap-3">
               <Button 
-                variant="danger" 
-                className="flex-1 py-3" 
-                onClick={() => executeWithSecurity(resetSystemData, "Ao confirmar, todos os dados do sistema serão apagados permanentemente.")}
-                disabled={loading}
+                variant="outline" 
+                className="flex-1 py-3 text-indigo-700 font-black border-indigo-200 hover:bg-indigo-50 bg-white" 
+                onClick={() => executeWithSecurity(resetSystemData, "Ao confirmar, o sistema gerará um relatório inteligência usando Gemini, arquivará as tabelas atuais e preparará tudo para um novo ciclo de negócios. Suas informações estarão a salvo nos arquivos perenes.")}
+                disabled={loading || resetReason.length < 10}
               >
-                {loading ? 'Limpando...' : 'Confirmar e Limpar Tudo'}
+                {loading ? 'Processando Backup...' : 'Arquivar e Encerrar Ciclo'}
               </Button>
-              <Button variant="outline" onClick={() => setIsResetModalOpen(false)} className="py-3">Cancelar</Button>
+              <Button variant="outline" onClick={() => setIsResetModalOpen(false)} className="py-3" disabled={loading}>Cancelar</Button>
             </div>
           </div>
         </div>
@@ -7450,6 +10540,59 @@ export default function App() {
             <p className="text-lg font-bold">R$ {confirmingPayment?.amount.toLocaleString()}</p>
             <p className="text-xs text-muted-foreground">Vencimento: {confirmingPayment && format(parseISO(confirmingPayment.dueDate), 'dd/MM/yyyy')}</p>
           </div>
+
+          {(() => {
+            if (!confirmingPayment) return null;
+            const property = properties.find(p => p.id === confirmingPayment.propertyId);
+            const agreement = confirmingPayment.type === 'agreement' ? agreements.find(a => a.id === confirmingPayment.agreementId) : null;
+            const configSource = agreement || property;
+
+            if (!configSource || !configSource.chargeLateFees) return null;
+            
+            const today = new Date();
+            const dueDate = parseISO(confirmingPayment.dueDate);
+            const isLate = differenceInDays(startOfDay(today), startOfDay(dueDate)) > 0;
+            if (!isLate) return null;
+
+            return (
+              <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-bold text-orange-900 leading-tight">Pagamento em Atraso</p>
+                    <p className="text-xs text-orange-700 leading-tight">Multa e juros calculados pelo sistema.</p>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer bg-white px-3 py-2 rounded-lg border border-orange-200 shadow-sm shrink-0">
+                    <input 
+                      type="checkbox" 
+                      checked={waiveLateFee} 
+                      onChange={(e) => setWaiveLateFee(e.target.checked)}
+                      className="w-4 h-4 text-orange-600 rounded border-orange-300 focus:ring-orange-500" 
+                    />
+                    <span className="text-xs font-bold text-orange-900">Isentar</span>
+                  </label>
+                </div>
+                <AnimatePresence>
+                  {waiveLateFee && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="pt-1 overflow-hidden"
+                    >
+                      <Input 
+                        id="waiveReason"
+                        placeholder="Motivo da isenção (Obrigatório)"
+                        value={waivedLateFeeReason}
+                        onChange={e => setWaivedLateFeeReason(e.target.value)}
+                        required
+                        className="bg-white border-orange-200 text-sm placeholder:text-orange-300"
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            );
+          })()}
 
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium">Valor Pago (R$)</label>
@@ -7517,7 +10660,13 @@ export default function App() {
                         }
                       );
                     } else {
-                      setPaymentReceipt(base64);
+                      if (file.type.startsWith('image/')) {
+                        compressImage(base64).then(compressed => {
+                          setPaymentReceipt(compressed);
+                        });
+                      } else {
+                        setPaymentReceipt(base64);
+                      }
                     }
                   };
                   reader.readAsDataURL(file);
@@ -7540,10 +10689,24 @@ export default function App() {
           <div className="pt-4 flex gap-2">
             <Button 
               className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-md font-bold" 
-              disabled={isSubmitting || paymentAmountInput <= 0}
+              disabled={isSubmitting || paymentAmountInput <= 0 || (waiveLateFee && !waivedLateFeeReason.trim())}
               onClick={() => {
                 if (confirmingPayment) {
                   const tenantName = tenants.find(t => t.id === confirmingPayment.tenantId)?.name || 'Inquilino';
+                  
+                  // Early payment check
+                  const dueDate = parseISO(confirmingPayment.dueDate);
+                  const today = startOfDay(new Date());
+                  const daysUntilDue = differenceInDays(dueDate, today);
+
+                  if (daysUntilDue > 0) {
+                    const confirmed = window.confirm(
+                      `Atenção: Esta parcela vence daqui a ${daysUntilDue} dias. ` +
+                      `Tem certeza que o usuário pagou antecipado? Não haverá nenhuma vantagem financeira para ele ao realizar este pagamento agora.`
+                    );
+                    if (!confirmed) return;
+                  }
+
                   const description = `Ao confirmar, você registrará o recebimento de R$ ${paymentAmountInput.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} de ${tenantName}.`;
                   
                   executeWithSecurity(async () => {
@@ -7557,10 +10720,14 @@ export default function App() {
                         paymentReceiptLocation || undefined,
                         paymentRemainderDueDate,
                         paymentRemainderObservations,
-                        paymentReceiptThumbnail || undefined
+                        paymentReceiptThumbnail || undefined,
+                        waiveLateFee,
+                        waiveLateFee ? waivedLateFeeReason : undefined
                       );
                       setIsPaymentModalOpen(false);
                       setConfirmingPayment(null);
+                      setWaiveLateFee(false);
+                      setWaivedLateFeeReason('');
                       setPaymentReceipt(null);
                       setPaymentReceiptName('');
                       setPaymentReceiptLocation('');
@@ -7631,23 +10798,160 @@ export default function App() {
         </div>
       </Modal>
 
-      <Modal isOpen={isRemoveTenantModalOpen} onClose={() => setIsRemoveTenantModalOpen(false)} title="Remover Inquilino">
+      <Modal isOpen={isJustifyRenovationModalOpen} onClose={() => {
+        setIsJustifyRenovationModalOpen(false);
+        setJustifyingProperty(null);
+        setRenovationJustifyText('');
+      }} title="Justificar Atraso na Reforma">
+        <div className="space-y-6">
+          <div className="p-4 bg-amber-50 rounded-xl text-sm text-balance text-amber-800">
+            Você está informando o motivo da obra em <strong>{justifyingProperty?.name}</strong> estar demorando. Isso suspenderá este alerta por mais 7 dias.
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Opções Rápidas:</label>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {['Atraso de material', 'Atraso do empreiteiro', 'Problema estrutural imprevisto', 'Aguardando aprovação de orçamento', 'Pausada temporariamente'].map(opt => (
+                <button
+                  key={opt}
+                  onClick={() => setRenovationJustifyText(prev => prev ? prev + ' - ' + opt : opt)}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-700 text-xs font-semibold rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors"
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Motivo / Situação Atual</label>
+            <textarea 
+               value={renovationJustifyText} 
+               onChange={e => setRenovationJustifyText(e.target.value)}
+               placeholder="Descreva o motivo ou selecione uma opção acima..."
+               className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all font-medium h-32 resize-none"
+            />
+          </div>
+          <div className="flex flex-col gap-2 pt-2">
+            <Button 
+              onClick={handleSaveRenovationJustification}
+              disabled={!renovationJustifyText.trim()}
+            >
+              Salvar e Adiar Alerta
+            </Button>
+            <Button variant="outline" onClick={() => {
+              setIsJustifyRenovationModalOpen(false);
+              setJustifyingProperty(null);
+              setRenovationJustifyText('');
+            }}>Cancelar</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={isRemoveTenantModalOpen} onClose={() => setIsRemoveTenantModalOpen(false)} title="Desocupar Imóvel">
         <div className="space-y-6">
           <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl flex gap-3">
             <AlertCircle className="w-5 h-5 text-amber-500 shrink-0" />
             <div className="text-sm text-amber-800">
               <p className="font-bold">Atenção!</p>
-              <p>Ao remover o inquilino, todas as cobranças pendentes deste imóvel serão canceladas automaticamente.</p>
-              {removeTenantData && tenants.find(t => t.id === removeTenantData.tenantId)?.depositValue ? (
-                <p className="mt-2 font-semibold text-blue-800 bg-blue-50/50 p-2 rounded-lg border border-blue-100">
-                  Valor da Caução a ser devolvido: R$ {tenants.find(t => t.id === removeTenantData.tenantId)?.depositValue?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                </p>
-              ) : null}
+              <p>Ao desocupar o imóvel, as cobranças de aluguel pendentes serão canceladas e o contrato se tornará inativo automaticamente.</p>
+              {removeTenantData && (() => {
+                const tenant = tenants.find(t => t.id === removeTenantData.tenantId);
+                const propertyPayments = payments.filter(p => p.tenantId === removeTenantData.tenantId && p.propertyId === removeTenantData.propertyId);
+                const depositPayments = propertyPayments.filter(p => p.type === 'deposit' && p.status !== 'cancelled');
+                
+                if (!tenant) return null;
+
+                const totalReceived = depositPayments
+                  .filter(p => p.status === 'paid')
+                  .reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
+                
+                const allUsages = depositPayments.flatMap(p => p.depositUsage || []);
+                const usedAmount = allUsages.reduce((acc, u) => acc + u.amount, 0);
+                
+                const currentDepositBalance = totalReceived - usedAmount;
+
+                const todayStr = format(new Date(), 'yyyy-MM-dd');
+                const pendingDebts = propertyPayments
+                  .filter(p => p.status === 'late' || (p.status === 'pending' && p.dueDate <= todayStr))
+                  .reduce((acc, p) => acc + (p.amount - (p.paidAmount || 0)), 0);
+
+                const finalBalance = currentDepositBalance - pendingDebts;
+
+                return (
+                  <div className="mt-4 space-y-2 bg-white/60 p-3 rounded-lg border border-amber-200/50">
+                    <p className="text-xs font-semibold text-slate-700 flex justify-between">
+                      <span>Caução Retido Disponível:</span>
+                      <span className="text-indigo-600 font-bold">R$ {currentDepositBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                    </p>
+                    <p className="text-xs font-semibold text-slate-700 flex justify-between">
+                      <span>Pendências do Inquilino (até hoje):</span>
+                      <span className="text-red-500 font-bold">- R$ {pendingDebts.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                    </p>
+                    <div className="pt-2 border-t border-amber-200/60 mt-2 flex flex-col gap-2">
+                       <div className="flex items-center justify-between">
+                        <span className="text-sm font-bold text-slate-800">Saldo Sugerido:</span>
+                        <span className={cn("text-base font-black", finalBalance >= 0 ? "text-emerald-600" : "text-amber-700")}>
+                          {finalBalance >= 0 ? 'Devolver: ' : 'Inquilino deve: '}
+                          R$ {Math.abs(finalBalance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        </span>
+                       </div>
+                       <Button size="sm" variant="outline" className="text-[10px] h-7 w-full bg-white font-bold" onClick={() => {
+                          setSettlementType(finalBalance >= 0 ? 'discount' : 'extra');
+                          setSettlementAmount(Math.abs(finalBalance));
+                       }}>
+                          Usar saldo sugerido
+                       </Button>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
           <div className="space-y-4">
-            <p className="text-sm font-medium text-slate-700">Houve algum acerto final (pagamento extra ou desconto)?</p>
+            <p className="text-sm font-medium text-slate-700">O que fazer com o cadastro do Inquilino?</p>
+            <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors">
+                <input 
+                  type="radio" 
+                  name="tenantStatus" 
+                  checked={removeTenantData?.action === 'archived'} 
+                  onChange={() => removeTenantData && setRemoveTenantData({ ...removeTenantData, action: 'archived' })}
+                  className="w-4 h-4 text-primary focus:ring-primary/20 accent-primary"
+                />
+                <div>
+                  <p className="font-semibold text-sm text-slate-700">Arquivar Histórico</p>
+                  <p className="text-xs text-slate-500">Mantém os dados para consultas futuras. (Recomendado)</p>
+                </div>
+              </label>
+              <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors">
+                <input 
+                  type="radio" 
+                  name="tenantStatus" 
+                  checked={removeTenantData?.action === 'waiting'} 
+                  onChange={() => removeTenantData && setRemoveTenantData({ ...removeTenantData, action: 'waiting' })}
+                  className="w-4 h-4 text-primary focus:ring-primary/20 accent-primary"
+                />
+                <div>
+                  <p className="font-semibold text-sm text-slate-700">Fila de Espera</p>
+                  <p className="text-xs text-slate-500">O inquilino continuará ativo e aguardando outro imóvel.</p>
+                </div>
+              </label>
+              <label className="flex items-center gap-3 p-3 rounded-xl border border-red-100 cursor-pointer hover:bg-red-50 transition-colors">
+                <input 
+                  type="radio" 
+                  name="tenantStatus" 
+                  checked={removeTenantData?.action === 'delete'} 
+                  onChange={() => removeTenantData && setRemoveTenantData({ ...removeTenantData, action: 'delete' })}
+                  className="w-4 h-4 text-red-600 focus:ring-red-200 accent-red-600"
+                />
+                <div>
+                  <p className="font-semibold text-sm text-red-700">Excluir Permanentemente</p>
+                  <p className="text-xs text-red-500/80">Apaga completamente o inquilino.</p>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-sm font-medium text-slate-700">Houve algum acerto final (pagamento extra ou devolução/desconto)?</p>
             
             <div className="grid grid-cols-2 gap-3">
               <button 
@@ -7657,7 +10961,7 @@ export default function App() {
                   settlementType === 'extra' ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-white border-slate-200 text-slate-600"
                 )}
               >
-                Pagamento Extra
+                Inquilino deve pagar
               </button>
               <button 
                 onClick={() => setSettlementType('discount')}
@@ -7666,7 +10970,7 @@ export default function App() {
                   settlementType === 'discount' ? "bg-red-50 border-red-500 text-red-700" : "bg-white border-slate-200 text-slate-600"
                 )}
               >
-                Desconto / Devolução
+                Devolver ao Inquilino
               </button>
             </div>
 
@@ -7676,7 +10980,7 @@ export default function App() {
               value={settlementAmount}
               onChange={val => setSettlementAmount(val)}
             />
-            <p className="text-[10px] text-slate-400 italic">Deixe R$ 0,00 se não houver acerto financeiro.</p>
+            <p className="text-[10px] text-slate-400 italic">Deixe R$ 0,00 se não houver transferência a ser feita.</p>
           </div>
 
           <div className="pt-4 flex gap-2">
@@ -7684,11 +10988,11 @@ export default function App() {
               className="flex-1" 
               onClick={() => {
                 const tenantName = removeTenantData ? tenants.find(t => t.id === removeTenantData.tenantId)?.name : 'Inquilino';
-                const description = `Ao confirmar, ${tenantName} será removido do imóvel e as cobranças futuras serão canceladas.`;
+                const description = `Ao confirmar, ${tenantName} vai desocupar o imóvel. Contratos e parcelas ativas serão ajustadas.`;
                 executeWithSecurity(confirmRemoveTenant, description);
               }}
             >
-              Confirmar Remoção
+              Confirmar Desocupação
             </Button>
             <Button variant="outline" onClick={() => setIsRemoveTenantModalOpen(false)}>Cancelar</Button>
           </div>
@@ -7706,7 +11010,11 @@ export default function App() {
             installmentAmount: 0,
             durationMonths: 1,
             startDate: format(new Date(), 'yyyy-MM-dd'),
-            justification: ''
+            justification: '',
+            chargeLateFees: false,
+            lateFeePenalty: 10,
+            lateFeeDaily: 0.33,
+            lateFeeType: 'percentage'
           });
         }} 
         title={agreementForm.id ? "Editar Acordo" : "Novo Acordo / Parcelamento"}
@@ -7756,6 +11064,51 @@ export default function App() {
               onChange={e => setAgreementForm({...agreementForm, startDate: e.target.value})} 
               required 
             />
+          </div>
+
+          <div className="border border-slate-200 rounded-xl p-4 bg-slate-50 space-y-4">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input 
+                type="checkbox" 
+                className="w-5 h-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" 
+                checked={agreementForm.chargeLateFees} 
+                onChange={e => setAgreementForm({...agreementForm, chargeLateFees: e.target.checked})} 
+              />
+              <span className="text-sm font-semibold text-slate-800">Cobrar juros e multas por atraso</span>
+            </label>
+            
+            {agreementForm.chargeLateFees && (
+              <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-200">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                    Multa Fixa (%)
+                    <InfoTooltip text="Percentual cobrado uma única vez pelo atraso." />
+                  </label>
+                  <Input 
+                    id="agreement-lateFeePenalty" 
+                    type="number" 
+                    step="0.01"
+                    min="0"
+                    value={agreementForm.lateFeePenalty} 
+                    onChange={e => setAgreementForm({...agreementForm, lateFeePenalty: Number(e.target.value)})} 
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                    Mora Diária (%)
+                    <InfoTooltip text="Percentual cobrado por cada dia de atraso." />
+                  </label>
+                  <Input 
+                    id="agreement-lateFeeDaily" 
+                    type="number" 
+                    step="0.01"
+                    min="0"
+                    value={agreementForm.lateFeeDaily} 
+                    onChange={e => setAgreementForm({...agreementForm, lateFeeDaily: Number(e.target.value)})} 
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {agreementForm.id && (
@@ -7814,12 +11167,23 @@ export default function App() {
                           }
                         );
                       } else {
-                        setAgreementForm({
-                          ...agreementForm, 
-                          evidence: base64,
-                          evidenceName: file.name,
-                          thumbnailLink: ''
-                        });
+                        if (file.type.startsWith('image/')) {
+                          compressImage(base64).then(compressed => {
+                            setAgreementForm({
+                              ...agreementForm, 
+                              evidence: compressed,
+                              evidenceName: file.name,
+                              thumbnailLink: ''
+                            });
+                          });
+                        } else {
+                          setAgreementForm({
+                            ...agreementForm, 
+                            evidence: base64,
+                            evidenceName: file.name,
+                            thumbnailLink: ''
+                          });
+                        }
                       }
                     };
                     reader.readAsDataURL(file);
@@ -7957,9 +11321,22 @@ export default function App() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">Contato Principal</p>
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center gap-2">
-                  <Phone className="w-4 h-4 text-slate-400" />
-                  <p className="text-sm text-slate-700">{selectedTenantForDetail.contact}</p>
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Phone className="w-4 h-4 text-slate-400" />
+                    <p className="text-sm text-slate-700">{selectedTenantForDetail.contact}</p>
+                  </div>
+                  {selectedTenantForDetail.contact && (
+                    <a
+                      href={getWhatsAppLink(selectedTenantForDetail.contact, `Olá ${selectedTenantForDetail.name.split(' ')[0]}, tudo bem?`)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1.5 bg-emerald-100 text-emerald-600 hover:bg-emerald-500 hover:text-white rounded-lg transition-colors"
+                      title="Enviar mensagem no WhatsApp"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                    </a>
+                  )}
                 </div>
               </div>
               <div className="space-y-1">
@@ -7990,6 +11367,88 @@ export default function App() {
                 </span>
               </div>
             </div>
+
+            {/* Intelligent Memory Integration for Tenant */}
+            {(() => {
+              const activeContract = contracts.find(c => c.tenantId === selectedTenantForDetail.id && c.status === 'active');
+              const propId = activeContract ? activeContract.propertyId : selectedTenantForDetail.propertyId;
+              const linkedProperty = properties.find(p => p.id === propId);
+              
+              const hasPetConflict = linkedProperty && linkedProperty.allowPets === false && selectedTenantForDetail.pets && selectedTenantForDetail.pets.trim() !== '';
+              const hasSmokeConflict = !!selectedTenantForDetail.isSmoker && linkedProperty?.rules?.toLowerCase().includes('fumar');
+              const hasVehicleConflict = !!selectedTenantForDetail.vehicleDetails && linkedProperty?.rules?.toLowerCase().includes('garagem');
+              const hasResidentConflict = !!selectedTenantForDetail.residentCount && linkedProperty?.rules?.toLowerCase().includes('moradores');
+              
+              const hasAlerts = !!linkedProperty?.alerts;
+              const hasRules = !!linkedProperty?.rules;
+              
+              if (!hasPetConflict && !hasSmokeConflict && !hasVehicleConflict && !hasResidentConflict && !hasAlerts && !hasRules) return null;
+              
+              return (
+                <div className="space-y-3">
+                  <p className="text-[10px] font-bold flex items-center gap-1.5 text-indigo-500 uppercase tracking-wider ml-1">
+                    <Sparkles className="w-3.5 h-3.5" /> Controle Inteligente de Vínculo
+                  </p>
+                  <div className="bg-gradient-to-br from-indigo-50 to-white border border-indigo-100/50 p-4 rounded-2xl space-y-3 shadow-sm">
+                    {hasPetConflict && (
+                      <div className="flex items-center gap-2 text-red-700 bg-red-50 p-2 rounded">
+                         <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                           <AlertCircle className="w-3.5 h-3.5" />
+                         </div>
+                         <span className="text-sm font-semibold">Conflito Grave: Inquilino possui pet, mas o Imóvel não permite!</span>
+                      </div>
+                    )}
+                    {hasSmokeConflict && (
+                      <div className="flex items-center gap-2 text-amber-800 bg-amber-50 p-2 rounded">
+                         <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                           <AlertCircle className="w-3.5 h-3.5" />
+                         </div>
+                         <span className="text-sm font-semibold">Atenção: Inquilino é fumante e o Imóvel tem regras sobre fumo.</span>
+                      </div>
+                    )}
+                    {hasVehicleConflict && (
+                      <div className="flex items-center gap-2 text-amber-800 bg-amber-50 p-2 rounded">
+                         <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                           <AlertCircle className="w-3.5 h-3.5" />
+                         </div>
+                         <span className="text-sm font-semibold">Garagem: Verificar veículos ({selectedTenantForDetail.vehicleDetails}).</span>
+                      </div>
+                    )}
+                    {hasResidentConflict && (
+                      <div className="flex items-center gap-2 text-amber-800 bg-amber-50 p-2 rounded">
+                         <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                           <AlertCircle className="w-3.5 h-3.5" />
+                         </div>
+                         <span className="text-sm font-semibold">Moradores: Checar o limite de ocupação ({selectedTenantForDetail.residentCount} moradores previstos).</span>
+                      </div>
+                    )}
+                    
+                    {hasRules && (
+                      <div className="flex gap-2 text-sm text-slate-700 pt-2 border-t border-indigo-100/50 mt-2">
+                         <div className="w-6 h-6 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 shrink-0 mt-0.5">
+                           <BookText className="w-3.5 h-3.5" />
+                         </div>
+                         <div>
+                           <span className="font-semibold block mb-0.5 text-indigo-900">Regras do Imóvel:</span>
+                           <p className="leading-relaxed whitespace-pre-wrap text-sm">{linkedProperty.rules}</p>
+                         </div>
+                      </div>
+                    )}
+                    {hasAlerts && (
+                      <div className="flex gap-2 text-sm text-slate-700">
+                         <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 shrink-0 mt-0.5">
+                           <Info className="w-3.5 h-3.5" />
+                         </div>
+                         <div>
+                           <span className="font-semibold block mb-0.5 text-slate-900">Avisos Importantes do Imóvel:</span>
+                           <p className="leading-relaxed whitespace-pre-wrap text-sm">{linkedProperty.alerts}</p>
+                         </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {selectedTenantForDetail.observations && (
               <div className="space-y-1">

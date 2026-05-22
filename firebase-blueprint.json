@@ -1,5 +1,33 @@
 {
   "entities": {
+    "Contract": {
+      "title": "Contract",
+      "description": "A lease contract linking a tenant to a property with financial rules.",
+      "type": "object",
+      "properties": {
+        "tenantId": { "type": "string", "description": "ID of the tenant" },
+        "propertyId": { "type": "string", "description": "ID of the associated property" },
+        "startDate": { "type": "string", "format": "date", "description": "Start date of the lease" },
+        "endDate": { "type": "string", "format": "date", "description": "End date of the lease" },
+        "rentValue": { "type": "number", "description": "Monthly rent amount" },
+        "paymentDay": { "type": "number", "description": "Day of month the rent is due" },
+        "depositValue": { "type": "number", "description": "Security deposit value" },
+        "depositInstallments": { "type": "number", "description": "Number of installments for deposit" },
+        "depositDay": { "type": "number", "description": "Day of month the deposit is due" },
+        "chargeLateFees": { "type": "boolean", "description": "Whether to charge late fees" },
+        "lateFeePenalty": { "type": "number", "description": "Fixed penalty or percentage for late payment" },
+        "lateFeeDaily": { "type": "number", "description": "Daily interest or fixed fee for delay" },
+        "lateFeeType": { "type": "string", "enum": ["percentage", "fixed"], "description": "Type of late fee calculation" },
+        "observations": { "type": "string", "description": "General notes" },
+        "contractFile": { "type": "string", "description": "Base64 or URL of the contract file" },
+        "evidenceName": { "type": "string", "description": "Name of the attached file" },
+        "evidenceLocation": { "type": "string", "description": "Physical or digital location of the evidence" },
+        "thumbnailLink": { "type": "string", "description": "Thumbnail URL" },
+        "status": { "type": "string", "enum": ["active", "ended", "broken"], "description": "Lease status" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this record" }
+      },
+      "required": ["tenantId", "propertyId", "startDate", "rentValue", "paymentDay", "chargeLateFees", "status", "ownerId"]
+    },
     "Property": {
       "title": "Property",
       "description": "A real estate property managed in the system.",
@@ -10,7 +38,11 @@
         "status": { "type": "string", "enum": ["vacant", "rented", "renovation"], "description": "Current status of the property" },
         "rentValue": { "type": "number", "description": "Monthly rent value" },
         "currentTenantId": { "type": "string", "description": "ID of the tenant currently renting the property" },
-        "ownerId": { "type": "string", "description": "UID of the user who owns this property record" }
+        "ownerId": { "type": "string", "description": "UID of the user who owns this property record" },
+        "chargeLateFees": { "type": "boolean", "description": "Whether to charge late fees" },
+        "lateFeePenalty": { "type": "number", "description": "Fixed penalty or percentage for late payment" },
+        "lateFeeDaily": { "type": "number", "description": "Daily interest or fixed fee for delay" },
+        "lateFeeType": { "type": "string", "enum": ["percentage", "fixed"], "description": "Type of late fee calculation" }
       },
       "required": ["name", "address", "status", "rentValue", "ownerId"]
     },
@@ -62,7 +94,11 @@
         "evidence": { "type": "string", "description": "Base64 or URL of the photo/PDF evidence" },
         "evidenceName": { "type": "string", "description": "Name of the attached file" },
         "evidenceLocation": { "type": "string", "description": "Physical or digital location of the evidence" },
-        "ownerId": { "type": "string", "description": "UID of the user who owns this agreement record" }
+        "ownerId": { "type": "string", "description": "UID of the user who owns this agreement record" },
+        "chargeLateFees": { "type": "boolean", "description": "Whether to charge late fees" },
+        "lateFeePenalty": { "type": "number", "description": "Fixed penalty or percentage for late payment" },
+        "lateFeeDaily": { "type": "number", "description": "Daily interest or fixed fee for delay" },
+        "lateFeeType": { "type": "string", "enum": ["percentage", "fixed"], "description": "Type of late fee calculation" }
       },
       "required": ["tenantId", "description", "installmentAmount", "durationMonths", "startDate", "ownerId"]
     },
@@ -104,7 +140,11 @@
         "description": { "type": "string", "description": "Description of the payment" },
         "observations": { "type": "string", "description": "General notes about the payment" },
         "revertReason": { "type": "string", "description": "Reason why the payment was reverted" },
-        "agreementId": { "type": "string", "description": "ID of the associated agreement" }
+        "agreementId": { "type": "string", "description": "ID of the associated agreement" },
+        "installmentNumber": { "type": "number", "description": "Number of the current installment" },
+        "totalInstallments": { "type": "number", "description": "Total number of installments" },
+        "waivedLateFee": { "type": "boolean", "description": "Whether late fees were waived" },
+        "waivedLateFeeReason": { "type": "string", "description": "Reason for waiving late fees" }
       },
       "required": ["propertyId", "tenantId", "amount", "dueDate", "status", "ownerId"]
     },
@@ -122,12 +162,21 @@
     }
   },
   "firestore": {
+    "contracts": { "schema": "Contract", "description": "Collection of lease contracts" },
     "properties": { "schema": "Property", "description": "Collection of properties" },
     "tenants": { "schema": "Tenant", "description": "Collection of tenants" },
     "expenses": { "schema": "Expense", "description": "Collection of property expenses" },
     "payments": { "schema": "Payment", "description": "Collection of rent payments" },
     "agreements": { "schema": "Agreement", "description": "Collection of recurring agreements" },
     "users": { "schema": "User", "description": "Collection of user profiles" },
-    "config": { "schema": "Config", "description": "User-specific configuration" }
+    "config": { "schema": "Config", "description": "User-specific configuration" },
+    "tickets": { "schema": "Ticket", "description": "Collection of support tickets" },
+    "archived_properties": { "schema": "Property", "description": "Archived properties" },
+    "archived_tenants": { "schema": "Tenant", "description": "Archived tenants" },
+    "archived_expenses": { "schema": "Expense", "description": "Archived property expenses" },
+    "archived_payments": { "schema": "Payment", "description": "Archived rent payments" },
+    "archived_agreements": { "schema": "Agreement", "description": "Archived agreements" },
+    "archived_tickets": { "schema": "Ticket", "description": "Archived tickets" },
+    "historical_backups": { "schema": "ResetLog", "description": "Backup logs" }
   }
 }

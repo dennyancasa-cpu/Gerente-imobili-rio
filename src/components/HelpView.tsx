@@ -36,7 +36,10 @@ const getBotResponse = (input: string): string => {
     return prefix + 'Você pode registrar **Despesas** (como reformas, IPTU ou taxas) na aba Financeiro. Isso é essencial para calcular seu lucro líquido real ao final de cada mês.';
   }
   if (lowerInput.includes('versão') || lowerInput.includes('versao') || lowerInput.includes('atualiz')) {
-    return prefix + 'O sistema está na versão **4.1.1**. Estamos sempre evoluindo para oferecer o melhor controle imobiliário para você!';
+    return prefix + 'O sistema está na versão **6.0.0**. Estamos sempre evoluindo! Nossa última grande novidade é a **Central IA** para migração inteligente de contratos.';
+  }
+  if (lowerInput.includes('import') || lowerInput.includes('contrato já tenho') || lowerInput.includes('central ia')) {
+    return prefix + 'A **Central IA** (no menu lateral) permite que você cole o texto ou anexe fotos de um contrato de aluguel que você já tem. A nossa inteligência vai ler, criar o imóvel, cadastrar o inquilino automaticamente e ainda apontar pontos de melhoria no seu documento!';
   }
   if (lowerInput.includes('instalar') || lowerInput.includes('aplicativo') || lowerInput.includes('app')) {
     return prefix + 'Para instalar o app: \n1. No Android (Chrome): Clique nos **3 pontos** (superior direito) e depois em **"Instalar aplicativo"**.\n2. No iOS (Safari): Clique no botão **"Compartilhar"** e depois em **"Adicionar à Tela de Início"**.\n3. No desktop: Um ícone de instalação aparecerá na barra de endereços.';
@@ -45,11 +48,11 @@ const getBotResponse = (input: string): string => {
     return prefix + 'Olá! Eu sou o assistente inteligente do Gerente Imobiliário. Como posso facilitar sua gestão hoje?';
   }
 
-  return prefix + 'Como sua inteligência artificial de suporte, posso te ajudar com: **Gerar Recibos**, **Cadastrar Imóveis**, **Gerenciar Inquilinos**, **Lançar Despesas**, **Realizar Acordos** ou configurar a **Central Cloud**. O que deseja saber agora?';
+  return prefix + 'Como sua inteligência artificial de suporte, posso te ajudar com: **Importação por IA**, **Gerar Recibos**, **Cadastrar Imóveis**, **Gerenciar Inquilinos**, **Lançar Despesas**, **Realizar Acordos** ou configurar a **Central Cloud**. O que deseja saber agora?';
 };
 
 export function HelpView() {
-  const [activeTab, setActiveTab] = useState<'manual' | 'agent'>('manual');
+  const [activeTab, setActiveTab] = useState<'manual' | 'agent'>('agent');
   const [messages, setMessages] = useState<Message[]>([
     { role: 'model', text: 'Olá! Sou o assistente de ajuda do Gerente Imobiliário. Como posso te orientar hoje?' }
   ]);
@@ -124,11 +127,32 @@ export function HelpView() {
       {activeTab === 'manual' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative">
           
+          <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 shadow-sm space-y-4 hover:shadow-md transition-all md:col-span-2">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-12 h-12 bg-indigo-500 text-white rounded-2xl flex items-center justify-center">
+                <Bot className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="bg-emerald-500 text-white px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider">Novo no v6.0</span>
+                <h3 className="text-xl font-bold text-slate-800">1. Central IA (Importação Mágica)</h3>
+              </div>
+            </div>
+            <p className="text-slate-600 leading-relaxed">
+              Já tem um contrato alugado e quer passar a gestão para o app? Não digite tudo manualmente.
+            </p>
+            <ul className="space-y-3 mt-4 text-sm text-indigo-900/80">
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Acesse <strong>Central IA</strong> no menu lateral.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Cole o texto do seu contrato antigo ou tire uma foto dele.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Clique em "Extrair". A inteligência artificial vai criar o Inquilino e o Imóvel de uma vez só!</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Ainda receberá dicas do Consultor Jurídico de onde o seu antigo contrato estava arriscado.</li>
+            </ul>
+          </div>
+
           <div className="bg-white p-6 rounded-3xl border shadow-sm space-y-4 hover:shadow-md transition-all">
             <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mb-4">
               <Home className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold text-slate-800">1. Criar um Imóvel</h3>
+            <h3 className="text-xl font-bold text-slate-800">2. Criar um Imóvel Manualmente</h3>
             <p className="text-slate-600 leading-relaxed">
               Tudo começa adicionando seu patrimônio. 
             </p>
@@ -143,7 +167,7 @@ export function HelpView() {
             <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center mb-4">
               <Users className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold text-slate-800">2. Criar e Anexar Inquilino</h3>
+            <h3 className="text-xl font-bold text-slate-800">3. Criar e Anexar Inquilino</h3>
             <p className="text-slate-600 leading-relaxed">
               O próximo passo é registrar quem vai alugar.
             </p>
@@ -158,7 +182,7 @@ export function HelpView() {
             <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center mb-4">
               <DollarSign className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold text-slate-800">3. Caução vs 1º Aluguel</h3>
+            <h3 className="text-xl font-bold text-slate-800">4. Caução vs 1º Aluguel</h3>
             <p className="text-slate-600 leading-relaxed">
               Defina como será a entrada financeira deste inquilino.
             </p>
@@ -173,7 +197,7 @@ export function HelpView() {
             <div className="w-12 h-12 bg-purple-100 text-purple-600 rounded-2xl flex items-center justify-center mb-4">
               <BookText className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold text-slate-800">4. Recibos e Quitações</h3>
+            <h3 className="text-xl font-bold text-slate-800">5. Recibos e Quitações</h3>
             <p className="text-slate-600 leading-relaxed">
               Emita documentos profissionais com um clique.
             </p>

@@ -5,12 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Gerente Imobiliário" />
+    <meta name="apple-mobile-web-app-title" content="Gerente Imob" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="theme-color" content="#0f172a" />
-    <link rel="manifest" href="/manifest.json?v=411" />
+    <meta name="theme-color" content="#4f46e6" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
-    <title>Gerente Imobiliário v4.1.1</title>
+    <script>
+      // Suprimir erros de WebSocket do Vite que não afetam o usuário
+      const originalError = console.error;
+      console.error = (...args) => {
+        if (args[0] && typeof args[0] === 'string' && (args[0].includes('[vite]') || args[0].includes('WebSocket'))) return;
+        originalError.apply(console, args);
+      };
+
+      window.deferredPWA = null;
+      window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        window.deferredPWA = e;
+        console.log('⚡ PWA SINAL CAPTURADO PELO KERNEL INDEX!');
+        window.dispatchEvent(new CustomEvent('pwa_signal_received', { detail: e }));
+        window.dispatchEvent(new CustomEvent('pwa-installable'));
+      });
+      
+      window.addEventListener('appinstalled', (evt) => {
+        console.log('App instalado com sucesso!');
+        window.deferredPWA = null;
+      });
+    </script>
+    <title>Gerente Imob</title>
   </head>
   <body>
     <div id="root"></div>
