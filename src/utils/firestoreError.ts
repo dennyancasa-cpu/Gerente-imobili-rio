@@ -24,7 +24,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   
-  let userMessage = 'Ocorreu um erro de conexão com o banco de dados. Tente novamente mais tarde.';
+  let userMessage = `Ocorreu um erro ao acessar o banco de dados: ${errInfo.error}`;
   
   if (errInfo.error.includes('Missing or insufficient permissions')) {
     userMessage = 'Erro de permissão: você não tem autorização para realizar esta operação.';

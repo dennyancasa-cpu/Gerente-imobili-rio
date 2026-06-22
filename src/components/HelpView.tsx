@@ -59,10 +59,31 @@ export function HelpView() {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const endOfMessagesRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    endOfMessagesRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!scrollRef.current) return;
+    
+    const lastMsg = messages[messages.length - 1];
+    
+    if (lastMsg && lastMsg.role === 'model') {
+      setTimeout(() => {
+        const container = scrollRef.current;
+        const lastMsgEl = document.getElementById(`help-message-${messages.length - 1}`);
+        if (container && lastMsgEl) {
+          const containerRect = container.getBoundingClientRect();
+          const elementRect = lastMsgEl.getBoundingClientRect();
+          const relativeTop = elementRect.top - containerRect.top + container.scrollTop;
+          container.scrollTo({
+            top: relativeTop - 16, // 16px of padding at the top
+            behavior: 'smooth'
+          });
+        }
+      }, 50);
+    } else {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, isLoading]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -223,9 +244,9 @@ export function HelpView() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
             {messages.map((msg, i) => (
-              <div key={i} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div id={`help-message-${i}`} key={i} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div 
                   className={`max-w-[80%] rounded-2xl px-5 py-3.5 shadow-sm text-sm leading-relaxed ${
                     msg.role === 'user' 

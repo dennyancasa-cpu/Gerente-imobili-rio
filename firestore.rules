@@ -16,8 +16,7 @@ service cloud.firestore {
       return isSignedIn() && 
              request.auth.token.email_verified == true && (
                request.auth.token.email == "dennyancasa@gmail.com" ||
-               request.auth.token.email == "dennayncasa@gmail.com" ||
-               request.auth.token.email == "dennyan.moto@gmail.com"
+               request.auth.token.email == "dennayncasa@gmail.com"
              );
     }
 
@@ -67,63 +66,45 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidProperty(data) {
-      let allowed = ['id', 'name', 'address', 'status', 'rentValue', 'paymentDay', 'currentTenantId', 'ownerId', 'chargeLateFees', 'lateFeePenalty', 'lateFeeDaily', 'lateFeeType', 'createdAt', 'updatedAt', 'thumbnailLink', 'documents', 'renovationJustification'];
       return isAdmin() || (
-             data.keys().hasAll(['name', 'ownerId']) &&
-             data.keys().hasOnly(allowed) &&
+             data.keys().hasAll(['ownerId', 'name']) &&
              data.name is string && data.name.size() > 0 &&
-             (!data.keys().contains('status') || data.status in ['vacant', 'rented', 'renovation']) &&
-             (!data.keys().contains('rentValue') || data.rentValue is number) &&
-             (!data.keys().contains('chargeLateFees') || data.chargeLateFees is bool) &&
              data.ownerId == request.auth.uid
       );
     }
 
     function isValidContract(data) {
-      let allowed = ['id', 'tenantId', 'propertyId', 'startDate', 'endDate', 'rentValue', 'paymentDay', 'depositValue', 'depositInstallments', 'depositDay', 'chargeLateFees', 'lateFeePenalty', 'lateFeeDaily', 'lateFeeType', 'observations', 'contractFile', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'aiContractText', 'status', 'ownerId', 'createdAt', 'updatedAt'];
       return isAdmin() || (
-             data.keys().hasAll(['ownerId', 'tenantId', 'propertyId', 'startDate', 'rentValue', 'paymentDay', 'chargeLateFees', 'status']) &&
-             data.keys().hasOnly(allowed) &&
+             data.keys().hasAll(['ownerId']) &&
              data.ownerId == request.auth.uid
       );
     }
 
     function isValidTenant(data) {
-      let allowed = ['id', 'name', 'cpf', 'contact', 'secondaryContact', 'status', 'rating', 'observations', 'contractFile', 'propertyId', 'ownerId', 'createdAt', 'updatedAt', 'initialPaymentType', 'depositValue', 'depositInstallments', 'depositDay', 'linkedUserId', 'evidenceLocation', 'evidenceName', 'thumbnailLink'];
       return isAdmin() || (
-             data.keys().hasAll(['name', 'ownerId', 'status']) &&
-             data.keys().hasOnly(allowed) &&
+             data.keys().hasAll(['name', 'ownerId']) &&
              data.name is string && data.name.size() > 0 &&
-             data.status in ['waiting', 'allocated', 'archived'] &&
-             (!data.keys().contains('depositInstallments') || data.depositInstallments is number) &&
-             (!data.keys().contains('depositDay') || data.depositDay is number) &&
              data.ownerId == request.auth.uid
       );
     }
 
     function isValidAgreement(data) {
-      let allowed = ['id', 'tenantId', 'propertyId', 'description', 'totalAmount', 'installmentAmount', 'durationMonths', 'startDate', 'status', 'justification', 'evidence', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'chargeLateFees', 'lateFeePenalty', 'lateFeeDaily', 'lateFeeType', 'ownerId', 'createdAt', 'updatedAt'];
       return isAdmin() || (
-             data.keys().hasAll(['ownerId', 'tenantId', 'description']) &&
-             data.keys().hasOnly(allowed) &&
+             data.keys().hasAll(['ownerId']) &&
              data.ownerId == request.auth.uid
       );
     }
 
     function isValidExpense(data) {
-      let allowed = ['id', 'propertyId', 'description', 'amount', 'date', 'type', 'evidence', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'ownerId', 'createdAt', 'updatedAt'];
       return isAdmin() || (
-             data.keys().hasAll(['ownerId', 'propertyId', 'amount']) &&
-             data.keys().hasOnly(allowed) &&
+             data.keys().hasAll(['ownerId']) &&
              data.ownerId == request.auth.uid
       );
     }
 
     function isValidPayment(data) {
-      let allowed = ['id', 'propertyId', 'tenantId', 'amount', 'paidAmount', 'dueDate', 'paidDate', 'status', 'interestAmount', 'waivedLateFee', 'waivedLateFeeReason', 'receiptUrl', 'evidenceName', 'evidenceLocation', 'thumbnailLink', 'ownerId', 'createdAt', 'updatedAt', 'type', 'installmentNumber', 'totalInstallments', 'depositStatus', 'depositUsage', 'originalDepositAmount', 'description', 'observations', 'revertReason', 'agreementId'];
       return isAdmin() || (
-             data.keys().hasAll(['ownerId', 'propertyId', 'amount', 'status']) &&
-             data.keys().hasOnly(allowed) &&
+             data.keys().hasAll(['ownerId']) &&
              data.ownerId == request.auth.uid
       );
     }
@@ -134,10 +115,15 @@ service cloud.firestore {
     }
 
     function isValidTicket(data) {
-      let allowed = ['id', 'propertyId', 'tenantId', 'title', 'description', 'status', 'priority', 'createdAt', 'updatedAt', 'slaDays', 'ownerId'];
       return isAdmin() || (
-             data.keys().hasAll(['ownerId', 'propertyId', 'tenantId', 'title', 'status', 'priority', 'slaDays']) &&
-             data.keys().hasOnly(allowed) &&
+             data.keys().hasAll(['ownerId']) &&
+             data.ownerId == request.auth.uid
+      );
+    }
+
+    function isValidCustomAlert(data) {
+      return isAdmin() || (
+             data.keys().hasAll(['ownerId', 'title', 'description', 'category', 'priority', 'type']) &&
              data.ownerId == request.auth.uid
       );
     }
@@ -217,6 +203,14 @@ service cloud.firestore {
       allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
+    match /custom_alerts/{alertId} {
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidCustomAlert(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidCustomAlert(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
+    }
+
     match /archived_contracts/{id} {
       allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
@@ -255,6 +249,11 @@ service cloud.firestore {
       allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
       allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
       allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
+    }
+
+    match /tenant_portal_data/{portalId} {
+      allow get: if true;
+      allow write: if isSignedIn();
     }
 
     // Default deny

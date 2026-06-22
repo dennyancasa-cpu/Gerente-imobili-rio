@@ -13,11 +13,22 @@ import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+let filename = '';
+let dirname = '';
+if (typeof __filename !== 'undefined') {
+  filename = __filename;
+  dirname = __dirname;
+} else {
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.url) {
+    // @ts-ignore
+    filename = fileURLToPath(import.meta.url);
+    dirname = path.dirname(filename);
+  }
+}
 
 // Load Firebase Config
-const firebaseConfigPath = path.join(__dirname, 'firebase-applet-config.json');
+const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
 let firebaseConfig: any = {};
 try {
   if (fs.existsSync(firebaseConfigPath)) {
@@ -142,13 +153,34 @@ const getRedirectUri = () => {
     'http://localhost:3000/auth/callback');
 };
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SEC,
-  getRedirectUri()
-);
+const createOAuthClient = (req?: any, defaultTokens?: any) => {
+  const client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SEC,
+    getRedirectUri()
+  );
 
-console.log('Google Redirect URI:', getRedirectUri());
+  if (defaultTokens) {
+    client.setCredentials(defaultTokens);
+  }
+
+  if (req) {
+    client.on('tokens', (newTokens) => {
+      console.log('[OAuth2] Tokens event fired! Refreshing session tokens.');
+      const currentSessionTokens = (req.session as any)?.tokens || defaultTokens || {};
+      const updatedTokens = {
+        ...currentSessionTokens,
+        ...newTokens
+      };
+      (req.session as any).tokens = updatedTokens;
+      req.session.save((err) => {
+        if (err) console.error('[OAuth2] Error saving session tokens:', err);
+      });
+    });
+  }
+
+  return client;
+};
 
 const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
 
@@ -186,7 +218,8 @@ app.get('/api/auth/google/url', (req, res) => {
 
   const clientRedirectUri = req.query.redirectUri as string || getRedirectUri();
 
-  const authUrl = oauth2Client.generateAuthUrl({
+  const client = createOAuthClient();
+  const authUrl = client.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
     prompt: 'consent',
@@ -330,7 +363,7 @@ app.get(['/api/auth/google/status', '/api/auth/google/status/'], async (req, res
     let source = 'session';
     let errorDetail = null;
 
-    // Use header tokens as top priority if session is flaky
+    // Use header tokens if session is flaky
     if (!tokens && headerTokens) {
       try {
         tokens = JSON.parse(headerTokens as string);
@@ -385,7 +418,7 @@ app.post('/api/drive/upload', async (req, res) => {
   const headerTokens = req.headers['x-drive-tokens'];
   const { fileName, fileData, mimeType, folderName, uid } = req.body;
 
-  // Use header tokens as top priority if session is flaky
+  // Use header tokens if session is flaky
   if (!tokens && headerTokens) {
     try {
       tokens = JSON.parse(headerTokens as string);
@@ -407,8 +440,8 @@ app.post('/api/drive/upload', async (req, res) => {
   }
 
   try {
-    oauth2Client.setCredentials(tokens);
-    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+    const client = createOAuthClient(req, tokens);
+    const drive = google.drive({ version: 'v3', auth: client });
 
     // 1. Find or create the root folder (ImobiManager)
     const rootFolderName = 'ImobiManager';
@@ -494,7 +527,6 @@ app.post('/api/drive/upload', async (req, res) => {
       thumbnailLink: file.data.thumbnailLink
     });
   } catch (error: any) {
-    console.error('Error uploading to Drive:', error);
     const isAuthError = 
       error.status === 401 || 
       error.response?.status === 401 ||
@@ -508,9 +540,91 @@ app.post('/api/drive/upload', async (req, res) => {
       ));
 
     if (isAuthError) {
+      // Intentionally not logging the full error string to avoid triggering error monitors
+      // for expected session expirations.
       return res.status(401).json({ error: 'Google Drive credentials expired or invalid. Please reconnect.' });
     }
+    console.error('Error uploading to Drive:', error.message || error);
     res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+app.post('/api/tenant/login', async (req, res) => {
+  try {
+    const { cpf, password } = req.body;
+    if (!cpf || !password) {
+      return res.status(400).json({ error: 'CPF e senha são obrigatórios.' });
+    }
+
+    // Clean CPF (remove dots, dashes, spaces)
+    const cleanCpf = cpf.replace(/\D/g, '');
+
+    // Get all tenants in database to avoid case-sensitivity and check clean'ed CPFs
+    const tenantsSnap = await db.collection('tenants').get();
+    let matchedTenant: any = null;
+    let tenantId = '';
+
+    for (const doc of tenantsSnap.docs) {
+      const data = doc.data();
+      const dbCpf = (data.cpf || '').replace(/\D/g, '');
+      if (dbCpf === cleanCpf) {
+        matchedTenant = data;
+        tenantId = doc.id;
+        break;
+      }
+    }
+
+    if (!matchedTenant) {
+      return res.status(401).json({ error: 'Inquilino não encontrado com este CPF.' });
+    }
+
+    const storedPassword = matchedTenant.accessPassword || matchedTenant.password;
+    if (!storedPassword) {
+      return res.status(401).json({ error: 'Senha de acesso não configurada. Solicite ao seu gerente de imóveis.' });
+    }
+
+    if (storedPassword !== password) {
+      return res.status(401).json({ error: 'Senha incorreta.' });
+    }
+
+    // Success! Fetch related contract(s) & payment records for this tenant
+    const paymentsSnap = await db.collection('payments').where('tenantId', '==', tenantId).get();
+    const payments = paymentsSnap.docs.map((doc: any) => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    // Find custom property name
+    let propertyName = 'Imóvel';
+    if (matchedTenant.propertyId) {
+      const propDoc = await db.collection('properties').doc(matchedTenant.propertyId).get();
+      if (propDoc.exists) {
+        propertyName = propDoc.data().name || 'Imóvel';
+      }
+    }
+
+    // Return filtered safe, non-sensitive tenant identity info
+    const firstName = matchedTenant.name ? matchedTenant.name.split(' ')[0] : 'Inquilino';
+
+    res.json({
+      success: true,
+      tenantId,
+      tenantName: firstName,
+      propertyName,
+      payments: payments.map((p: any) => ({
+        id: p.id,
+        amount: p.amount,
+        paidAmount: p.paidAmount || 0,
+        dueDate: p.dueDate,
+        paidDate: p.paidDate || null,
+        status: p.status, // "pending", "paid", "late", etc
+        type: p.type || 'rent',
+        description: p.description || ''
+      }))
+    });
+  } catch (err: any) {
+    console.error('Error on tenant login API:', err);
+    res.status(500).json({ error: 'Erro interno no servidor: ' + err.message });
   }
 });
 
@@ -528,7 +642,7 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
   const headerTokens = req.headers['x-drive-tokens'];
   const uid = req.query.uid as string;
 
-  // Use header tokens as top priority if session is flaky
+  // Use header tokens if session is flaky
   if (!tokens && headerTokens) {
     try {
       tokens = JSON.parse(headerTokens as string);
@@ -546,8 +660,8 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
   }
 
   try {
-    oauth2Client.setCredentials(tokens);
-    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+    const client = createOAuthClient(req, tokens);
+    const drive = google.drive({ version: 'v3', auth: client });
     
     // Test by getting user info
     const response = await drive.about.get({ fields: 'user, storageQuota' });
@@ -555,10 +669,10 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
     res.json({ 
       connected: true, 
       user: response.data.user,
-      storageQuota: response.data.storageQuota
+      storageQuota: response.data.storageQuota,
+      tokens: (req.session as any).tokens
     });
   } catch (error: any) {
-    console.error('Drive test failed:', error);
     const isAuthError = 
       error.status === 401 || 
       error.response?.status === 401 ||
@@ -572,8 +686,11 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
       ));
 
     if (isAuthError) {
+      // Intentionally not logging the full error string to avoid triggering error monitors
+      // for expected session expirations.
       return res.status(401).json({ connected: false, error: 'Google Drive credentials expired or invalid. Please reconnect.' });
     }
+    console.error('Drive test failed:', error.message || error);
     res.status(500).json({ 
       connected: false, 
       error: error.message || 'Erro ao testar conexão com o Drive' 

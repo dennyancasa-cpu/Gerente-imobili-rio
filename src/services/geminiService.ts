@@ -1,6 +1,26 @@
 import { GoogleGenAI } from "@google/genai";
 import { Property, Tenant, Payment, Expense, Agreement } from "../types";
 
+const formatAIError = (error: any): string => {
+  const msg = error?.message || String(error);
+  if (msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('overloaded')) {
+    return "O servidor da Inteligência Artificial está com alta demanda no momento. Por favor, aguarde alguns instantes e tente novamente.";
+  }
+  if (msg.includes('429') || msg.includes('quota') || msg.includes('Too Many Requests')) {
+    return "O limite de uso foi atingido temporariamente. Por favor, aguarde e tente novamente mais tarde.";
+  }
+  try {
+    const jsonMatch = msg.match(/\{.*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed?.error?.message) {
+        return parsed.error.message;
+      }
+    }
+  } catch(e) {}
+  return msg;
+};
+
 export const getDriveAgentResponse = async (diagnostics: any, userMessage?: string) => {
   const apiKey = process.env.MY_GEMINI_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "" || apiKey === "MY_GEMINI_API_KEY") {
@@ -9,7 +29,7 @@ export const getDriveAgentResponse = async (diagnostics: any, userMessage?: stri
   try {
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: userMessage || "Diagnosticar conexão drive."
     });
     return response.text || "Sem resposta.";
@@ -129,7 +149,7 @@ export const generateLeaseContract = async (tenantData: any, propertyData?: any,
   - Endereço: ${propertyData?.address || '[Pendente]'}
   - Valor do Aluguel: R$ ${tenantData?.rentValue || propertyData?.rentValue || '[Pendente]'}
   - Dia de Vencimento: ${tenantData?.paymentDay || propertyData?.paymentDay || '[Pendente]'}
-  - Juros e Multa por atraso: ${tenantData?.chargeLateFees || propertyData?.chargeLateFees ? `Multa de ${tenantData?.lateFeePenalty || propertyData?.lateFeePenalty || 2}% (tipo: ${tenantData?.lateFeeType || propertyData?.lateFeeType || 'porcentagem'}) e Mora diária de ${tenantData?.lateFeeDaily || propertyData?.lateFeeDaily || 0.033}%` : 'Não especificado no imóvel.'}
+  - Juros e Multa por atraso: ${tenantData?.chargeLateFees || propertyData?.chargeLateFees ? `Multa fixa de R$ ${tenantData?.lateFeePenalty || propertyData?.lateFeePenalty || 10} e Mora diária de ${tenantData?.lateFeeDaily || propertyData?.lateFeeDaily || 0.033}% sobre o aluguel` : 'Não especificado no imóvel.'}
   - Regras e Restrições do Imóvel: ${rulesText}
   - Alertas/Observações de Estado sobre o Imóvel: ${alertsText}
   - Animais de estimação permitidos no imóvel (Regra): ${allowPetsText}
@@ -233,7 +253,7 @@ export const getLegalConsultantResponse = async (userMessage: string, history: {
     return response.text || "Desculpe, não consegui obter essa informação agora.";
   } catch (error: any) {
     console.error("Legal Consultant Error:", error);
-    return `Erro ao buscar consultoria: ${error.message}`;
+    return `Desculpe, ocorreu um erro temporal: ${formatAIError(error)}`;
   }
 };
 
@@ -327,7 +347,7 @@ export const getManagerAgentResponse = async (context: {
     return response.text || "Não consegui processar sua mensagem.";
   } catch (error: any) {
     console.error("Gemini Assistant Error:", error);
-    return `Desculpe, tive um erro ao processar sua solicitação: ${error.message}`;
+    return `Desculpe, tive um erro ao processar sua solicitação: ${formatAIError(error)}`;
   }
 };
 
@@ -368,6 +388,48 @@ Gere um relatório textual (2 a 4 parágrafos) em Português-BR para ir no topo 
   }
 };
 
+export const generateFinancialAudit = async (data: any) => {
+  const apiKey = process.env.MY_GEMINI_KEY || process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "" || apiKey === "MY_GEMINI_API_KEY") {
+    throw new Error("⚠️ Configuração Necessária. Configure sua GEMINI_API_KEY nas configurações.");
+  }
+  const ai = new GoogleGenAI({ apiKey });
+  
+  const prompt = `Você é um Analista Financeiro e Auditor especializado em gestão imobiliária. 
+O usuário te enviou os dados atuais do aplicativo dele (imóveis, inquilinos, pagamentos, saídas/despesas e acordos).
+
+Sua missão:
+1. Apresentar um resumo claro do fluxo de caixa atual (total de receitas pendentes vs recebidas, e volume de despesas).
+2. Identificar potenciais "furos" financeiros (ex: pagamentos muito atrasados, inquilinos com inadimplência cronica, pagamentos de caução pendentes).
+3. Avaliar as regras de multas e juros cadastradas. Elas estão ativas? Fazem sentido? (Lembrando que no Brasil, a praxe de mercado para aluguel permite multa moratória de até 10% e juros de 1% ao mês, mas você pode usar o bom senso).
+4. Gerar relatórios e dicas acionáveis focadas em evitar perdas. 
+Linguagem: Direta, respeitosa profissional e em português brasileiro formatado em Markdown para fácil leitura. Use listas (bullet points) e negrito para destacar valores.
+
+Dados para Análise (JSON estruturado):
+${JSON.stringify({ 
+  properties: data.properties,
+  tenants: data.tenants,
+  payments: data.payments,
+  expenses: data.expenses,
+  agreements: data.agreements
+}, null, 2).substring(0, 50000)} // Limite de segurança de caracteres
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        temperature: 0.3
+      }
+    });
+    return response.text;
+  } catch (err) {
+    console.error('Error generating financial audit:', err);
+    throw err;
+  }
+};
+
 export const parseContractFromText = async (text: string, base64Image?: string, mimeType?: string) => {
   const apiKey = process.env.MY_GEMINI_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "" || apiKey === "MY_GEMINI_API_KEY") {
@@ -384,7 +446,8 @@ Se for uma planilha com vários inquilinos, extraia o PRIMEIRO ou PRINCIPAL regi
     "name": "<nome descritivo curto, ex: Casa Centro, Apto 202>",
     "address": "<endereço completo do imóvel>",
     "rentValue": <valor numérico do aluguel (float), ex: 1500.00>,
-    "paymentDay": <dia do mês do vencimento (int)>
+    "paymentDay": <dia do mês do vencimento (int)>,
+    "rules": "<extraia as regras adicionais do imóvel, como restrições, horários silêncio, lixo, etc, ou vazio>"
   },
   "tenant": {
     "name": "<nome completo do inquilino>",
@@ -393,7 +456,12 @@ Se for uma planilha com vários inquilinos, extraia o PRIMEIRO ou PRINCIPAL regi
     "spouse": "<nome completo do cônjuge/companheiro, ou vazio>",
     "children": "<quantidade e/ou nome/idade dos filhos, ou vazio>",
     "pets": "<quantidade, espécie ou porte dos animais, ou vazio>",
-    "observations": "<texto reunindo informações implícitas ou explícitas como: veículos, restrições do imóvel ou regras específicas.>"
+    "vehicles": "<informações sobre vaga de garagem ou veículos informados, se houver, ou vazio>",
+    "observations": "<texto reunindo informações implícitas ou explícitas como: outras regras, etc.>"
+  },
+  "contract": {
+    "startDate": "<data de início do contrato no formato YYYY-MM-DD, ou vazio>",
+    "endDate": "<data de fim do contrato no formato YYYY-MM-DD, ou vazio>"
   },
   "deposit": {
     "hasDeposit": <boolean, true se houver caução/garantia>,

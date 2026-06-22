@@ -1,3 +1,5 @@
+import { toast } from 'sonner';
+
 let deferredPrompt: any = null;
 
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -11,7 +13,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
 
 export const installPWA = async () => {
   if (!deferredPrompt) {
-    alert("O aplicativo já está instalado ou seu navegador não suporta a instalação na tela inicial.");
+    toast.error("O aplicativo já está instalado ou seu navegador não suporta a instalação na tela inicial.");
     return;
   }
   // Show the install prompt

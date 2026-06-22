@@ -1,8 +1,34 @@
-export type PropertyStatus = 'vacant' | 'rented' | 'renovation';
-export type TenantStatus = 'waiting' | 'allocated' | 'archived';
-export type ExpenseType = 'renovation' | 'repair' | 'tax' | 'fine' | 'other';
-export type PaymentStatus = 'pending' | 'paid' | 'late' | 'cancelled' | 'partial';
-export type DepositStatus = 'pending' | 'received' | 'partially_used' | 'refunded';
+export type PropertyStatus = "vacant" | "rented" | "renovation";
+export type TenantStatus = "waiting" | "allocated" | "archived";
+export type ExpenseType = "renovation" | "repair" | "tax" | "fine" | "other";
+export type PaymentStatus =
+  | "pending"
+  | "paid"
+  | "late"
+  | "cancelled"
+  | "partial";
+export type DepositStatus =
+  | "pending"
+  | "received"
+  | "partially_used"
+  | "refunded";
+
+export interface AlertSettings {
+  notifyUpcomingRents: boolean;
+  upcomingRentsDays: number;
+  notifyContractsExpiring: boolean;
+  contractsExpiringDays: number;
+  notifyLatePayments: boolean;
+  notifyExpiredDocuments: boolean;
+  notifyTickets: boolean;
+  ticketsSLADaysWarning?: number;
+  notifyVacantProperties?: boolean;
+
+  vacantPropertiesDays?: number;
+  notifyPendingInspections?: boolean;
+  notifyUnallocatedTenants?: boolean;
+  forceShowUntilResolved?: boolean;
+}
 
 export interface DepositUsage {
   id: string;
@@ -16,7 +42,7 @@ export interface DepositUsage {
 export interface PropertyDocument {
   id: string;
   name: string;
-  status: 'valid' | 'missing' | 'expired' | 'pending';
+  status: "valid" | "missing" | "expired" | "pending";
   url?: string;
   expirationDate?: string;
   isRequired?: boolean;
@@ -30,8 +56,8 @@ export interface PropertyInspectionImage {
 export interface PropertyInspection {
   id: string;
   date: string;
-  type: 'move_in' | 'move_out' | 'routine';
-  status: 'draft' | 'completed';
+  type: "move_in" | "move_out" | "routine";
+  status: "draft" | "completed";
   notes: string;
   images: PropertyInspectionImage[];
 }
@@ -48,7 +74,7 @@ export interface Property {
   chargeLateFees?: boolean;
   lateFeePenalty?: number;
   lateFeeDaily?: number;
-  lateFeeType?: 'percentage' | 'fixed';
+  lateFeeType?: "percentage" | "fixed";
   documents?: PropertyDocument[];
   createdAt?: any;
   updatedAt?: any;
@@ -60,6 +86,7 @@ export interface Property {
   allowPets?: boolean;
   allowSmoking?: boolean;
   maxResidents?: number;
+  parkingSpaces?: number;
   rules?: string;
   alerts?: string;
 }
@@ -68,8 +95,8 @@ export interface StagingRecord {
   id?: string;
   rawData: string;
   parsedData?: any;
-  status: 'pending' | 'imported' | 'archived';
-  dataType: 'property_tenant' | 'financial' | 'other';
+  status: "pending" | "imported" | "archived";
+  dataType: "property_tenant" | "financial" | "other";
   originalSource: string;
   ownerId: string;
   createdAt?: any;
@@ -82,7 +109,13 @@ export interface Tenant {
   cpf: string;
   contact: string;
   secondaryContact?: string;
-  additionalResidents?: { name: string; relation: string; cpf?: string; age?: string }[];
+  accessPassword?: string;
+  additionalResidents?: {
+    name: string;
+    relation: string;
+    cpf?: string;
+    age?: string;
+  }[];
   status: TenantStatus;
   rating?: number;
   observations?: string;
@@ -92,12 +125,17 @@ export interface Tenant {
   ownerId: string;
   createdAt?: any;
   updatedAt?: any;
-  initialPaymentType?: 'deposit' | 'rent';
+  initialPaymentType?: "deposit" | "rent";
   depositValue?: number;
   depositInstallments?: number;
   depositDueDate?: string;
   depositBalance?: number;
-  depositDeductions?: { id: string; amount: number; reason: string; date: string }[];
+  depositDeductions?: {
+    id: string;
+    amount: number;
+    reason: string;
+    date: string;
+  }[];
   depositReturnedAmount?: number;
   depositDay?: number;
   evidenceLocation?: string;
@@ -106,6 +144,7 @@ export interface Tenant {
   _createRefundReminder?: boolean;
   spouse?: string;
   children?: string;
+  hasPets?: boolean;
   pets?: string;
   hasVehicles?: boolean;
   vehicleDetails?: string;
@@ -116,9 +155,11 @@ export interface Tenant {
   chargeLateFees?: boolean;
   lateFeePenalty?: number;
   lateFeeDaily?: number;
-  lateFeeType?: 'percentage' | 'fixed';
+  lateFeeType?: "percentage" | "fixed";
   leaseDurationMonths?: number;
   firstRentDueDate?: string;
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface Contract {
@@ -136,14 +177,14 @@ export interface Contract {
   chargeLateFees: boolean;
   lateFeePenalty?: number;
   lateFeeDaily?: number;
-  lateFeeType?: 'percentage' | 'fixed';
+  lateFeeType?: "percentage" | "fixed";
   observations?: string;
   contractFile?: string;
   evidenceName?: string;
   evidenceLocation?: string;
   thumbnailLink?: string;
   aiContractText?: string;
-  status: 'active' | 'ended' | 'broken';
+  status: "active" | "ended" | "broken";
   ownerId: string;
   createdAt?: any;
   updatedAt?: any;
@@ -158,7 +199,7 @@ export interface Agreement {
   installmentAmount: number;
   durationMonths: number;
   startDate: string;
-  status: 'active' | 'archived' | 'deleted';
+  status: "active" | "archived" | "deleted";
   justification?: string;
   evidence?: string;
   evidenceName?: string;
@@ -167,12 +208,23 @@ export interface Agreement {
   chargeLateFees?: boolean;
   lateFeePenalty?: number;
   lateFeeDaily?: number;
-  lateFeeType?: 'percentage' | 'fixed';
+  lateFeeType?: "percentage" | "fixed";
   ownerId: string;
   propertyNameSnapshot?: string;
   tenantNameSnapshot?: string;
   createdAt?: any;
   updatedAt?: any;
+}
+
+export interface ExpenseAttachment {
+  url: string;
+  name: string;
+  thumbnailLink?: string;
+}
+
+export interface SubExpenseItem {
+  description: string;
+  amount: number;
 }
 
 export interface Expense {
@@ -186,6 +238,8 @@ export interface Expense {
   evidenceName?: string;
   evidenceLocation?: string;
   thumbnailLink?: string;
+  attachments?: ExpenseAttachment[]; // Support for multiple attachments
+  items?: SubExpenseItem[]; // Support for breakdown of sub-expenses
   ownerId: string;
   propertyNameSnapshot?: string;
   createdAt?: any;
@@ -211,7 +265,7 @@ export interface Payment {
   ownerId: string;
   createdAt?: any;
   updatedAt?: any;
-  type?: 'rent' | 'deposit' | 'agreement';
+  type?: "rent" | "deposit" | "agreement";
   installmentNumber?: number;
   totalInstallments?: number;
   depositStatus?: DepositStatus;
@@ -233,21 +287,35 @@ export interface Ticket {
   category?: string;
   title: string;
   description: string;
-  status: 'open' | 'in_progress' | 'resolved' | 'cancelled';
-  priority: 'low' | 'medium' | 'high' | 'critical';
+  status: "open" | "in_progress" | "resolved" | "cancelled";
+  priority: "low" | "medium" | "high" | "critical";
   createdAt: any;
   updatedAt: any;
   slaDays: number;
   ownerId: string;
 }
 
+export interface CustomAlert {
+  id?: string;
+  title: string;
+  description: string;
+  category: string;
+  priority: "high" | "medium" | "low";
+  type: "critical" | "warning" | "info";
+  propertyId?: string;
+  tenantId?: string;
+  ownerId: string;
+  createdAt: any;
+  status?: "active" | "resolved";
+}
+
 export enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
+  CREATE = "create",
+  UPDATE = "update",
+  DELETE = "delete",
+  LIST = "list",
+  GET = "get",
+  WRITE = "write",
 }
 
 export interface FirestoreErrorInfo {
@@ -266,5 +334,5 @@ export interface FirestoreErrorInfo {
       email: string | null;
       photoUrl: string | null;
     }[];
-  }
+  };
 }

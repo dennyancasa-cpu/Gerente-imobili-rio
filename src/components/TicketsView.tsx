@@ -34,6 +34,8 @@ interface TicketsViewProps {
   handleNavigate: (tab: any, highlightId?: string) => void;
 }
 
+import { toast } from "sonner";
+
 export const TicketsView = ({ tickets, properties, tenants, user, handleNavigate }: TicketsViewProps) => {
   const [filterStatus, setFilterStatus] = useState<Ticket['status'] | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -70,7 +72,7 @@ export const TicketsView = ({ tickets, properties, tenants, user, handleNavigate
       }
     } catch (e) {
       console.error(e);
-      alert('Erro ao analisar a mensagem.');
+      toast.error('Erro ao analisar a mensagem.');
     } finally {
       setIsAiLoading(false);
     }
@@ -78,7 +80,7 @@ export const TicketsView = ({ tickets, properties, tenants, user, handleNavigate
 
   const handleCreateTicket = async () => {
     if (!ticketForm.title || !ticketForm.propertyId || !ticketForm.tenantId) {
-      alert("Preencha título, imóvel e inquilino.");
+      toast.error("Preencha título, imóvel e inquilino.");
       return;
     }
     try {
@@ -88,7 +90,6 @@ export const TicketsView = ({ tickets, properties, tenants, user, handleNavigate
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         slaDays: ticketForm.priority === 'critical' ? 1 : ticketForm.priority === 'high' ? 3 : ticketForm.priority === 'medium' ? 7 : 15,
-        userId: user?.uid,
         ownerId: user?.uid
       };
       

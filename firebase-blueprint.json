@@ -159,6 +159,24 @@
         "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
       },
       "required": ["securityPassword"]
+    },
+    "CustomAlert": {
+      "title": "CustomAlert",
+      "description": "A user-created custom notification/alert.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Title of the alert" },
+        "description": { "type": "string", "description": "Main descriptive text of the alert" },
+        "category": { "type": "string", "description": "Category name for classification" },
+        "priority": { "type": "string", "enum": ["high", "medium", "low"], "description": "Priority of the alert" },
+        "type": { "type": "string", "enum": ["critical", "warning", "info"], "description": "Type of the alert" },
+        "propertyId": { "type": "string", "description": "Optional associated property ID" },
+        "tenantId": { "type": "string", "description": "Optional associated tenant ID" },
+        "ownerId": { "type": "string", "description": "Owner UID who created the alert" },
+        "createdAt": { "type": "string", "description": "Creation ISO date string" },
+        "status": { "type": "string", "enum": ["active", "resolved"], "description": "Alert active status" }
+      },
+      "required": ["title", "description", "category", "priority", "type", "ownerId", "createdAt"]
     }
   },
   "firestore": {
@@ -171,6 +189,7 @@
     "users": { "schema": "User", "description": "Collection of user profiles" },
     "config": { "schema": "Config", "description": "User-specific configuration" },
     "tickets": { "schema": "Ticket", "description": "Collection of support tickets" },
+    "custom_alerts": { "schema": "CustomAlert", "description": "Collection of user-defined custom alerts" },
     "archived_properties": { "schema": "Property", "description": "Archived properties" },
     "archived_tenants": { "schema": "Tenant", "description": "Archived tenants" },
     "archived_expenses": { "schema": "Expense", "description": "Archived property expenses" },

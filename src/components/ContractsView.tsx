@@ -410,7 +410,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         {filteredContracts.map(contract => (
           <div key={contract.id} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col hover:border-indigo-200 hover:shadow-md transition-all group">
             <div className="flex justify-between items-start mb-4">
@@ -531,7 +531,8 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                           inputMode="decimal"
                           className="w-full pl-12 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-slate-700"
                           placeholder="0,00"
-                          value={formData.rentValue === 0 || formData.rentValue === undefined ? '' : formData.rentValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                     value={formData.rentValue === 0 || formData.rentValue === undefined ? '' : formData.rentValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                           onFocus={e => e.target.select()}
                           onChange={e => {
                             const val = e.target.value.replace(/\D/g, '');
                             const num = Number(val) / 100;
@@ -544,7 +545,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                    <div className="space-y-2">
                       <label className="font-semibold text-slate-700">Vencimento (Dia) <span className="text-red-500">*</span></label>
                       <input type="number" min="1" max="31" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                             value={formData.paymentDay} onChange={e => setFormData({...formData, paymentDay: Number(e.target.value)})} />
+                             value={formData.paymentDay} onFocus={e => e.target.select()} onChange={e => setFormData({...formData, paymentDay: Number(e.target.value)})} />
                    </div>
                    <div className="space-y-2">
                       <label className="font-semibold text-slate-700">Início do Contrato <span className="text-red-500">*</span></label>
@@ -566,7 +567,8 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                           <input 
                             type="number"
                             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
-                            value={formData.depositValue || ''}
+                                                         value={formData.depositValue || ''}
+                             onFocus={e => e.target.select()}
                             onChange={e => setFormData({...formData, depositValue: Number(e.target.value)})}
                             placeholder="Ex: 3000"
                           />
@@ -577,7 +579,8 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                             type="number"
                             min="1"
                             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
-                            value={formData.depositInstallments || 1}
+                                                         value={formData.depositInstallments || 1}
+                             onFocus={e => e.target.select()}
                             onChange={e => setFormData({...formData, depositInstallments: Number(e.target.value)})}
                           />
                        </div>
@@ -588,7 +591,8 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                             min="1"
                             max="31"
                             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
-                            value={formData.depositDay || formData.paymentDay || ''}
+                                                         value={formData.depositDay || formData.paymentDay || ''}
+                             onFocus={e => e.target.select()}
                             onChange={e => setFormData({...formData, depositDay: Number(e.target.value)})}
                             placeholder="Dia do mês (ex: 5)"
                           />
@@ -608,21 +612,19 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                     {formData.chargeLateFees && (
                         <div className="grid sm:grid-cols-2 gap-4 mt-4 pt-4 border-t border-indigo-100/50">
                             <div>
-                                <label className="text-xs font-bold text-slate-500 uppercase">Multa (Fixo ou %)</label>
+                                <label className="text-xs font-bold text-slate-500 uppercase">Multa Fixa (R$)</label>
                                 <div className="flex gap-2 mt-1.5">
                                     <input type="number" step="0.01" className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
-                                           value={formData.lateFeePenalty || 0} onChange={e => setFormData({...formData, lateFeePenalty: Number(e.target.value)})} />
-                                    <select className="px-2 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white font-medium text-slate-700 shadow-sm"
-                                            value={formData.lateFeeType || 'percentage'} onChange={e => setFormData({...formData, lateFeeType: e.target.value as 'percentage' | 'fixed'})}>
-                                        <option value="percentage">%</option>
-                                        <option value="fixed">R$</option>
-                                    </select>
+                                           value={formData.lateFeePenalty || 0} onFocus={e => e.target.select()} onChange={e => setFormData({...formData, lateFeePenalty: Number(e.target.value)})} />
+                                    <div className="px-3 py-2 border rounded-lg bg-slate-50 text-slate-500 font-bold shadow-sm font-mono flex items-center justify-center">
+                                       R$
+                                    </div>
                                 </div>
                             </div>
                             <div>
                                 <label className="text-xs font-bold text-slate-500 uppercase">Juros ao dia (%)</label>
                                 <input type="number" step="0.001" className="w-full mt-1.5 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
-                                       value={formData.lateFeeDaily || 0} onChange={e => setFormData({...formData, lateFeeDaily: Number(e.target.value)})} />
+                                       value={formData.lateFeeDaily || 0} onFocus={e => e.target.select()} onChange={e => setFormData({...formData, lateFeeDaily: Number(e.target.value)})} />
                             </div>
                         </div>
                     )}

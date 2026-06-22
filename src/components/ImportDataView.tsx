@@ -87,7 +87,7 @@ export const ImportDataView = ({
       setParsedPreview(parsed);
     } catch (e) {
       console.error(e);
-      alert('Erro ao processar dados. Verifique o formato.');
+      toast.error('Erro ao processar dados. Verifique o formato.');
     }
   };
 
@@ -107,12 +107,12 @@ export const ImportDataView = ({
            const raw = results.data.map((row: any) => row.join('\t')).join('\n');
            setPasteData(raw);
         } else {
-           alert('Nenhum dado encontrado no arquivo.');
+           toast.error('Nenhum dado encontrado no arquivo.');
         }
       },
       error: (error) => {
         console.error(error);
-        alert('Erro ao ler arquivo CSV.');
+        toast.error('Erro ao ler arquivo CSV.');
       }
     });
   };

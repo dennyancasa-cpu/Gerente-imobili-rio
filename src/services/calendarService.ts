@@ -28,19 +28,17 @@ export const createCalendarEvent = async (
   }
 
   const startDate = new Date(dateIso);
-  const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hour duration or all day? We can make it all day.
+  const endDate = new Date(startDate);
+  endDate.setDate(endDate.getDate() + 1); // For all-day events, end date must be exclusive
 
-  // All day event:
   const event = {
     summary: title,
     description: description,
     start: {
       date: startDate.toISOString().split('T')[0],
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     },
     end: {
-      date: endDate.toISOString().split('T')[0], // all-day event ends on the same or next day. We'll just use the same as it's a reminder.
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      date: endDate.toISOString().split('T')[0],
     },
   };
 
@@ -53,6 +51,11 @@ export const createCalendarEvent = async (
     body: JSON.stringify(event),
   });
 
+  if (response.status === 401 || response.status === 403) {
+      localStorage.removeItem('google_drive_tokens');
+      throw new Error('Sua sessão do Google expirou ou faltam permissões. Faça login novamente.');
+  }
+
   if (!response.ok) {
     const errorData = await response.json();
     throw new Error(`Falha ao criar evento no calendário: ${errorData.error?.message || 'Erro desconhecido'}`);
@@ -63,7 +66,7 @@ export const createCalendarEvent = async (
 
 export const listUpcomingEvents = async () => {
     const token = await getGoogleAccessToken();
-    if (!token) throw new Error('Acesso negado');
+    if (!token) throw new Error('Acesso negado. Por favor, faça login com o Google novamente.');
     const timeMin = new Date().toISOString();
     const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&maxResults=10&orderBy=startTime&singleEvents=true`, {
         method: 'GET',
@@ -71,6 +74,11 @@ export const listUpcomingEvents = async () => {
             'Authorization': `Bearer ${token}`
         }
     });
+
+    if (response.status === 401 || response.status === 403) {
+        localStorage.removeItem('google_drive_tokens');
+        throw new Error('Sua sessão do Google expirou ou faltam permissões. Faça login novamente.');
+    }
 
     if (!response.ok) throw new Error('Falha ao obter eventos');
     return await response.json();

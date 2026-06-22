@@ -4,7 +4,7 @@ import {
   FileText, Upload, CheckCircle2, ChevronRight, Wand2, Plus, 
   AlertCircle, Bot, HelpCircle, Scale, ShieldCheck, Square, 
   Volume2, Sparkles, X, ArrowLeft, Send, BookOpen, Layers,
-  FolderCheck, Search, SearchX, User, WifiOff
+  FolderCheck, Search, SearchX, User, WifiOff, MessageSquare
 } from 'lucide-react';
 import { parseContractFromText, parseMultipleRecordsFromText, getLegalConsultantResponse } from '../services/geminiService';
 import { ImportDataView } from './ImportDataView';
@@ -43,23 +43,65 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
   const [isProcessing, setIsProcessing] = useState(false);
   const [contractText, setContractText] = useState('');
   const [parsedData, setParsedData] = useState<any>(null);
+  const [uploadedFile, setUploadedFile] = useState<{ base64: string; name: string } | null>(null);
   const [bulkRecords, setBulkRecords] = useState<any[]>([]);
   const [bulkSummary, setBulkSummary] = useState<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Legal Chat State
-  const [showWarning, setShowWarning] = useState(() => localStorage.getItem('hideLegalWarning') !== 'true');
-  const [chatHistory, setChatHistory] = useState<{role: 'user' | 'assistant', content: string}[]>(() => {
-    const saved = localStorage.getItem('legalChatHistory');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return [
-      { role: 'assistant', content: 'Olá! Sou seu Consultor Jurídico IA. Posso te ajudar com leis do inquilinato, regras de locação, impostos e dicas para alugar seu espaço com Segurança. O que você gostaria de saber?' }
-    ];
+  // Chat Sessions State
+  const [showWarning, setShowWarning] = useState(() => {
+    try { return localStorage.getItem('hideLegalWarning') !== 'true'; } catch { return true; }
   });
-  
-  useEffect(() => { localStorage.setItem('legalChatHistory', JSON.stringify(chatHistory)); }, [chatHistory]);
+  const [sessions, setSessions] = useState<{id: string, title: string, updatedAt: number, messages: any[]}[]>(() => {
+    try {
+      const saved = localStorage.getItem('legalChatSessions');
+      if (saved) return JSON.parse(saved);
+      const old = localStorage.getItem('legalChatHistory');
+      if (old) {
+        const parsed = JSON.parse(old); 
+        if (parsed.length > 1) return [{ id: Date.now().toString(), title: 'Conversa Anterior', updatedAt: Date.now(), messages: parsed }];
+      }
+    } catch {}
+    return [];
+  });
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [showSidebar, setShowSidebar] = useState(false);
+
+  useEffect(() => { try { localStorage.setItem('legalChatSessions', JSON.stringify(sessions)); } catch {} }, [sessions]);
+
+  const defaultMessage = { role: 'assistant', content: 'Olá! Sou seu Consultor Jurídico IA. Posso te ajudar com leis do inquilinato, regras de locação, impostos e dicas para alugar seu espaço com Segurança. O que você gostaria de saber?' };
+  const activeSession = sessions.find(s => s.id === currentSessionId);
+  const chatHistory = activeSession ? activeSession.messages : [defaultMessage];
+
+  const setChatHistory = (updater: any) => {
+    let nextMsgs: any[];
+    if (typeof updater === 'function') {
+      nextMsgs = updater(chatHistory);
+    } else {
+      nextMsgs = updater;
+    }
+
+    if (!currentSessionId) {
+      if (nextMsgs.length <= 1) return; // Don't save empty session
+      const newId = Date.now().toString();
+      const firstUserMsg = nextMsgs.find((m: any) => m.role === 'user')?.content || 'Nova Conversa';
+      const title = firstUserMsg.substring(0, 30) + (firstUserMsg.length > 30 ? '...' : '');
+      const newSession = { id: newId, title, updatedAt: Date.now(), messages: nextMsgs };
+      setSessions(prev => [newSession, ...prev].slice(0, 20));
+      setCurrentSessionId(newId);
+    } else {
+      setSessions(prev => prev.map(s => {
+        if (s.id === currentSessionId) {
+          const firstUserMsg = nextMsgs.find((m: any) => m.role === 'user')?.content || 'Nova Conversa';
+          const title = (s.title === 'Nova Conversa' || s.title === 'Conversa Anterior') && firstUserMsg !== 'Nova Conversa' 
+             ? firstUserMsg.substring(0, 30) + (firstUserMsg.length > 30 ? '...' : '') 
+             : s.title;
+          return { ...s, title, updatedAt: Date.now(), messages: nextMsgs };
+        }
+        return s;
+      }));
+    }
+  };
 
   const [userInput, setUserInput] = useState('');
   const [isLoadingChat, setIsLoadingChat] = useState(false);
@@ -67,8 +109,30 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [chatHistory, activeModule]);
+    if (!scrollRef.current) return;
+    
+    const lastMsg = chatHistory[chatHistory.length - 1];
+    
+    if (lastMsg && lastMsg.role === 'assistant') {
+      // Scroll to the start of this assistant message
+      setTimeout(() => {
+        const container = scrollRef.current;
+        const lastMsgEl = document.getElementById(`chat-message-${chatHistory.length - 1}`);
+        if (container && lastMsgEl) {
+          const containerRect = container.getBoundingClientRect();
+          const elementRect = lastMsgEl.getBoundingClientRect();
+          const relativeTop = elementRect.top - containerRect.top + container.scrollTop;
+          container.scrollTo({
+            top: relativeTop - 16, // 16px of padding at the top
+            behavior: 'smooth'
+          });
+        }
+      }, 50);
+    } else {
+      // User message or other updates, scroll to bottom
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [chatHistory, activeModule, isLoadingChat]);
 
   useEffect(() => { return () => { window.speechSynthesis.cancel(); }; }, []);
 
@@ -117,8 +181,8 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
     try {
       const data = await parseContractFromText(contractText);
       if (data) { setParsedData(data); setStep(2); } 
-      else alert('Não foi possível extrair dados estruturados deste texto.');
-    } catch (e: any) { alert('Erro: ' + e.message); } 
+      else toast.error('Não foi possível extrair dados estruturados deste texto.');
+    } catch (e: any) { toast.error('Erro: ' + e.message); } 
     finally { setIsProcessing(false); }
   };
 
@@ -139,14 +203,18 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
          try {
            const promptMsg = isPDF ? "Analise este documento PDF de contrato de aluguel." : "Veja a imagem do contrato anexada.";
            const data = await parseContractFromText(promptMsg, base64, file.type);
-           if (data) { setParsedData(data); setStep(2); } 
-           else alert('Não foi possível extrair dados estruturados deste arquivo.');
-         } catch(err: any) { alert(err.message); } 
+           if (data) { 
+             setParsedData(data); 
+             setUploadedFile({ base64, name: file.name });
+             setStep(2); 
+           } 
+           else toast.error('Não foi possível extrair dados estruturados deste arquivo.');
+         } catch(err: any) { toast.error(err.message); } 
          finally { setIsProcessing(false); }
        };
        reader.readAsDataURL(file);
      } else {
-       alert("Por favor, envie um arquivo de Imagem ou PDF.");
+       toast.error("Por favor, envie um arquivo de Imagem ou PDF.");
      }
   };
 
@@ -158,6 +226,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
         address: parsedData.property?.address || 'Endereço Pendente',
         rentValue: Number(parsedData.property?.rentValue) || 0,
         paymentDay: Number(parsedData.property?.paymentDay) || 5,
+        rules: parsedData.property?.rules || '',
         status: 'vacant', chargeLateFees: false, lateFeePenalty: 10, lateFeeDaily: 0.33, lateFeeType: 'percentage'
       });
       if (propertyId && parsedData.tenant && parsedData.tenant.name) {
@@ -168,12 +237,22 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
           spouse: parsedData.tenant.spouse || '',
           children: parsedData.tenant.children || '',
           pets: parsedData.tenant.pets || '',
+          hasVehicles: !!parsedData.tenant.vehicles && parsedData.tenant.vehicles.trim() !== '',
+          vehicleDetails: parsedData.tenant.vehicles || '',
           observations: parsedData.tenant.observations || '', 
           propertyId, 
           status: 'allocated',
           rentValue: Number(parsedData.property?.rentValue) || 0,
           paymentDay: Number(parsedData.property?.paymentDay) || 5,
+          startDate: parsedData.contract?.startDate || '',
+          endDate: parsedData.contract?.endDate || '',
         };
+        
+        if (uploadedFile) {
+          tenantPayload.contractFile = uploadedFile.base64;
+          tenantPayload.evidenceName = uploadedFile.name;
+        }
+
         if (parsedData.deposit?.hasDeposit === true || parsedData.deposit?.depositValue > 0) {
           tenantPayload.initialPaymentType = 'deposit';
           tenantPayload.depositValue = Number(parsedData.deposit?.depositValue) || 0;
@@ -183,7 +262,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
         await addTenant(tenantPayload);
       }
       setStep(3);
-    } catch(err: any) { alert('Erro ao importar: ' + err.message); } 
+    } catch(err: any) { toast.error('Erro ao importar: ' + err.message); } 
     finally { setIsProcessing(false); }
   };
 
@@ -207,7 +286,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
         }
       }
       setStep(3);
-    } catch (e: any) { alert('Erro: ' + e.message); } 
+    } catch (e: any) { toast.error('Erro: ' + e.message); } 
     finally { setIsProcessing(false); }
   };
 
@@ -215,6 +294,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
     setStep(1);
     setContractText('');
     setParsedData(null);
+    setUploadedFile(null);
     setBulkRecords([]);
   };
 
@@ -235,13 +315,65 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
               </p>
             </div>
           </div>
-          <button onClick={() => setChatHistory([chatHistory[0]])} className="hidden sm:flex px-4 py-2 bg-slate-50 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all border border-slate-200 text-sm font-bold items-center gap-2 shadow-sm" title="Limpar Conversa" >
-            <X className="w-4 h-4" /> Limpar Conversa
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowSidebar(!showSidebar)} className="px-4 py-2 bg-slate-50 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-slate-200 text-sm font-bold flex items-center gap-2 shadow-sm" title="Histórico">
+              <MessageSquare className="w-4 h-4" /> Histórico
+            </button>
+            <button onClick={() => {
+              setCurrentSessionId(null);
+            }} className="hidden sm:flex px-4 py-2 bg-slate-50 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-slate-200 text-sm font-bold items-center gap-2 shadow-sm" title="Nova Conversa">
+              <Plus className="w-4 h-4" /> Nova Conversa
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 flex flex-col bg-white border border-slate-200 overflow-hidden relative w-full h-full rounded-[2rem] sm:rounded-none sm:border-0 sm:border-t">
-          <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-500/5 blur-[120px] rounded-full pointer-events-none" />
+        <div className="flex-1 flex bg-white border border-slate-200 overflow-hidden relative w-full h-full rounded-[2rem] sm:rounded-none sm:border-0 sm:border-t">
+          {/* Sidenar Histórico */}
+          <AnimatePresence>
+            {showSidebar && (
+              <motion.div 
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 300, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                className="border-r border-slate-200 bg-slate-50 flex flex-col overflow-hidden shrink-0"
+              >
+                <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+                  <h3 className="font-bold text-slate-800 text-sm">Histórico de Conversas</h3>
+                  <button onClick={() => setShowSidebar(false)} className="p-1 text-slate-500 hover:bg-slate-200 rounded">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="p-2 overflow-y-auto flex-1 space-y-1">
+                  <button 
+                    onClick={() => { setCurrentSessionId(null); setShowSidebar(false); }}
+                    className="w-full text-left px-3 py-2 text-sm font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg flex items-center gap-2"
+                  >
+                    <Plus className="w-4 h-4" /> Nova Conversa
+                  </button>
+                  {sessions.length === 0 ? (
+                    <p className="text-xs text-slate-400 text-center py-4">Nenhum histórico</p>
+                  ) : (
+                    sessions.map(s => (
+                      <button 
+                        key={s.id}
+                        onClick={() => { setCurrentSessionId(s.id); setShowSidebar(false); }}
+                        className={cn(
+                          "w-full text-left px-3 py-2 text-xs font-semibold rounded-lg truncate transition-colors",
+                          currentSessionId === s.id ? "bg-slate-200 text-slate-900" : "text-slate-600 hover:bg-slate-200"
+                        )}
+                      >
+                        {currentSessionId === s.id && <ChevronRight className="inline-block w-3 h-3 text-indigo-500 mr-1" />}
+                        {s.title || 'Conversa'}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div className="flex-1 flex flex-col relative w-full h-full overflow-hidden">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-500/5 blur-[120px] rounded-full pointer-events-none" />
           
           {showWarning && (
             <div className="bg-amber-50 border-b border-amber-200 px-6 py-4 shrink-0 flex items-start justify-between gap-4 z-10 relative">
@@ -252,13 +384,16 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
                    <p className="text-xs sm:text-sm text-amber-700 leading-relaxed font-medium">Esta é uma IA de auxílio. Não tome as respostas como verdade absoluta ou parecer jurídico vinculativo. Toda informação sensível deve ser verificada com um profissional advogado real.</p>
                  </div>
                </div>
-               <button onClick={() => { setShowWarning(false); localStorage.setItem('hideLegalWarning', 'true'); }} className="p-2 hover:bg-amber-100 rounded-xl text-amber-600 transition-colors shrink-0" > <X className="w-5 h-5" /> </button>
+               <button onClick={() => { 
+                setShowWarning(false); 
+                try { localStorage.setItem('hideLegalWarning', 'true'); } catch {} 
+              }} className="p-2 hover:bg-amber-100 rounded-xl text-amber-600 transition-colors shrink-0" > <X className="w-5 h-5" /> </button>
             </div>
           )}
           
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 md:px-12 lg:px-24 py-8 space-y-8 custom-scrollbar relative z-10 w-full" >
             {chatHistory.map((msg, idx) => (
-              <motion.div key={idx} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className={cn("flex flex-col w-full", msg.role === 'user' ? "items-end" : "items-start" )} >
+              <motion.div id={`chat-message-${idx}`} key={idx} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className={cn("flex flex-col w-full", msg.role === 'user' ? "items-end" : "items-start" )} >
                 <div className={cn("flex items-center gap-2 mb-2 px-2", msg.role === 'user' ? "flex-row-reverse" : "flex-row")}>
                   <div className={cn("w-7 h-7 rounded-xl flex items-center justify-center text-[10px] font-black tracking-tighter shadow-sm", msg.role === 'user' ? "bg-indigo-600 text-white" : "bg-white text-indigo-700 border border-indigo-100")}>
                     {msg.role === 'user' ? 'YOU' : <Scale className="w-4 h-4" />}
@@ -307,6 +442,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
                 <button onClick={sendMessage} disabled={!isOnline || !userInput.trim() || isLoadingChat} className="absolute right-3 bottom-3 p-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-[2rem] transition-all shadow-lg shadow-indigo-600/30 disabled:opacity-40 disabled:shadow-none flex items-center justify-center transform active:scale-95" > <Send className="w-5 h-5 ml-0.5" /> </button>
               </div>
               <p className="text-center text-[11px] text-slate-400 mt-3 font-medium">A inteligência artificial pode cometer erros. Considere verificar informações importantes.</p>
+          </div>
           </div>
         </div>
       </div>
@@ -550,8 +686,13 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
                    <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nome</label><input className="w-full font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.name || ''} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, name: e.target.value}})} /></div>
                    <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Endereço</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.address || ''} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, address: e.target.value}})} /></div>
                    <div className="grid grid-cols-2 gap-4">
-                     <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Aluguel (R$)</label><input type="number" className="w-full text-sm font-bold text-emerald-600 p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.rentValue || 0} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, rentValue: e.target.value}})} /></div>
-                     <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Vencimento</label><input type="number" className="w-full text-sm font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.paymentDay || 5} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, paymentDay: e.target.value}})} /></div>
+                     <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Aluguel (R$)</label><input type="number" className="w-full text-sm font-bold text-emerald-600 p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.rentValue || 0} onFocus={e => e.target.select()} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, rentValue: e.target.value}})} /></div>
+                     <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Vencimento</label><input type="number" className="w-full text-sm font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.paymentDay || 5} onFocus={e => e.target.select()} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, paymentDay: e.target.value}})} /></div>
+                   </div>
+                   <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Regras do Imóvel</label><textarea className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500 bg-transparent resize-none h-16" placeholder="Sem regras extras" value={parsedData.property?.rules || ''} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, rules: e.target.value}})} /></div>
+                   <div className="grid grid-cols-2 gap-4">
+                     <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Início Contrato</label><input type="date" className="w-full text-sm font-medium p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.contract?.startDate || ''} onChange={e => setParsedData({...parsedData, contract: {...parsedData.contract, startDate: e.target.value}})} /></div>
+                     <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fim Contrato</label><input type="date" className="w-full text-sm font-medium p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.contract?.endDate || ''} onChange={e => setParsedData({...parsedData, contract: {...parsedData.contract, endDate: e.target.value}})} /></div>
                    </div>
                  </div>
               </div>
@@ -566,6 +707,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
                      <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Filhos (Mencionado)</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" placeholder="Não informado" value={parsedData.tenant?.children || ''} onChange={e => setParsedData({...parsedData, tenant: {...parsedData.tenant, children: e.target.value}})} /></div>
                      <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Animais (Pets)</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" placeholder="Não informado" value={parsedData.tenant?.pets || ''} onChange={e => setParsedData({...parsedData, tenant: {...parsedData.tenant, pets: e.target.value}})} /></div>
                    </div>
+                   <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Veículos (Vaga de garagem)</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" placeholder="Não informado" value={parsedData.tenant?.vehicles || ''} onChange={e => setParsedData({...parsedData, tenant: {...parsedData.tenant, vehicles: e.target.value}})} /></div>
                  </div>
               </div>
             </div>
