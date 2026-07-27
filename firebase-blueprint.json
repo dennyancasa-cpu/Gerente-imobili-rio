@@ -177,11 +177,54 @@
         "status": { "type": "string", "enum": ["active", "resolved"], "description": "Alert active status" }
       },
       "required": ["title", "description", "category", "priority", "type", "ownerId", "createdAt"]
+    },
+    "StorageSpace": {
+      "title": "StorageSpace",
+      "description": "A rental storage space or garage with an inventory of materials.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the storage space" },
+        "address": { "type": "string", "description": "Address of the storage space" },
+        "monthlyCost": { "type": "number", "description": "Monthly rent cost" },
+        "dueDay": { "type": "number", "description": "Day of the month when rent is due" },
+        "propertyId": { "type": "string", "description": "Linked property ID or empty" },
+        "contractFile": { "type": "string", "description": "Base64 or URL of the lease contract file" },
+        "evidenceName": { "type": "string", "description": "Name of the contract file" },
+        "evidenceLocation": { "type": "string", "description": "Location notes" },
+        "ownerId": { "type": "string", "description": "UID of the owner" },
+        "contractStartDate": { "type": "string", "format": "date", "description": "Start date of the storage contract" },
+        "contractEndDate": { "type": "string", "format": "date", "description": "End date of the storage contract" },
+        "landlordName": { "type": "string", "description": "Name of the landlord" },
+        "landlordContact": { "type": "string", "description": "Contact info of the landlord" },
+        "hasDeposit": { "type": "boolean", "description": "Whether a security deposit was paid" },
+        "depositValue": { "type": "number", "description": "Security deposit value paid" },
+        "depositRefundStatus": { "type": "string", "enum": ["pending", "refunded", "partially_used", "lost"], "description": "Deposit refund status" },
+        "rescissionFine": { "type": "number", "description": "Penalty for early contract termination" },
+        "readjustmentIndex": { "type": "string", "description": "Annual rent adjustment index" },
+        "paymentMethod": { "type": "string", "description": "Rent payment method" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "quantity": { "type": "number" },
+              "cost": { "type": "number" },
+              "dateAdded": { "type": "string" }
+            },
+            "required": ["id", "name", "quantity", "cost"]
+          }
+        }
+      },
+      "required": ["name", "monthlyCost", "dueDay", "ownerId"]
     }
   },
   "firestore": {
     "contracts": { "schema": "Contract", "description": "Collection of lease contracts" },
     "properties": { "schema": "Property", "description": "Collection of properties" },
+    "storages": { "schema": "StorageSpace", "description": "Collection of storage spaces and garages" },
     "tenants": { "schema": "Tenant", "description": "Collection of tenants" },
     "expenses": { "schema": "Expense", "description": "Collection of property expenses" },
     "payments": { "schema": "Payment", "description": "Collection of rent payments" },

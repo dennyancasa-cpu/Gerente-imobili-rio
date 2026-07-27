@@ -58,6 +58,8 @@ import {
   PropertyInspectionImage,
   AlertSettings,
   CustomAlert,
+  StorageSpace,
+  StorageItem,
 } from "./types";
 import { handleFirestoreError } from "./utils/firestoreError";
 import { Auth } from "./components/Auth";
@@ -68,6 +70,7 @@ import {
   User as UserIcon,
   DollarSign,
   Plus,
+  Box,
   Search,
   MoreVertical,
   Trash2,
@@ -145,6 +148,8 @@ import {
   DatabaseBackup,
   BookText,
   Heart,
+  Warehouse,
+  Car, BarChart2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Toaster, toast } from "sonner";
@@ -171,10 +176,12 @@ import { twMerge } from "tailwind-merge";
 import { HelpView } from "./components/HelpView";
 import { TicketsView } from "./components/TicketsView";
 import { ContractsView } from "./components/ContractsView";
+import { StoragesView } from "./components/StoragesView";
 import { IntelligenceHubView } from "./components/IntelligenceHubView";
 import { CustomRobotAssistant } from "./components/CustomRobotAssistant";
 import { ImportDataView } from "./components/ImportDataView";
 import { FinancialIAView } from "./components/FinancialIAView";
+import { FinancialOverviewView } from "./components/FinancialOverviewView";
 import { CalendarSync } from "./components/CalendarSync";
 import { LegalDocsView } from "./components/LegalDocsView";
 import {
@@ -599,15 +606,42 @@ const TenantTimeline = ({
             >
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-xs font-bold text-slate-700">
-                    {p.description || "Aluguel"}
-                  </p>
-                  <p className="text-[10px] text-slate-500">
-                    Pago em:{" "}
-                    {p.paidDate
-                      ? format(parseISO(p.paidDate), "dd/MM/yyyy")
-                      : "-"}
-                  </p>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <p className="text-xs font-bold text-slate-700">
+                      {p.description || "Aluguel"}
+                    </p>
+                    <span
+                      className={cn(
+                        "px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border shadow-sm shrink-0",
+                        p.type === "agreement"
+                          ? "bg-blue-50 text-blue-700 border-blue-200"
+                          : p.type === "deposit"
+                            ? "bg-amber-50 text-amber-700 border-amber-200"
+                            : "bg-indigo-50 text-indigo-700 border-indigo-200",
+                      )}
+                    >
+                      {p.type === "agreement"
+                        ? "Acordo"
+                        : p.type === "deposit"
+                          ? "Caução"
+                          : "Aluguel"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500 flex-wrap">
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-3 h-3 text-slate-400" /> Vencimento:{" "}
+                      {p.dueDate
+                        ? format(parseISO(p.dueDate), "dd/MM/yyyy")
+                        : "N/A"}
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span className="flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Pago em:{" "}
+                      {p.paidDate
+                        ? format(parseISO(p.paidDate), "dd/MM/yyyy")
+                        : "-"}
+                    </span>
+                  </div>
                 </div>
                 <div className="text-right flex flex-col items-end gap-2">
                   <p className="text-sm font-bold text-slate-900">
@@ -775,6 +809,8 @@ interface HomeViewProps {
   globalAlertsCount?: number | null;
   globalAlertsPriority?: "high" | "medium" | "low";
   receivablesProps?: any;
+  storages?: StorageSpace[];
+  onNavigateToStorage?: (storageId: string) => void;
 }
 
 const HomeView = ({
@@ -789,6 +825,8 @@ const HomeView = ({
   globalAlertsCount,
   globalAlertsPriority,
   receivablesProps,
+  storages,
+  onNavigateToStorage,
 }: HomeViewProps) => {
   const today = new Date();
   const [isGuideOpen, setIsGuideOpen] = useState(false);
@@ -871,9 +909,21 @@ const HomeView = ({
           d >= mStart &&
           d <= mEnd &&
           p.status !== "cancelled" &&
-          p.type !== "deposit"
+          p.type !== "deposit" &&
+          p.tenantId !== "proprietario"
         );
       });
+
+      const storagePaidExpenses = payments.filter((p) => {
+        const d = parseISO(p.dueDate);
+        return (
+          p.tenantId === "proprietario" &&
+          (p.status === "paid" || p.status === "partial") &&
+          p.paidDate &&
+          parseISO(p.paidDate) >= mStart &&
+          parseISO(p.paidDate) <= mEnd
+        );
+      }).reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
 
       const received = monthPayments
         .filter((p) => p.status === "paid" || p.status === "partial")
@@ -885,7 +935,7 @@ const HomeView = ({
 
       const monthExpenses = expenses
         .filter((e) => parseISO(e.date) >= mStart && parseISO(e.date) <= mEnd)
-        .reduce((acc, e) => acc + e.amount, 0);
+        .reduce((acc, e) => acc + e.amount, 0) + storagePaidExpenses;
 
       let projectedRent = 0;
       if (i > 0) {
@@ -1042,6 +1092,139 @@ const HomeView = ({
         )}
       </div>
 
+      {/* Locações de Espaços e Depósitos Overview Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between pt-2">
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            <Archive className="w-5 h-5 text-emerald-500" />
+            Visão Rápida dos Espaços
+          </h2>
+          {storages && storages.length > 0 && (
+            <Button
+              variant="outline"
+              onClick={() => onNavigateToStorage?.("")}
+              className="text-xs h-7 px-3 border-emerald-200 text-emerald-700 hover:bg-emerald-50 rounded-lg flex items-center gap-1 font-semibold"
+            >
+              Gerenciar
+            </Button>
+          )}
+        </div>
+
+        {storages && storages.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+            {storages.map((space) => {
+              const spaceTypeLabels: Record<string, string> = {
+                garage: "Garagem",
+                storage_room: "Depósito / Box",
+                warehouse: "Galpão / Barracão",
+                other: "Espaço Outros",
+              };
+              
+              // Calculate next billing / status
+              const sortedBillings = space.billings 
+                ? [...space.billings].sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+                : [];
+              
+              const nextUnpaidBilling = sortedBillings.find(b => b.status !== "paid");
+              const isLate = nextUnpaidBilling && nextUnpaidBilling.dueDate < format(today, "yyyy-MM-dd");
+
+              const SpaceIcon = space.spaceType === "garage" 
+                ? Car 
+                : space.spaceType === "warehouse" 
+                  ? Warehouse 
+                  : space.spaceType === "storage_room"
+                    ? Box
+                    : Archive;
+
+              return (
+                <motion.div
+                  key={space.id}
+                  className="group relative cursor-pointer"
+                  onClick={() => space.id && onNavigateToStorage?.(space.id)}
+                  whileHover={{ y: -2, scale: 1.02 }}
+                >
+                  <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-xl" />
+                  <div className="p-3 flex flex-col justify-between h-full border border-slate-100 bg-white/90 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-slate-200 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                    <div className="space-y-1 mb-2 relative z-10">
+                      <div className="flex items-start justify-between gap-1">
+                        <h3
+                          className="font-bold text-xs text-slate-800 group-hover:text-emerald-600 transition-colors truncate"
+                          title={space.name}
+                        >
+                          {space.name}
+                        </h3>
+                        <div
+                          className={cn(
+                            "w-2 h-2 rounded-full shrink-0 shadow-sm mt-0.5",
+                            nextUnpaidBilling 
+                              ? (isLate ? "bg-red-500" : "bg-amber-400")
+                              : "bg-emerald-500"
+                          )}
+                        />
+                      </div>
+
+                      <p
+                        className="text-[9px] text-slate-500 flex items-center gap-1 font-medium truncate"
+                        title={`${spaceTypeLabels[space.spaceType || "other"]} • ${space.address || "Sem endereço"}`}
+                      >
+                        <SpaceIcon className="w-2.5 h-2.5 shrink-0 text-slate-400" />
+                        <span className="truncate">
+                          {space.address || spaceTypeLabels[space.spaceType || "other"]}
+                        </span>
+                      </p>
+                    </div>
+
+                    <div className="mt-auto relative z-10">
+                      {nextUnpaidBilling ? (
+                        <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+                          <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
+                            {isLate ? "Atrasado" : `Vence ${format(parseISO(nextUnpaidBilling.dueDate), "dd/MM")}`}
+                          </p>
+                          <p
+                            className={cn(
+                              "text-[10px] font-bold truncate",
+                              isLate ? "text-red-600" : "text-amber-600"
+                            )}
+                          >
+                            R$ {nextUnpaidBilling.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+                          <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
+                            Custo Mensal
+                          </p>
+                          <p className="text-[9px] font-bold text-emerald-600 truncate">
+                            R$ {space.monthlyCost.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-muted-foreground italic border border-dashed border-slate-200 rounded-2xl text-sm bg-slate-50/50 flex flex-col items-center justify-center gap-3">
+            <Archive className="w-8 h-8 text-slate-300" />
+            <div className="space-y-1">
+              <p className="font-medium text-slate-600">Nenhum espaço ou depósito locado cadastrado.</p>
+              <p className="text-xs text-slate-400">Gerencie e controle custos de garagens, galpões e depósitos extras em um só lugar.</p>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => onNavigateToStorage?.("")}
+              className="mt-2 text-xs border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+            >
+              Começar a Organizar Espaços
+            </Button>
+          </div>
+        )}
+      </div>
+
       <Card className="p-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
           <div>
@@ -1191,6 +1374,7 @@ interface PaymentAlertsProps {
   payments: Payment[];
   onConfirmPayment: (paymentId: string) => void;
   onOpenTenantDetail: (t: Tenant) => void;
+  storages?: StorageSpace[];
 }
 
 const PaymentAlerts = ({
@@ -1199,6 +1383,7 @@ const PaymentAlerts = ({
   payments,
   onConfirmPayment,
   onOpenTenantDetail,
+  storages,
 }: PaymentAlertsProps) => {
   const today = new Date();
 
@@ -1210,17 +1395,21 @@ const PaymentAlerts = ({
       const diff = differenceInDays(dueDate, today);
 
       if (p.status === "pending" || p.status === "late") {
+        let paymentTypeLabel = "Aluguel";
+        if (p.type === "deposit") paymentTypeLabel = "Caução";
+        if (p.type === "agreement") paymentTypeLabel = "Acordo";
+
         if (diff <= 5 && diff >= 0) {
           list.push({
             ...p,
             alertType: "warning",
-            alertMessage: `Vence em ${diff} dias`,
+            alertMessage: `Vence em ${diff} dias (${paymentTypeLabel})`,
           });
         } else if (diff < 0) {
           list.push({
             ...p,
             alertType: "danger",
-            alertMessage: `Atrasado há ${Math.abs(diff)} dias`,
+            alertMessage: `Atrasado há ${Math.abs(diff)} dias (${paymentTypeLabel})`,
           });
         }
       }
@@ -1284,7 +1473,15 @@ const PaymentAlerts = ({
                         if (tenant) onOpenTenantDetail(tenant);
                       }}
                     >
-                      {properties.find((p) => p.id === alert.propertyId)?.name}
+                      {(() => {
+                        if (alert.tenantId === "proprietario") return "Despesa (Proprietário)";
+                        const pName = properties.find((p) => p.id === alert.propertyId)?.name;
+                        if (pName) return pName;
+                        if (alert.propertyId?.startsWith("storage-")) {
+                          return storages?.find((s) => s.id === alert.propertyId.replace("storage-", ""))?.name || "Depósito/Garagem";
+                        }
+                        return alert.propertyNameSnapshot || "Desconhecido";
+                      })()}
                     </p>
                     {alert.revertReason && (
                       <button
@@ -1349,6 +1546,8 @@ interface FinancialSummaryProps {
   agreements: Agreement[];
   onConfirmPayment: (paymentId: string) => void;
   onOpenTenantDetail: (t: Tenant) => void;
+  storages?: StorageSpace[];
+  onNavigateToStorage?: (storageId: string) => void;
 }
 
 const FinancialSummary = ({
@@ -1359,6 +1558,8 @@ const FinancialSummary = ({
   agreements,
   onConfirmPayment,
   onOpenTenantDetail,
+  storages,
+  onNavigateToStorage,
 }: FinancialSummaryProps) => {
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const today = new Date();
@@ -1371,17 +1572,21 @@ const FinancialSummary = ({
       const diff = differenceInDays(dueDate, today);
 
       if (p.status === "pending" || p.status === "late") {
+        let paymentTypeLabel = "Aluguel";
+        if (p.type === "deposit") paymentTypeLabel = "Caução";
+        if (p.type === "agreement") paymentTypeLabel = "Acordo";
+
         if (diff <= 5 && diff >= 0) {
           list.push({
             ...p,
             alertType: "warning",
-            alertMessage: `Vence em ${diff} dias`,
+            alertMessage: `Vence em ${diff} dias (${paymentTypeLabel})`,
           });
         } else if (diff < 0) {
           list.push({
             ...p,
             alertType: "danger",
-            alertMessage: `Atrasado há ${Math.abs(diff)} dias`,
+            alertMessage: `Atrasado há ${Math.abs(diff)} dias (${paymentTypeLabel})`,
           });
         }
       }
@@ -1397,8 +1602,11 @@ const FinancialSummary = ({
   const monthStart = startOfMonth(today);
   const monthEnd = endOfMonth(today);
 
-  const rentPayments = payments.filter((p) => !p.type || p.type === "rent");
-  const agreementPayments = payments.filter((p) => p.type === "agreement");
+  const incomePayments = payments.filter((p) => p.tenantId !== 'proprietario');
+  const storagePayments = payments.filter((p) => p.tenantId === 'proprietario');
+
+  const rentPayments = incomePayments.filter((p) => !p.type || p.type === "rent");
+  const agreementPayments = incomePayments.filter((p) => p.type === "agreement");
 
   const rentExpected = rentPayments
     .filter((p) => {
@@ -1457,9 +1665,18 @@ const FinancialSummary = ({
     .filter((p) => p.status === "paid" || p.status === "partial")
     .reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
 
+  const storagePaidExpenses = storagePayments
+    .filter(
+      (p) =>
+        (p.status === "paid" || p.status === "partial") &&
+        p.paidDate &&
+        parseISO(p.paidDate) >= monthStart,
+    )
+    .reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
+
   const totalExpenses = expenses
     .filter((e) => parseISO(e.date) >= monthStart)
-    .reduce((acc, e) => acc + e.amount, 0);
+    .reduce((acc, e) => acc + e.amount, 0) + storagePaidExpenses;
 
   return (
     <div className="space-y-8">
@@ -1522,6 +1739,16 @@ const FinancialSummary = ({
                 R$ {rentPartialPending.toLocaleString()}
               </span>
             </div>
+            {storagePaidExpenses > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">
+                  Aluguel de Depósitos / Garagens
+                </span>
+                <span className="font-semibold text-destructive">
+                  R$ {storagePaidExpenses.toLocaleString()}
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">
                 Despesas Totais
@@ -1653,9 +1880,12 @@ const FinancialSummary = ({
                 .filter((e) => e.type === "other")
                 .reduce((acc, e) => acc + e.amount, 0);
 
+              const propStorages = storages ? storages.filter((s) => s.propertyId === property.id) : [];
+              const totalStorageCost = propStorages.reduce((sum, s) => sum + (s.monthlyCost || 0), 0);
+
               const totalInvested = totalRenovation + totalRepair;
               const balance =
-                totalRent - totalInvested - totalTax - totalFine - totalOther;
+                totalRent - totalInvested - totalTax - totalFine - totalOther - totalStorageCost;
 
               return (
                 <Card
@@ -1768,6 +1998,20 @@ const FinancialSummary = ({
                         </span>
                       </div>
                     )}
+
+                    {totalStorageCost > 0 && (
+                      <div className="flex justify-between items-center cursor-pointer hover:bg-slate-100/50 p-1 rounded transition" onClick={() => onNavigateToStorage && onNavigateToStorage(propStorages[0]?.id)}>
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                          <span className="text-xs text-slate-500 font-medium">
+                            Aluguel Depósito
+                          </span>
+                        </div>
+                        <span className="text-xs font-bold text-purple-600">
+                          R$ {totalStorageCost.toLocaleString()}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-auto pt-4 border-t flex items-center justify-between">
@@ -1814,6 +2058,7 @@ interface PropertiesViewProps {
   tenants: Tenant[];
   payments: Payment[];
   expenses: Expense[];
+  contracts?: Contract[];
   addProperty: (p: any) => Promise<any>;
   updateProperty: (id: string, p: any) => Promise<any>;
   deleteProperty: (id: string) => Promise<void>;
@@ -1834,6 +2079,8 @@ interface PropertiesViewProps {
   ) => Promise<any>;
   onNavigateToCreateTenant?: (propertyId: string) => void;
   onNavigateToEditTenant?: (tenantId: string) => void;
+  storages?: StorageSpace[];
+  onNavigateToStorage?: (storageId: string) => void;
 }
 
 const PropertiesView = ({
@@ -1841,6 +2088,7 @@ const PropertiesView = ({
   tenants,
   payments,
   expenses,
+  contracts = [],
   addProperty,
   updateProperty,
   deleteProperty,
@@ -1852,6 +2100,8 @@ const PropertiesView = ({
   uploadToDrive,
   onNavigateToCreateTenant,
   onNavigateToEditTenant,
+  storages,
+  onNavigateToStorage,
 }: PropertiesViewProps) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -2504,6 +2754,53 @@ const PropertiesView = ({
                 </div>
               )}
 
+            {/* Depósitos ou Garagens Vinculados */}
+            {storages && storages.filter((s) => s.propertyId === currentProperty.id).length > 0 && (
+              <div className="space-y-3">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">
+                  Depósitos & Garagens Vinculados
+                </p>
+                <div className="space-y-2">
+                  {storages
+                    .filter((s) => s.propertyId === currentProperty.id)
+                    .map((s) => {
+                      const itemsVal = s.items?.reduce((sum, i) => sum + (i.cost * i.quantity), 0) || 0;
+                      return (
+                        <div
+                          key={s.id}
+                          className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col gap-2 cursor-pointer hover:bg-slate-100/80 transition-colors"
+                          onClick={() => {
+                            setIsDetailModalOpen(false);
+                            onNavigateToStorage && onNavigateToStorage(s.id!);
+                          }}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <p className="text-xs font-bold text-slate-900 flex items-center gap-1">
+                                <Box className="w-3.5 h-3.5 text-emerald-500" />
+                                {s.name}
+                              </p>
+                              {s.address && (
+                                <p className="text-[10px] text-slate-400 mt-0.5">{s.address}</p>
+                              )}
+                            </div>
+                            <span className="text-xs font-bold text-red-600 shrink-0">
+                              R$ {s.monthlyCost?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}/mês
+                            </span>
+                          </div>
+                          <div className="flex justify-between items-center pt-2 border-t border-slate-200/60 text-[10px] text-slate-500 font-mono">
+                            <span>Vence dia {s.dueDay}</span>
+                            <span className="font-sans text-slate-600 font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded">
+                              {s.items?.length || 0} itens guardados (R$ {itemsVal.toLocaleString("pt-BR")})
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
             {/* Pagamentos Pendentes e em Atraso */}
             {(pendingPayments.length > 0 || latePayments.length > 0) && (
               <div className="space-y-3">
@@ -2925,9 +3222,16 @@ const PropertiesView = ({
                 className="py-2 sm:py-3"
                 onClick={() => {
                   setIsDetailModalOpen(false);
+                  const linkedContracts = contracts.filter(
+                    (c) => c.propertyId === currentProperty.id && c.status !== "archived"
+                  );
+                  let warningMsg = `Ao confirmar, você excluirá permanentemente o imóvel ${currentProperty.name}.`;
+                  if (linkedContracts.length > 0) {
+                    warningMsg = `Atenção: O imóvel "${currentProperty.name}" possui ${linkedContracts.length} contrato(s) de locação vinculado(s). Ao confirmar a exclusão, este imóvel será removido e o contrato vinculado será automaticamente ARQUIVADO por segurança para o seu histórico. Você poderá encontrar o contrato arquivado a qualquer momento na seção de Contratos, utilizando o filtro 'Arquivados'.`;
+                  }
                   onSecurityCheck(
                     () => deleteProperty(currentProperty.id!),
-                    `Ao confirmar, você excluirá permanentemente o imóvel ${currentProperty.name}.`,
+                    warningMsg,
                   );
                 }}
               >
@@ -3574,10 +3878,7 @@ const PropertiesView = ({
                   value={formData.status}
                   onChange={(e) => {
                     const newStatus = e.target.value as PropertyStatus;
-                    if (
-                      newStatus === "renovation" &&
-                      formData.currentTenantId
-                    ) {
+                    if (newStatus === "vacant" || newStatus === "renovation") {
                       setFormData({
                         ...formData,
                         status: newStatus,
@@ -3600,7 +3901,9 @@ const PropertiesView = ({
                 </label>
                 <Input
                   id="maxResidents"
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   min="1"
                   placeholder="Ilimitado"
                   value={formData.maxResidents || ""}
@@ -3658,7 +3961,9 @@ const PropertiesView = ({
                 </label>
                 <Input
                   id="parkingSpaces"
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   min="0"
                   placeholder="Ex: 1"
                   value={
@@ -3678,7 +3983,7 @@ const PropertiesView = ({
               </div>
             </div>
           </div>
-          {formData.status === "rented" && (
+          {formData.status !== "renovation" && (
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
                 Inquilino Atual
@@ -3686,9 +3991,15 @@ const PropertiesView = ({
               <Select
                 id="tenant"
                 value={formData.currentTenantId || ""}
-                onChange={(e) =>
-                  setFormData({ ...formData, currentTenantId: e.target.value })
-                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const nextStatus = val ? "rented" : "vacant";
+                  setFormData({
+                    ...formData,
+                    currentTenantId: val,
+                    status: nextStatus,
+                  });
+                }}
                 options={[
                   { label: "Nenhum", value: "" },
                   {
@@ -3726,7 +4037,9 @@ const PropertiesView = ({
                     id="renovationTime"
                     className="flex-grow"
                     placeholder="Tempo"
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={
                       formData.renovationEstimatedTime?.split(" ")[0] || ""
                     }
@@ -4034,6 +4347,7 @@ interface TenantsViewProps {
   onClearInitialPropertyId?: () => void;
   initialTenantIdToEdit?: string | null;
   onClearInitialTenantIdToEdit?: () => void;
+  onNavigateToGenerateContract?: (contractData: any) => void;
 }
 
 const TenantsView = ({
@@ -4056,11 +4370,15 @@ const TenantsView = ({
   onClearInitialPropertyId,
   initialTenantIdToEdit,
   onClearInitialTenantIdToEdit,
+  onNavigateToGenerateContract,
 }: TenantsViewProps) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isTicketsModalOpen, setIsTicketsModalOpen] = useState(false);
   const [isNoPropertiesPromptOpen, setIsNoPropertiesPromptOpen] =
     useState(false);
+  const [isContractRedirectModalOpen, setIsContractRedirectModalOpen] =
+    useState(false);
+  const [justCreatedTenant, setJustCreatedTenant] = useState<any | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
   const [formData, setFormData] = useState<Partial<Tenant>>({
@@ -4209,8 +4527,20 @@ const TenantsView = ({
     } else {
       setIsSubmitting(true);
       try {
-        await addTenant(formData);
+        const newTenantId = await addTenant(formData);
         setIsModalOpen(false);
+        if (newTenantId) {
+          setJustCreatedTenant({
+            id: newTenantId,
+            name: formData.name || "Inquilino",
+            propertyId: formData.propertyId || "",
+            rentValue: formData.rentValue || 0,
+            paymentDay: formData.paymentDay || 5,
+            leaseDurationMonths: formData.leaseDurationMonths || 12,
+            startDate: formData.startDate || "",
+          });
+          setIsContractRedirectModalOpen(true);
+        }
       } catch (error) {
         console.error("Erro ao salvar inquilino:", error);
       } finally {
@@ -5115,7 +5445,9 @@ const TenantsView = ({
                         </label>
                         <Input
                           id="customLeaseDuration"
-                          type="number"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
                           min="1"
                           value={formData.leaseDurationMonths || ""}
                           onChange={(e) =>
@@ -5138,7 +5470,9 @@ const TenantsView = ({
                 </label>
                 <Input
                   id="rating"
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={formData.rating || ""}
                   onChange={(e) =>
                     setFormData({ ...formData, rating: Number(e.target.value) })
@@ -5216,7 +5550,9 @@ const TenantsView = ({
                 </label>
                 <Input
                   id="paymentDay"
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={formData.paymentDay || ""}
                   onChange={(e) =>
                     setFormData({
@@ -5273,19 +5609,14 @@ const TenantsView = ({
               {formData.chargeLateFees && (
                 <>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                      Multa Fixa (R$)
-                    </label>
-                    <Input
+                    <CurrencyInput
                       id="lateFeePenalty"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={formData.lateFeePenalty || ""}
-                      onChange={(e) =>
+                      label="Multa Fixa"
+                      value={formData.lateFeePenalty || 0}
+                      onChange={(val) =>
                         setFormData({
                           ...formData,
-                          lateFeePenalty: Number(e.target.value),
+                          lateFeePenalty: val,
                         })
                       }
                     />
@@ -5296,16 +5627,16 @@ const TenantsView = ({
                     </label>
                     <Input
                       id="lateFeeDaily"
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      type="text"
+                      inputMode="decimal"
                       value={formData.lateFeeDaily || ""}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const val = e.target.value.replace(",", ".");
                         setFormData({
                           ...formData,
-                          lateFeeDaily: Number(e.target.value),
-                        })
-                      }
+                          lateFeeDaily: val === "" ? 0 : Number(val),
+                        });
+                      }}
                     />
                   </div>
                 </>
@@ -5336,32 +5667,15 @@ const TenantsView = ({
               {formData.initialPaymentType === "deposit" && (
                 <>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                      Valor do Caução Total
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">
-                        R$
-                      </span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-slate-700 text-sm"
-                        placeholder="0,00"
-                        value={
-                          formData.depositValue
-                            ? formData.depositValue.toLocaleString("pt-BR", {
-                                minimumFractionDigits: 2,
-                              })
-                            : ""
-                        }
-                        onChange={(e) => {
-                          const val = e.target.value.replace(/\D/g, "");
-                          const num = Number(val) / 100;
-                          setFormData({ ...formData, depositValue: num });
-                        }}
-                      />
-                    </div>
+                    <CurrencyInput
+                      id="depositValue"
+                      label="Valor do Caução Total"
+                      value={formData.depositValue || 0}
+                      onChange={(val) =>
+                        setFormData({ ...formData, depositValue: val })
+                      }
+                      required
+                    />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
@@ -5525,6 +5839,73 @@ const TenantsView = ({
           </div>
         )}
       </AnimatePresence>
+
+      <Modal
+        isOpen={isContractRedirectModalOpen}
+        onClose={() => setIsContractRedirectModalOpen(false)}
+        title="📝 Gerar Contrato via IA"
+      >
+        <div className="space-y-6">
+          <div className="flex flex-col items-center text-center">
+            <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center mb-4 text-3xl shadow-sm animate-bounce">
+              🎉
+            </div>
+            <h3 className="text-lg font-black text-slate-800">
+              Inquilino Cadastrado!
+            </h3>
+            <p className="text-sm text-slate-500 mt-2 max-w-sm">
+              O inquilino <strong>{justCreatedTenant?.name}</strong> foi cadastrado com sucesso. Deseja ir para o gerador de contratos por Inteligência Artificial para este inquilino agora?
+            </p>
+          </div>
+
+          <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-3">
+            <h4 className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+              Vantagens do Fluxo Inteligente:
+            </h4>
+            <ul className="text-xs text-slate-600 space-y-2">
+              <li className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full shrink-0" />
+                <span>Preenche automaticamente os dados do inquilino e imóvel</span>
+              </li>
+              <li className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full shrink-0" />
+                <span>IA redige o contrato completo personalizado com multas e caução</span>
+              </li>
+              <li className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full shrink-0" />
+                <span>Envio direto para assinatura ou download em PDF</span>
+              </li>
+            </ul>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 pt-2">
+            <Button
+              className="flex-1 gap-2"
+              onClick={() => {
+                if (justCreatedTenant && onNavigateToGenerateContract) {
+                  onNavigateToGenerateContract({
+                    tenantId: justCreatedTenant.id,
+                    propertyId: justCreatedTenant.propertyId,
+                    rentValue: justCreatedTenant.rentValue,
+                    paymentDay: justCreatedTenant.paymentDay,
+                    leaseDurationMonths: justCreatedTenant.leaseDurationMonths,
+                    startDate: justCreatedTenant.startDate || format(new Date(), "yyyy-MM-dd"),
+                  });
+                }
+                setIsContractRedirectModalOpen(false);
+              }}
+            >
+              Sim, Gerar Contrato <FileText className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setIsContractRedirectModalOpen(false)}
+            >
+              Agora Não
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };
@@ -5564,6 +5945,10 @@ interface FinancialViewProps {
   setPreviewReceipt: (
     preview: { url: string; name: string; isImage: boolean } | null,
   ) => void;
+  storages?: StorageSpace[];
+  onNavigateToStorage?: (storageId: string) => void;
+  highlightedPaymentId?: string | null;
+  setHighlightedPaymentId?: (id: string | null) => void;
 }
 
 const FinancialView = ({
@@ -5586,6 +5971,10 @@ const FinancialView = ({
   isDriveConnected,
   uploadToDrive,
   setPreviewReceipt,
+  storages,
+  onNavigateToStorage,
+  highlightedPaymentId,
+  setHighlightedPaymentId,
 }: FinancialViewProps) => {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isNewPaymentModalOpen, setIsNewPaymentModalOpen] = useState(false);
@@ -5639,6 +6028,30 @@ const FinancialView = ({
   const [filterExpensePropertyId, setFilterExpensePropertyId] = useState("");
   const [filterExpenseType, setFilterExpenseType] = useState("all");
   const [expenseSearchQuery, setExpenseSearchQuery] = useState("");
+
+  useEffect(() => {
+    if (highlightedPaymentId) {
+      setSearchQuery("");
+      setFilterType("all");
+      const timer = setTimeout(() => {
+        const element = document.getElementById(
+          `fin-payment-${highlightedPaymentId}`,
+        );
+        if (element) {
+          element.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 100);
+
+      const clearTimer = setTimeout(() => {
+        if (setHighlightedPaymentId) setHighlightedPaymentId(null);
+      }, 4000);
+
+      return () => {
+        clearTimeout(timer);
+        clearTimeout(clearTimer);
+      };
+    }
+  }, [highlightedPaymentId, setHighlightedPaymentId]);
 
   const displayItems = useMemo(() => {
     const items: any[] = [];
@@ -5857,11 +6270,11 @@ const FinancialView = ({
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Financeiro</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-xl font-bold tracking-tight text-slate-900">Financeiro</h1>
+          <p className="text-slate-500 text-xs mt-0.5">
             Controle de entradas e saídas.
           </p>
         </div>
@@ -5907,6 +6320,7 @@ const FinancialView = ({
             payments={payments}
             onConfirmPayment={onConfirmPayment}
             onOpenTenantDetail={onOpenTenantDetail}
+            storages={storages}
           />
 
           <Card className="p-6">
@@ -6089,18 +6503,38 @@ const FinancialView = ({
               {displayItems.map((item) => {
                 if (item.type === "payment") {
                   const p = item.data as Payment;
-                  const prop = properties.find((pr) => pr.id === p.propertyId);
-                  const tenant = tenants.find((t) => t.id === p.tenantId);
+                  
+                  let propName = p.propertyNameSnapshot || "Desconhecido";
+                  if (p.propertyId?.startsWith("storage-")) {
+                    const storageId = p.propertyId.replace("storage-", "");
+                    const storage = storages?.find((s) => s.id === storageId);
+                    if (storage) propName = storage.name;
+                  } else {
+                    const prop = properties.find((pr) => pr.id === p.propertyId);
+                    if (prop) propName = prop.name;
+                  }
+
+                  let tenantName = p.tenantNameSnapshot || "Desconhecido";
+                  if (p.tenantId === "proprietario") {
+                    tenantName = "Eu mesmo (Proprietário - Pagamento)";
+                  } else {
+                    const tenant = tenants.find((t) => t.id === p.tenantId);
+                    if (tenant) tenantName = tenant.name;
+                  }
+                  
+                  const isExpense = p.tenantId === "proprietario";
                   const isExpanded = expandedPaymentId === p.id;
 
                   return (
                     <div
                       key={p.id}
+                      id={`fin-payment-${p.id}`}
                       className={cn(
                         "group border rounded-2xl transition-all duration-300 overflow-hidden",
                         isExpanded
                           ? "ring-2 ring-primary/20 border-primary/30 bg-primary/5 shadow-sm"
                           : "hover:border-slate-300 hover:bg-slate-50/50",
+                        highlightedPaymentId === p.id && "ring-4 ring-amber-500 ring-offset-2 bg-amber-50 shadow-xl z-10"
                       )}
                     >
                       {/* Header / Bar */}
@@ -6140,7 +6574,7 @@ const FinancialView = ({
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 mb-0.5">
                               <h3 className="font-bold text-slate-900 truncate">
-                                {prop?.name}
+                                {propName}
                               </h3>
                               {p.revertReason && (
                                 <button
@@ -6160,7 +6594,9 @@ const FinancialView = ({
                                 </button>
                               )}
                               <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[9px] font-bold text-slate-500 uppercase tracking-tight shrink-0">
-                                {p.type === "rent"
+                                {isExpense 
+                                  ? "Despesa de Depósito/Garagem"
+                                  : p.type === "rent"
                                   ? "Aluguel"
                                   : p.type === "deposit"
                                     ? "Caução"
@@ -6168,10 +6604,10 @@ const FinancialView = ({
                               </span>
                             </div>
                             <p className="text-xs text-slate-500 flex items-center gap-1 truncate">
-                              <UserIcon className="w-3 h-3" /> {tenant?.name}
+                              <UserIcon className="w-3 h-3" /> {tenantName}
                               <span className="mx-1 text-slate-300">•</span>
                               <span className="truncate italic">
-                                {(p.description || "Aluguel Mensal").replace(
+                                {(p.description || (isExpense ? "Custo Mensal" : "Aluguel Mensal")).replace(
                                   /^Restante:\s*Restante:\s*/,
                                   "Restante: ",
                                 )}
@@ -6206,8 +6642,8 @@ const FinancialView = ({
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                               Valor
                             </p>
-                            <p className="text-sm font-bold text-slate-900">
-                              R$ {p.amount.toLocaleString()}
+                            <p className={cn("text-sm font-bold", isExpense ? "text-rose-600" : "text-slate-900")}>
+                              {isExpense ? "-" : ""}R$ {p.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                             </p>
                           </div>
                           <div className="flex items-center gap-3">
@@ -6980,6 +7416,8 @@ const FinancialView = ({
         agreements={agreements}
         onConfirmPayment={onConfirmPayment}
         onOpenTenantDetail={onOpenTenantDetail}
+        storages={storages}
+        onNavigateToStorage={onNavigateToStorage}
       />
 
       <Modal
@@ -8350,6 +8788,8 @@ interface ReceivablesViewProps {
   agreements: Agreement[];
   setConfirmingPayment: (p: any) => void;
   setIsPaymentModalOpen: (open: boolean) => void;
+  setIsRevertModalOpen?: (open: boolean) => void;
+  setRevertingPayment?: (p: Payment | null) => void;
   onOpenTenantDetail: (t: Tenant) => void;
   highlightedPaymentId: string | null;
   setHighlightedPaymentId: (id: string | null) => void;
@@ -8369,6 +8809,8 @@ const ReceivablesView = ({
   agreements,
   setConfirmingPayment,
   setIsPaymentModalOpen,
+  setIsRevertModalOpen,
+  setRevertingPayment,
   onOpenTenantDetail,
   highlightedPaymentId,
   setHighlightedPaymentId,
@@ -8376,7 +8818,7 @@ const ReceivablesView = ({
   uploadToDrive,
 }: ReceivablesViewProps) => {
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterType, setFilterType] = useState<"all" | "rent" | "agreement">(
+  const [filterType, setFilterType] = useState<"all" | "rent" | "agreement" | "deposit">(
     "all",
   );
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "late">(
@@ -8455,7 +8897,7 @@ const ReceivablesView = ({
 
   const pendingPayments = useMemo(() => {
     return payments
-      .filter((p) => p.status === "pending" || p.status === "late")
+      .filter((p) => (p.status === "pending" || p.status === "late") && p.tenantId !== "proprietario")
       .sort(
         (a, b) => parseISO(a.dueDate).getTime() - parseISO(b.dueDate).getTime(),
       );
@@ -8478,7 +8920,8 @@ const ReceivablesView = ({
       const matchesType =
         filterType === "all" ||
         (filterType === "rent" && (!p.type || p.type === "rent")) ||
-        (filterType === "agreement" && p.type === "agreement");
+        (filterType === "agreement" && p.type === "agreement") ||
+        (filterType === "deposit" && p.type === "deposit");
 
       const matchesStatus = filterStatus === "all" || p.status === filterStatus;
 
@@ -8495,7 +8938,7 @@ const ReceivablesView = ({
 
   const paidPayments = useMemo(() => {
     return payments
-      .filter((p) => p.status === "paid")
+      .filter((p) => p.status === "paid" && p.tenantId !== "proprietario")
       .sort((a, b) => {
         const dateA = a.paidDate
           ? parseISO(a.paidDate).getTime()
@@ -8541,22 +8984,20 @@ const ReceivablesView = ({
 
   const stats = useMemo(() => {
     const today = new Date();
-    const rentAndAgreements = pendingPayments.filter(
-      (p) => p.type !== "deposit",
-    );
-    const late = rentAndAgreements.filter((p) => p.status === "late");
-    const todayPending = rentAndAgreements.filter(
+    const includedPayments = pendingPayments;
+    const late = includedPayments.filter((p) => p.status === "late");
+    const todayPending = includedPayments.filter(
       (p) =>
         format(parseISO(p.dueDate), "yyyy-MM-dd") ===
         format(today, "yyyy-MM-dd"),
     );
 
     return {
-      total: rentAndAgreements.reduce(
+      total: includedPayments.reduce(
         (acc, p) => acc + p.amount + (p.interestAmount || 0),
         0,
       ),
-      count: rentAndAgreements.length,
+      count: includedPayments.length,
       lateTotal: late.reduce(
         (acc, p) => acc + p.amount + (p.interestAmount || 0),
         0,
@@ -8571,12 +9012,12 @@ const ReceivablesView = ({
   }, [pendingPayments]);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <header>
-        <h1 className="text-3xl font-bold tracking-tight">
+        <h1 className="text-xl font-bold tracking-tight text-slate-900">
           Central de Recebimentos
         </h1>
-        <p className="text-muted-foreground">
+        <p className="text-slate-500 text-xs mt-0.5">
           Confirme pagamentos de aluguéis e acordos em um só lugar.
         </p>
       </header>
@@ -8641,22 +9082,22 @@ const ReceivablesView = ({
         </button>
       </div>
 
-      <Card className="p-6">
-        <div className="flex flex-col md:flex-row gap-4 mb-8">
+      <Card className="p-3 sm:p-6 shadow-sm border-slate-100/80">
+        <div className="flex flex-col md:flex-row gap-3 sm:gap-4 mb-6 sm:mb-8">
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="text"
               placeholder="Buscar por inquilino, imóvel ou descrição..."
-              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+              className="w-full pl-10 pr-4 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-slate-800"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
           {activeTab === "pending" && (
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 sm:flex gap-2 w-full sm:w-auto">
               <select
-                className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-medium"
+                className="w-full sm:w-auto px-3 sm:px-4 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-semibold text-slate-700"
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value as any)}
               >
@@ -8666,7 +9107,7 @@ const ReceivablesView = ({
                 <option value="agreement">Acordos</option>
               </select>
               <select
-                className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-medium"
+                className="w-full sm:w-auto px-3 sm:px-4 py-2 sm:py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-semibold text-slate-700"
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value as any)}
               >
@@ -8729,10 +9170,10 @@ const ReceivablesView = ({
                       id={`payment-${payment.id}`}
                       key={payment.id}
                       className={cn(
-                        "p-5 border transition-all duration-300 flex flex-col sm:flex-row sm:items-center justify-between gap-5 relative group bg-white",
+                        "p-3.5 sm:p-5 border transition-all duration-300 flex flex-col sm:flex-row sm:items-center justify-between gap-4 sm:gap-5 relative group bg-white overflow-hidden",
                         isSub
                           ? "rounded-b-2xl border-x border-b border-t-0"
-                          : "rounded-3xl",
+                          : "rounded-[22px] sm:rounded-3xl",
                         isLate
                           ? isSub
                             ? "bg-rose-50/30 border-rose-100"
@@ -8752,12 +9193,12 @@ const ReceivablesView = ({
                           )}
                         />
                       )}
-                      <div className="flex items-center gap-5">
+                      <div className="flex items-center gap-3 sm:gap-5">
                         <div className="flex items-center justify-center min-w-0">
                           <div
                             className={cn(
-                              "rounded-2xl flex items-center justify-center shrink-0 shadow-sm transition-transform duration-300 group-hover:scale-110",
-                              isSub ? "w-10 h-10" : "w-14 h-14",
+                              "rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 shadow-sm transition-transform duration-300 group-hover:scale-110",
+                              isSub ? "w-8 h-8" : "w-11 h-11 sm:w-14 sm:h-14",
                               payment.type === "agreement"
                                 ? "bg-blue-50 text-blue-600 border border-blue-100"
                                 : payment.type === "deposit"
@@ -8767,32 +9208,32 @@ const ReceivablesView = ({
                           >
                             {payment.type === "agreement" ? (
                               <FileText
-                                className={isSub ? "w-5 h-5" : "w-7 h-7"}
+                                className={isSub ? "w-4 h-4" : "w-5 h-5 sm:w-7 sm:h-7"}
                               />
                             ) : payment.type === "deposit" ? (
                               <ShieldCheck
-                                className={isSub ? "w-5 h-5" : "w-7 h-7"}
+                                className={isSub ? "w-4 h-4" : "w-5 h-5 sm:w-7 sm:h-7"}
                               />
                             ) : (
-                              <Home className={isSub ? "w-5 h-5" : "w-7 h-7"} />
+                              <Home className={isSub ? "w-4 h-4" : "w-5 h-5 sm:w-7 sm:h-7"} />
                             )}
                           </div>
                         </div>
-                        <div>
-                          <div className="flex items-center flex-wrap gap-2 mb-1">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center flex-wrap gap-1.5 sm:gap-2 mb-1">
                             {!isSub && (
-                              <h3 className="font-black text-slate-900 tracking-tight text-base">
+                              <h3 className="font-black text-slate-900 tracking-tight text-sm sm:text-base truncate">
                                 {propertyName}
                               </h3>
                             )}
                             {isSub && (
-                              <h3 className="font-bold text-slate-700 tracking-tight text-sm">
+                              <h3 className="font-bold text-slate-700 tracking-tight text-xs sm:text-sm">
                                 Parcela Subsequente
                               </h3>
                             )}
                             <span
                               className={cn(
-                                "px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border shadow-sm",
+                                "px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-full text-[8px] sm:text-[9px] font-black uppercase tracking-widest border shadow-sm shrink-0",
                                 payment.type === "agreement"
                                   ? "bg-blue-50 text-blue-700 border-blue-200"
                                   : payment.type === "deposit"
@@ -8803,24 +9244,31 @@ const ReceivablesView = ({
                               {payment.type === "agreement"
                                 ? "Acordo"
                                 : payment.type === "deposit"
-                                  ? "Garantia"
+                                  ? "Caução"
                                   : "Aluguel"}
                             </span>
                             {isLate && (
-                              <span className="px-2.5 py-1 rounded-full bg-rose-500 text-white text-[9px] font-black uppercase tracking-widest shadow-md shadow-rose-200 animate-pulse">
+                              <span className="px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-full bg-rose-500 text-white text-[8px] sm:text-[9px] font-black uppercase tracking-widest shadow-md shadow-rose-200 animate-pulse shrink-0">
                                 Atrasado
                               </span>
                             )}
                           </div>
-                          <div className="flex items-center gap-4 text-[10px] text-slate-500 mt-2">
-                            <span className="flex items-center gap-1 font-bold">
-                              <Calendar className="w-3 h-3" /> Vence em{" "}
+
+                          {!isSub && (
+                            <p className="text-[11px] sm:text-xs text-slate-500 font-semibold mb-1">
+                              Inquilino: <span className="text-indigo-600 font-extrabold">{tenantName}</span>
+                            </p>
+                          )}
+
+                          <div className="flex items-center gap-2 sm:gap-4 text-[9px] sm:text-[10px] text-slate-500">
+                            <span className="flex items-center gap-1 font-bold whitespace-nowrap">
+                              <Calendar className="w-3 h-3 text-slate-400" /> Vence em{" "}
                               {format(parseISO(payment.dueDate), "dd/MM/yyyy")}
                             </span>
                             {payment.description && (
                               <>
                                 <span className="text-slate-300">|</span>
-                                <span className="truncate max-w-[150px] italic">
+                                <span className="truncate max-w-[120px] sm:max-w-[180px] italic">
                                   {payment.description}
                                 </span>
                               </>
@@ -8829,16 +9277,16 @@ const ReceivablesView = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-between sm:justify-end gap-6 border-t sm:border-none pt-3 sm:pt-0">
-                        <div className="text-right">
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      <div className="flex flex-row sm:flex-row items-center justify-between sm:justify-end gap-3 sm:gap-6 border-t border-slate-100 sm:border-none pt-3 sm:pt-0">
+                        <div className="text-left sm:text-right min-w-fit">
+                          <p className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-wider whitespace-nowrap leading-none mb-1">
                             Valor a Receber
                           </p>
-                          <p className="text-lg font-bold text-slate-900">
+                          <p className="text-base sm:text-lg font-extrabold text-slate-900 font-mono whitespace-nowrap">
                             R$ {payment.amount.toLocaleString()}
                           </p>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-1.5 sm:gap-2 shrink-0">
                           {tenant && tenant.contact && (
                             <a
                               href={getWhatsAppLink(
@@ -8847,15 +9295,15 @@ const ReceivablesView = ({
                               )}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="h-10 px-4 sm:px-3 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white border border-emerald-200 hover:border-emerald-500 rounded-xl flex items-center justify-center transition-colors shadow-sm"
+                              className="h-9 w-9 sm:h-10 sm:w-10 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white border border-emerald-200 hover:border-emerald-500 rounded-xl flex items-center justify-center transition-colors shadow-sm shrink-0"
                               title="Enviar cobrança via WhatsApp"
                             >
-                              <MessageSquare className="w-5 h-5 sm:w-4 sm:h-4" />
+                              <MessageSquare className="w-4 h-4 sm:w-4 sm:h-4" />
                             </a>
                           )}
                           <Button
                             size={isSub ? "sm" : "md"}
-                            className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-lg shadow-emerald-200/50 font-bold px-6"
+                            className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-lg shadow-emerald-200/50 font-bold px-4 sm:px-6 h-9 sm:h-10 text-xs sm:text-sm shrink-0"
                             onClick={() => {
                               setConfirmingPayment(payment);
                               setIsPaymentModalOpen(true);
@@ -8872,7 +9320,7 @@ const ReceivablesView = ({
                 return (
                   <div
                     key={`group-${p.propertyId}`}
-                    className="relative border border-slate-100 rounded-3xl bg-slate-50/50 shadow-sm p-1.5 flex flex-col"
+                    className="relative border border-slate-100 rounded-[24px] sm:rounded-3xl bg-slate-50/50 shadow-sm p-1 flex flex-col"
                   >
                     {renderPayment(p, false)}
 
@@ -8971,22 +9419,46 @@ const ReceivablesView = ({
                               )}
                             </div>
                             <div>
-                              <div className="flex items-center gap-2 mb-0.5">
-                                <h3 className="font-bold text-slate-900 group-hover:text-indigo-900 transition-colors">
+                              <div className="flex items-center gap-2 flex-wrap mb-1">
+                                <h3 className="font-bold text-slate-900 group-hover:text-indigo-900 transition-colors text-sm sm:text-base">
                                   {propertyName}
                                 </h3>
-                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wider">
-                                  Recebido
-                                </span>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wider">
+                                    Recebido
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      "px-1.5 sm:px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-black uppercase tracking-widest border shadow-sm shrink-0",
+                                      p.type === "agreement"
+                                        ? "bg-blue-50 text-blue-700 border-blue-200"
+                                        : p.type === "deposit"
+                                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                                          : "bg-indigo-50 text-indigo-700 border-indigo-200",
+                                    )}
+                                  >
+                                    {p.type === "agreement"
+                                      ? "Acordo"
+                                      : p.type === "deposit"
+                                        ? "Caução"
+                                        : "Aluguel"}
+                                  </span>
+                                </div>
                               </div>
-                              <div className="flex items-center gap-3 text-xs text-slate-500">
+                              <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
                                 <span className="flex items-center gap-1 font-medium text-slate-700">
                                   <UserIcon className="w-3 h-3" /> {tenantName}
                                 </span>
                                 <span className="text-slate-300">|</span>
                                 <span className="flex items-center gap-1">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-500" />{" "}
-                                  Pago em:{" "}
+                                  <Calendar className="w-3 h-3 text-slate-400" /> Vencimento:{" "}
+                                  {p.dueDate
+                                    ? format(parseISO(p.dueDate), "dd/MM/yyyy")
+                                    : "N/A"}
+                                </span>
+                                <span className="text-slate-300">|</span>
+                                <span className="flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Pago em:{" "}
                                   {p.paidDate
                                     ? format(parseISO(p.paidDate), "dd/MM/yyyy")
                                     : "N/A"}
@@ -9009,13 +9481,27 @@ const ReceivablesView = ({
                                 R$ {p.amount.toLocaleString()}
                               </p>
                             </div>
-                            <Button
-                              variant="outline"
-                              className="gap-2 font-bold px-6 border-slate-200 text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 hover:border-indigo-200"
-                              onClick={() => setReceiptModalPayment(p)}
-                            >
-                              <Receipt className="w-4 h-4" /> Recibo
-                            </Button>
+                            <div className="flex flex-col sm:flex-row items-center gap-2">
+                              {setIsRevertModalOpen && setRevertingPayment && (
+                                <Button
+                                  variant="outline"
+                                  className="gap-2 font-bold px-4 border-rose-200 text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                                  onClick={() => {
+                                    setRevertingPayment(p);
+                                    setIsRevertModalOpen(true);
+                                  }}
+                                >
+                                  <RotateCcw className="w-4 h-4" /> Reverter
+                                </Button>
+                              )}
+                              <Button
+                                variant="outline"
+                                className="gap-2 font-bold px-6 border-slate-200 text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 hover:border-indigo-200"
+                                onClick={() => setReceiptModalPayment(p)}
+                              >
+                                <Receipt className="w-4 h-4" /> Recibo
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -9745,6 +10231,7 @@ interface AlertsViewProps {
   customAlerts?: CustomAlert[];
   onCreateCustomAlert?: (alertData: Omit<CustomAlert, "ownerId" | "createdAt">) => Promise<void>;
   onDeleteCustomAlert?: (alertId: string) => Promise<void>;
+  storages?: StorageSpace[];
 }
 
 const AlertsView = ({
@@ -9763,6 +10250,7 @@ const AlertsView = ({
   customAlerts = [],
   onCreateCustomAlert,
   onDeleteCustomAlert,
+  storages = [],
 }: AlertsViewProps) => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -9800,7 +10288,7 @@ const AlertsView = ({
             diffDays <= alertSettings.contractsExpiringDays
           ) {
             list.push({
-              id: `contract-exp-${contract.id}-${diffDays}`,
+              id: `contract-exp-${contract.id}`,
               priority: diffDays <= 5 ? "high" : "medium",
               type: diffDays <= 5 ? "critical" : "warning",
               category: "Vencimento de Contrato",
@@ -9844,6 +10332,153 @@ const AlertsView = ({
                 label: "Ver Contratos",
                 tab: "contracts",
                 highlightId: contract.id,
+              },
+            });
+          }
+        }
+      });
+
+      // Storage Billing/Rent Alerts
+      storages.forEach((storage) => {
+        if (storage.billings && storage.billings.length > 0) {
+          storage.billings.forEach((billing) => {
+            if (billing.status !== "paid") {
+              const dueDate = parseISO(billing.dueDate);
+              const diffDays = differenceInDays(dueDate, startOfDay(today));
+
+              const getSpaceTypeLabel = (type?: string) => {
+                switch(type) {
+                  case 'garage': return 'da garagem';
+                  case 'storage_room': return 'do depósito';
+                  case 'warehouse': return 'do galpão';
+                  default: return 'do espaço';
+                }
+              };
+              const spaceTypeLabel = getSpaceTypeLabel(storage.spaceType);
+
+              if (diffDays < 0) {
+                // Late payment alert
+                list.push({
+                  id: `storage-billing-late-${storage.id}-${billing.id}`,
+                  priority: "high",
+                  type: "critical",
+                  category: "Cobrança de Espaço Atrasada",
+                  title: `Aluguel Atrasado: ${storage.name}`,
+                  description: (
+                    <span>
+                      O pagamento do aluguel {spaceTypeLabel} <strong className="font-bold">{storage.name}</strong> no valor de <strong className="font-semibold text-rose-600">R$ {billing.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</strong> está em atraso desde {format(dueDate, "dd/MM/yyyy")} (
+                      <strong className="text-rose-600 font-bold">{Math.abs(diffDays)} dias de atraso</strong>
+                      ). Locador: {storage.landlordName || "não informado"}.
+                    </span>
+                  ),
+                  icon: AlertTriangle,
+                  action: {
+                    label: "Ir para Espaços",
+                    tab: "storages",
+                    highlightId: storage.id,
+                  },
+                });
+              } else if (diffDays <= 5) {
+                // Upcoming payment alert
+                list.push({
+                  id: `storage-billing-near-${storage.id}-${billing.id}`,
+                  priority: diffDays <= 1 ? "high" : "medium",
+                  type: diffDays <= 1 ? "critical" : "warning",
+                  category: "Cobrança de Espaço a Vencer",
+                  title: `Próximo Vencimento: ${storage.name}`,
+                  description: (
+                    <span>
+                      {diffDays === 0
+                        ? `Atenção: O pagamento do aluguel ${spaceTypeLabel} "${storage.name}" vence hoje no valor de `
+                        : `Faltam ${diffDays} dias para o vencimento do aluguel ${spaceTypeLabel} "${storage.name}" no valor de `}
+                      <strong className="font-semibold text-indigo-600">R$ {billing.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</strong>
+                      . (Vence em {format(dueDate, "dd/MM/yyyy")}).
+                    </span>
+                  ),
+                  icon: DollarSign,
+                  action: {
+                    label: "Ir para Espaços",
+                    tab: "storages",
+                    highlightId: storage.id,
+                  },
+                });
+              }
+            }
+          });
+        }
+      });
+
+      // Storage Contract Alerts
+      storages.forEach((storage) => {
+        if (storage.contractEndDate) {
+          const endDate = parseISO(storage.contractEndDate);
+          const diffDays = differenceInDays(endDate, startOfDay(today));
+
+          if (diffDays >= 0 && diffDays <= alertSettings.contractsExpiringDays) {
+            list.push({
+              id: `storage-contract-exp-${storage.id}`,
+              priority: diffDays <= 5 ? "high" : "medium",
+              type: diffDays <= 5 ? "critical" : "warning",
+              category: "Vencimento de Contrato",
+              title: `Depósito: ${storage.name}`,
+              description: (
+                <span>
+                  {diffDays === 0
+                    ? `Atenção: O contrato de locação do depósito/garagem "${storage.name}" vence hoje!`
+                    : `Faltam ${diffDays} dias para o vencimento do contrato do depósito "${storage.name}"`}
+                  . (Vence em {format(endDate, "dd/MM/yyyy")}).
+                </span>
+              ),
+              icon: FileWarning,
+              action: {
+                label: "Ver Depósito",
+                tab: "storages",
+                highlightId: storage.id,
+              },
+            });
+          } else if (diffDays < 0) {
+            list.push({
+              id: `storage-contract-expired-${storage.id}`,
+              priority: "high",
+              type: "critical",
+              category: "Contrato Vencido",
+              title: `Depósito: ${storage.name}`,
+              description: (
+                <span>
+                  O contrato de locação do depósito/garagem <strong className="font-bold">{storage.name}</strong> está expirado desde {format(endDate, "dd/MM/yyyy")} (
+                  <strong className="text-rose-600">
+                    {Math.abs(diffDays)} dias vencido
+                  </strong>
+                  ).
+                </span>
+              ),
+              icon: AlertTriangle,
+              action: {
+                label: "Ver Depósito",
+                tab: "storages",
+                highlightId: storage.id,
+              },
+            });
+          }
+
+          // Pending Security Deposit Refund Alert for closed contracts
+          if (diffDays < 0 && storage.hasDeposit && storage.depositRefundStatus === "pending") {
+            list.push({
+              id: `storage-deposit-pending-${storage.id}`,
+              priority: "medium",
+              type: "warning",
+              category: "Reembolso Pendente",
+              title: `Caução: ${storage.name}`,
+              description: (
+                <span>
+                  O contrato do depósito/garagem <strong className="font-bold">{storage.name}</strong> já encerrou, mas o reembolso da garantia de <strong className="text-indigo-600 font-semibold">R$ {storage.depositValue?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</strong> continua registrado como pendente com o locador ({storage.landlordName || "não informado"}).
+                </span>
+              ),
+              icon: AlertTriangle,
+              action: {
+                label: "Ver Depósito",
+                tab: "storages",
+                highlightId: storage.id,
               },
             });
           }
@@ -10018,17 +10653,21 @@ const AlertsView = ({
       latePayments.forEach((p) => {
         const tenant = tenants.find((t) => t.id === p.tenantId);
         const property = properties.find((pr) => pr.id === p.propertyId);
+        const isExpense = p.tenantId === "proprietario";
 
-        let categoryName = "Pagamento em Atraso";
-        if (p.type === "rent") categoryName = "Aluguel Atrasado";
-        if (p.type === "agreement") categoryName = "Acordo Vencido";
+        let categoryName = isExpense ? "Pagamento de Despesa Atrasado" : "Pagamento em Atraso";
+        if (!isExpense) {
+          if (p.type === "rent") categoryName = "Aluguel Atrasado";
+          if (p.type === "agreement") categoryName = "Acordo Vencido";
+          if (p.type === "deposit") categoryName = "Caução Atrasada";
+        }
 
         list.push({
           id: `pay-late-${p.id}`,
           priority: "high",
           type: "critical",
           category: categoryName,
-          title: tenant?.name || "Inquilino",
+          title: isExpense ? "Despesa (Proprietário)" : tenant?.name || "Inquilino",
           description: (
             <span>
               Atraso do valor{" "}
@@ -10037,47 +10676,50 @@ const AlertsView = ({
                 {p.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
               </strong>{" "}
               referente a{" "}
-              {p.type === "rent"
+              {isExpense
+                ? "Depósito/Garagem"
+                : p.type === "rent"
                 ? "Aluguel"
                 : p.type === "agreement"
                   ? "Acordo"
-                  : "Garantia"}{" "}
-              do imóvel {property?.name || ""}.
+                  : "Caução"}{" "}
+              do imóvel {property?.name || p.propertyNameSnapshot || ""}.
             </span>
           ),
           icon: AlertTriangle,
           action: {
-            label: "Ver Cobrança",
-            tab: "receivables",
+            label: isExpense ? "Ver Pagamento" : "Ver Cobrança",
+            tab: isExpense ? "financial" : "receivables",
             highlightId: p.id,
           },
         });
       });
     }
 
-    // 4. Upcoming Agreement and Rent Payments (Info)
+    // 4. Upcoming Agreement, Rent and Deposit Payments (Info)
     if (alertSettings.notifyUpcomingRents) {
       const nextPayments = payments.filter(
         (p) =>
-          (p.type === "agreement" || p.type === "rent") &&
+          (p.type === "agreement" || p.type === "rent" || p.type === "deposit") &&
           p.status === "pending" &&
           p.dueDate >= todayStr,
       );
       nextPayments.forEach((p) => {
         const dueDate = parseISO(p.dueDate);
         const diffDays = differenceInDays(dueDate, startOfDay(today));
+        const isExpense = p.tenantId === "proprietario";
+        
         if (diffDays >= 0 && diffDays <= alertSettings.upcomingRentsDays) {
           const tenant = tenants.find((t) => t.id === p.tenantId);
           list.push({
             id: `pay-next-${p.id}`,
             priority: diffDays <= 1 ? "medium" : "low",
             type: "info",
-            category:
-              p.type === "rent" ? "Lembrete de Aluguel" : "Lembrete de Acordo",
-            title: tenant?.name || "Inquilino",
+            category: isExpense ? "Lembrete de Pagamento (Despesa)" : (p.type === "rent" ? "Lembrete de Aluguel" : p.type === "agreement" ? "Lembrete de Acordo" : "Lembrete de Caução"),
+            title: isExpense ? "Despesa (Proprietário)" : tenant?.name || "Inquilino",
             description: (
               <span>
-                A cobrança de {p.type === "rent" ? "aluguel" : "acordo"} no
+                A cobrança de {isExpense ? "depósito/garagem" : p.type === "rent" ? "aluguel" : p.type === "agreement" ? "acordo" : "caução"} no
                 valor de{" "}
                 <strong className="font-bold">
                   R${" "}
@@ -10096,8 +10738,8 @@ const AlertsView = ({
             ),
             icon: FileText,
             action: {
-              label: "Ver Parcela",
-              tab: "receivables",
+              label: isExpense ? "Ver Pagamento" : "Ver Parcela",
+              tab: isExpense ? "financial" : "receivables",
               highlightId: p.id,
             },
           });
@@ -10362,7 +11004,9 @@ const AlertsView = ({
                   <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                     <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden h-8 bg-white">
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         className="w-16 h-full text-center text-sm font-medium focus:outline-none"
                         value={alertSettings.upcomingRentsDays}
                         onChange={(e) =>
@@ -10421,7 +11065,9 @@ const AlertsView = ({
                   <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                     <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden h-8 bg-white">
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         className="w-16 h-full text-center text-sm font-medium focus:outline-none"
                         value={alertSettings.contractsExpiringDays}
                         onChange={(e) =>
@@ -10479,33 +11125,35 @@ const AlertsView = ({
                       cobranças já atrasadas/vencidas.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none w-full sm:w-auto justify-end",
-                      alertSettings.notifyLatePayments
-                        ? "bg-emerald-500"
-                        : "bg-slate-300",
-                    )}
-                    role="switch"
-                    aria-checked={alertSettings.notifyLatePayments}
-                    onClick={() =>
-                      setAlertSettings((prev) => ({
-                        ...prev,
-                        notifyLatePayments: !prev.notifyLatePayments,
-                      }))
-                    }
-                  >
-                    <span
-                      aria-hidden="true"
+                  <div className="flex w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
                       className={cn(
-                        "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
                         alertSettings.notifyLatePayments
-                          ? "translate-x-5"
-                          : "translate-x-0",
+                          ? "bg-emerald-500"
+                          : "bg-slate-300",
                       )}
-                    />
-                  </button>
+                      role="switch"
+                      aria-checked={alertSettings.notifyLatePayments}
+                      onClick={() =>
+                        setAlertSettings((prev) => ({
+                          ...prev,
+                          notifyLatePayments: !prev.notifyLatePayments,
+                        }))
+                      }
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                          alertSettings.notifyLatePayments
+                            ? "translate-x-5"
+                            : "translate-x-0",
+                        )}
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-4 py-3 border-b border-slate-200/60 flex-wrap sm:flex-nowrap">
@@ -10517,33 +11165,35 @@ const AlertsView = ({
                       Alertas críticos para documentos vencidos.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none w-full sm:w-auto justify-end",
-                      alertSettings.notifyExpiredDocuments
-                        ? "bg-emerald-500"
-                        : "bg-slate-300",
-                    )}
-                    role="switch"
-                    aria-checked={alertSettings.notifyExpiredDocuments}
-                    onClick={() =>
-                      setAlertSettings((prev) => ({
-                        ...prev,
-                        notifyExpiredDocuments: !prev.notifyExpiredDocuments,
-                      }))
-                    }
-                  >
-                    <span
-                      aria-hidden="true"
+                  <div className="flex w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
                       className={cn(
-                        "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
                         alertSettings.notifyExpiredDocuments
-                          ? "translate-x-5"
-                          : "translate-x-0",
+                          ? "bg-emerald-500"
+                          : "bg-slate-300",
                       )}
-                    />
-                  </button>
+                      role="switch"
+                      aria-checked={alertSettings.notifyExpiredDocuments}
+                      onClick={() =>
+                        setAlertSettings((prev) => ({
+                          ...prev,
+                          notifyExpiredDocuments: !prev.notifyExpiredDocuments,
+                        }))
+                      }
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                          alertSettings.notifyExpiredDocuments
+                            ? "translate-x-5"
+                            : "translate-x-0",
+                        )}
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-4 py-3 border-b border-slate-200/60 flex-wrap sm:flex-nowrap">
@@ -10559,7 +11209,9 @@ const AlertsView = ({
                   <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                     <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden h-8 bg-white">
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         className="w-16 h-full text-center text-sm font-medium focus:outline-none"
                         value={alertSettings.vacantPropertiesDays || 15}
                         onChange={(e) =>
@@ -10622,38 +11274,40 @@ const AlertsView = ({
                       rascunho.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none w-full sm:w-auto justify-end",
-                      alertSettings.notifyPendingInspections !== false
-                        ? "bg-emerald-500"
-                        : "bg-slate-300",
-                    )}
-                    role="switch"
-                    aria-checked={
-                      alertSettings.notifyPendingInspections !== false
-                    }
-                    onClick={() =>
-                      setAlertSettings((prev) => ({
-                        ...prev,
-                        notifyPendingInspections:
-                          prev.notifyPendingInspections === false
-                            ? true
-                            : false,
-                      }))
-                    }
-                  >
-                    <span
-                      aria-hidden="true"
+                  <div className="flex w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
                       className={cn(
-                        "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
                         alertSettings.notifyPendingInspections !== false
-                          ? "translate-x-5"
-                          : "translate-x-0",
+                          ? "bg-emerald-500"
+                          : "bg-slate-300",
                       )}
-                    />
-                  </button>
+                      role="switch"
+                      aria-checked={
+                        alertSettings.notifyPendingInspections !== false
+                      }
+                      onClick={() =>
+                        setAlertSettings((prev) => ({
+                          ...prev,
+                          notifyPendingInspections:
+                            prev.notifyPendingInspections === false
+                              ? true
+                              : false,
+                        }))
+                      }
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                          alertSettings.notifyPendingInspections !== false
+                            ? "translate-x-5"
+                            : "translate-x-0",
+                        )}
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-4 py-3 border-b border-slate-200/60 flex-wrap sm:flex-nowrap">
@@ -10666,38 +11320,40 @@ const AlertsView = ({
                       imóvel.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none w-full sm:w-auto justify-end",
-                      alertSettings.notifyUnallocatedTenants !== false
-                        ? "bg-emerald-500"
-                        : "bg-slate-300",
-                    )}
-                    role="switch"
-                    aria-checked={
-                      alertSettings.notifyUnallocatedTenants !== false
-                    }
-                    onClick={() =>
-                      setAlertSettings((prev) => ({
-                        ...prev,
-                        notifyUnallocatedTenants:
-                          prev.notifyUnallocatedTenants === false
-                            ? true
-                            : false,
-                      }))
-                    }
-                  >
-                    <span
-                      aria-hidden="true"
+                  <div className="flex w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
                       className={cn(
-                        "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
                         alertSettings.notifyUnallocatedTenants !== false
-                          ? "translate-x-5"
-                          : "translate-x-0",
+                          ? "bg-emerald-500"
+                          : "bg-slate-300",
                       )}
-                    />
-                  </button>
+                      role="switch"
+                      aria-checked={
+                        alertSettings.notifyUnallocatedTenants !== false
+                      }
+                      onClick={() =>
+                        setAlertSettings((prev) => ({
+                          ...prev,
+                          notifyUnallocatedTenants:
+                            prev.notifyUnallocatedTenants === false
+                              ? true
+                              : false,
+                        }))
+                      }
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                          alertSettings.notifyUnallocatedTenants !== false
+                            ? "translate-x-5"
+                            : "translate-x-0",
+                        )}
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-4 py-3 border-b flex-wrap sm:flex-nowrap bg-indigo-50/50 -mx-4 px-4 rounded-xl border-indigo-100 mb-2 mt-2">
@@ -10711,33 +11367,35 @@ const AlertsView = ({
                       pendência seja solucionada.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none w-full sm:w-auto justify-end",
-                      alertSettings.forceShowUntilResolved
-                        ? "bg-indigo-600"
-                        : "bg-slate-300",
-                    )}
-                    role="switch"
-                    aria-checked={alertSettings.forceShowUntilResolved}
-                    onClick={() =>
-                      setAlertSettings((prev) => ({
-                        ...prev,
-                        forceShowUntilResolved: !prev.forceShowUntilResolved,
-                      }))
-                    }
-                  >
-                    <span
-                      aria-hidden="true"
+                  <div className="flex w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
                       className={cn(
-                        "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
                         alertSettings.forceShowUntilResolved
-                          ? "translate-x-5"
-                          : "translate-x-0",
+                          ? "bg-indigo-600"
+                          : "bg-slate-300",
                       )}
-                    />
-                  </button>
+                      role="switch"
+                      aria-checked={alertSettings.forceShowUntilResolved}
+                      onClick={() =>
+                        setAlertSettings((prev) => ({
+                          ...prev,
+                          forceShowUntilResolved: !prev.forceShowUntilResolved,
+                        }))
+                      }
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                          alertSettings.forceShowUntilResolved
+                            ? "translate-x-5"
+                            : "translate-x-0",
+                        )}
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-4 py-3 flex-wrap sm:flex-nowrap">
@@ -10752,7 +11410,9 @@ const AlertsView = ({
                   <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                     <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden h-8 bg-white">
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         className="w-16 h-full text-center text-sm font-medium focus:outline-none"
                         value={alertSettings.ticketsSLADaysWarning || 2}
                         onChange={(e) =>
@@ -10772,7 +11432,7 @@ const AlertsView = ({
                     <button
                       type="button"
                       className={cn(
-                        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none w-full sm:w-auto justify-end",
+                        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
                         alertSettings.notifyTickets
                           ? "bg-emerald-500"
                           : "bg-slate-300",
@@ -11288,7 +11948,7 @@ const SettingsView = ({
       if (regs.length === 0) {
         logs.push("⚙️ Tentando registrar Service Worker forçadamente...");
         try {
-          await navigator.serviceWorker.register("/sw.js?v=71");
+          await navigator.serviceWorker.register("/sw.js?v=6.4.0");
           logs.push("✅ SW registrado forçadamente!");
         } catch (e: any) {
           logs.push(`❌ Erro ao registrar SW: ${e.message}`);
@@ -11977,7 +12637,7 @@ const SettingsView = ({
             Gerente Imobiliário
           </p>
           <p className="text-[10px] font-medium text-slate-400 mt-1">
-            Versão 5.4.0 <span className="mx-1.5 opacity-50">•</span> 27/05/2026
+            Versão 6.4.0 <span className="mx-1.5 opacity-50">•</span> 30/06/2026
           </p>
         </div>
       </div>
@@ -12911,6 +13571,8 @@ const Input = ({
   step,
   disabled,
   onKeyDown,
+  inputMode,
+  pattern,
 }: {
   label?: string;
   id: string;
@@ -12926,6 +13588,8 @@ const Input = ({
   step?: string | number;
   disabled?: boolean;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  inputMode?: "none" | "text" | "tel" | "url" | "email" | "numeric" | "decimal" | "search";
+  pattern?: string;
 }) => (
   <div className={cn("flex flex-col gap-1.5", className)}>
     {label && (
@@ -12944,6 +13608,8 @@ const Input = ({
     <input
       id={id}
       type={type}
+      inputMode={inputMode}
+      pattern={pattern}
       value={value}
       onChange={onChange}
       onKeyDown={onKeyDown}
@@ -12975,23 +13641,42 @@ const CurrencyInput = ({
   required?: boolean;
   className?: string;
 }) => {
-  const formatValue = (val: number) => {
-    return new Intl.NumberFormat("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    }).format(val);
-  };
-
-  const [displayValue, setDisplayValue] = useState(formatValue(value));
+  const [displayValue, setDisplayValue] = useState(
+    value ? value.toString().replace(".", ",") : ""
+  );
 
   useEffect(() => {
-    setDisplayValue(formatValue(value));
+    const currentNum = parseFloat(displayValue.replace(/\./g, "").replace(",", ".")) || 0;
+    if (Math.abs(currentNum - value) > 0.001) {
+      setDisplayValue(value ? value.toString().replace(".", ",") : "");
+    }
   }, [value]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const rawValue = e.target.value.replace(/\D/g, "");
-    const numericValue = Number(rawValue) / 100;
+    let val = e.target.value;
+    
+    // allow digits and commas
+    val = val.replace(/[^0-9,]/g, "");
+    
+    // ensure only one comma
+    const parts = val.split(",");
+    if (parts.length > 2) {
+      val = parts[0] + "," + parts.slice(1).join("");
+    }
+
+    setDisplayValue(val);
+
+    const numericValue = parseFloat(val.replace(",", ".")) || 0;
     onChange(numericValue);
+  };
+
+  const handleBlur = () => {
+    const numericValue = parseFloat(displayValue.replace(",", ".")) || 0;
+    setDisplayValue(
+      numericValue > 0 
+        ? numericValue.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/\./g, "") 
+        : ""
+    );
   };
 
   return (
@@ -13010,14 +13695,19 @@ const CurrencyInput = ({
         </label>
       )}
       <div className="relative">
+        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs pointer-events-none">
+          R$
+        </span>
         <input
           id={id}
           type="text"
+          inputMode="decimal"
           value={displayValue}
           onChange={handleChange}
+          onBlur={handleBlur}
           onFocus={(e) => e.target.select()}
           required={required}
-          className="flex h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm transition-all focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-50 font-medium"
+          className="flex h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-4 py-2 text-sm transition-all focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-50 font-medium"
         />
       </div>
     </div>
@@ -13238,19 +13928,43 @@ const UnifiedFinancialHub = ({
   setActiveTab,
   financialProps,
   receivablesProps,
+  storagesProps,
 }: any) => {
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-8">
-      <div className="w-full relative mb-8">
-        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3 px-1">
-          Navegue pelas áreas do Financeiro:
-        </label>
-        <div className="flex bg-slate-100 p-1.5 rounded-2xl w-full border border-slate-200 shadow-inner gap-1.5 relative z-10 flex-col md:flex-row">
+      <div className="w-full relative mb-4">
+        <div className="flex bg-slate-100 p-1 rounded-xl w-full border border-slate-200 shadow-inner gap-1 relative z-10 flex-col md:flex-row">
           <button
             className={cn(
-              "flex-1 px-2 py-3 sm:px-6 sm:py-4 text-xs sm:text-sm md:text-base font-bold rounded-xl transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-3 relative overflow-hidden",
+              "flex-1 px-1.5 py-1.5 sm:px-3 sm:py-2 text-[11px] sm:text-xs font-semibold rounded-lg transition-all duration-300 flex items-center justify-center gap-1 sm:gap-1.5 relative overflow-hidden",
+              activeTab === "panorama"
+                ? "bg-white shadow-sm text-indigo-700 ring-1 ring-indigo-500/20 scale-[1.01] z-10"
+                : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 z-0",
+            )}
+            onClick={() => setActiveTab("panorama")}
+          >
+            {activeTab === "panorama" && (
+              <div className="absolute inset-0 bg-gradient-to-br from-indigo-50 via-white to-indigo-50 opacity-50" />
+            )}
+            <div
+              className={cn(
+                "p-1 rounded-full transition-colors shrink-0",
+                activeTab === "panorama"
+                  ? "bg-indigo-100 text-indigo-600"
+                  : "bg-slate-200/50 text-slate-400",
+              )}
+            >
+              <BarChart2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 relative z-10" />
+            </div>
+            <span className="relative z-10 tracking-tight text-center leading-tight">
+              Panorama Geral
+            </span>
+          </button>
+          <button
+            className={cn(
+              "flex-1 px-1.5 py-1.5 sm:px-3 sm:py-2 text-[11px] sm:text-xs font-semibold rounded-lg transition-all duration-300 flex items-center justify-center gap-1 sm:gap-1.5 relative overflow-hidden",
               activeTab === "receivables"
-                ? "bg-white shadow-md text-emerald-700 ring-1 ring-emerald-500/20 scale-[1.02] sm:scale-100 z-10"
+                ? "bg-white shadow-sm text-emerald-700 ring-1 ring-emerald-500/20 scale-[1.01] z-10"
                 : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 z-0",
             )}
             onClick={() => setActiveTab("receivables")}
@@ -13260,13 +13974,13 @@ const UnifiedFinancialHub = ({
             )}
             <div
               className={cn(
-                "p-2 rounded-full transition-colors shrink-0",
+                "p-1 rounded-full transition-colors shrink-0",
                 activeTab === "receivables"
                   ? "bg-emerald-100 text-emerald-600"
                   : "bg-slate-200/50 text-slate-400",
               )}
             >
-              <ArrowDownLeft className="w-4 h-4 sm:w-5 sm:h-5 relative z-10" />
+              <ArrowDownLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 relative z-10" />
             </div>
             <span className="relative z-10 tracking-tight text-center leading-tight">
               Entradas / Recebimentos
@@ -13275,9 +13989,9 @@ const UnifiedFinancialHub = ({
 
           <button
             className={cn(
-              "flex-1 px-2 py-3 sm:px-6 sm:py-4 text-xs sm:text-sm md:text-base font-bold rounded-xl transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-3 relative overflow-hidden",
+              "flex-1 px-1.5 py-1.5 sm:px-3 sm:py-2 text-[11px] sm:text-xs font-semibold rounded-lg transition-all duration-300 flex items-center justify-center gap-1 sm:gap-1.5 relative overflow-hidden",
               activeTab === "financial"
-                ? "bg-white shadow-md text-rose-700 ring-1 ring-rose-500/20 scale-[1.02] sm:scale-100 z-10"
+                ? "bg-white shadow-sm text-rose-700 ring-1 ring-rose-500/20 scale-[1.01] z-10"
                 : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 z-0",
             )}
             onClick={() => setActiveTab("financial")}
@@ -13287,13 +14001,13 @@ const UnifiedFinancialHub = ({
             )}
             <div
               className={cn(
-                "p-2 rounded-full transition-colors shrink-0",
+                "p-1 rounded-full transition-colors shrink-0",
                 activeTab === "financial"
                   ? "bg-rose-100 text-rose-600"
                   : "bg-slate-200/50 text-slate-400",
               )}
             >
-              <ArrowUpRight className="w-4 h-4 sm:w-5 sm:h-5 relative z-10" />
+              <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4 relative z-10" />
             </div>
             <span className="relative z-10 tracking-tight text-center leading-tight">
               Saídas / Despesas
@@ -13302,36 +14016,46 @@ const UnifiedFinancialHub = ({
 
           <button
             className={cn(
-              "flex-1 px-2 py-3 sm:px-6 sm:py-4 text-xs sm:text-sm md:text-base font-bold rounded-xl transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-3 relative overflow-hidden",
-              activeTab === "financial_ia"
-                ? "bg-white shadow-md text-indigo-700 ring-1 ring-indigo-500/20 scale-[1.02] sm:scale-100 z-10"
+              "flex-1 px-1.5 py-1.5 sm:px-3 sm:py-2 text-[11px] sm:text-xs font-semibold rounded-lg transition-all duration-300 flex items-center justify-center gap-1 sm:gap-1.5 relative overflow-hidden",
+              activeTab === "storages"
+                ? "bg-white shadow-sm text-amber-700 ring-1 ring-amber-500/20 scale-[1.01] z-10"
                 : "text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 z-0",
             )}
-            onClick={() => setActiveTab("financial_ia")}
+            onClick={() => setActiveTab("storages")}
           >
-            {activeTab === "financial_ia" && (
-              <div className="absolute inset-0 bg-gradient-to-br from-indigo-50 via-white to-indigo-50 opacity-50" />
+            {activeTab === "storages" && (
+              <div className="absolute inset-0 bg-gradient-to-br from-amber-50 via-white to-amber-50 opacity-50" />
             )}
             <div
               className={cn(
-                "p-2 rounded-full transition-colors shrink-0",
-                activeTab === "financial_ia"
-                  ? "bg-indigo-100 text-indigo-600"
+                "p-1 rounded-full transition-colors shrink-0",
+                activeTab === "storages"
+                  ? "bg-amber-100 text-amber-600"
                   : "bg-slate-200/50 text-slate-400",
               )}
             >
-              <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 relative z-10" />
+              <Box className="w-3.5 h-3.5 sm:w-4 sm:h-4 relative z-10" />
             </div>
             <span className="relative z-10 tracking-tight text-center leading-tight">
-              IA Financeira
+              Aluguel de Espaço
             </span>
           </button>
         </div>
       </div>
       {activeTab === "receivables" ? (
         <ReceivablesView {...receivablesProps} />
+      ) : activeTab === "panorama" ? (
+        <FinancialOverviewView 
+          properties={financialProps.properties}
+          payments={financialProps.payments}
+          expenses={financialProps.expenses}
+          agreements={financialProps.agreements}
+          storages={storagesProps.storages}
+        />
       ) : activeTab === "financial" ? (
         <FinancialView {...financialProps} />
+      ) : activeTab === "storages" ? (
+        <StoragesView {...storagesProps} />
       ) : (
         <FinancialIAView
           properties={financialProps.properties}
@@ -13382,6 +14106,26 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleSWUpdate = () => {
+      toast.info("Uma nova versão do Gerente Imobiliário (v6.4.0) está disponível!", {
+        description: "Recomendamos atualizar para carregar as melhorias mais recentes e evitar erros. Clique no botão abaixo para carregar agora.",
+        duration: Infinity, // Mantém ativo até interação do usuário
+        action: {
+          label: "Atualizar Agora",
+          onClick: () => {
+            window.location.reload();
+          },
+        },
+      });
+    };
+
+    window.addEventListener("sw-update-available", handleSWUpdate);
+    return () => {
+      window.removeEventListener("sw-update-available", handleSWUpdate);
+    };
+  }, []);
+
   const defaultAlertSettings: AlertSettings = useMemo(
     () => ({
       notifyUpcomingRents: true,
@@ -13401,9 +14145,9 @@ export default function App() {
   );
 
   const [alertSettings, setAlertSettings] = useState<AlertSettings>(() => {
-    const saved = localStorage.getItem("robo_alert_settings");
-    if (saved) {
-      try {
+    try {
+      const saved = localStorage.getItem("robo_alert_settings");
+      if (saved) {
         return {
           notifyUpcomingRents: true,
           upcomingRentsDays: 5,
@@ -13414,7 +14158,9 @@ export default function App() {
           notifyTickets: true,
           ...JSON.parse(saved),
         };
-      } catch (e) {}
+      }
+    } catch (e) {
+      console.warn("Failed to read alert settings from localStorage:", e);
     }
     return {
       notifyUpcomingRents: true,
@@ -13428,7 +14174,11 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem("robo_alert_settings", JSON.stringify(alertSettings));
+    try {
+      localStorage.setItem("robo_alert_settings", JSON.stringify(alertSettings));
+    } catch (e) {
+      console.warn("Failed to save alert settings to localStorage:", e);
+    }
   }, [alertSettings]);
 
   const [userRole, setUserRole] = useState<"admin" | "tenant" | null>(null);
@@ -13455,10 +14205,12 @@ export default function App() {
     | "help"
     | "alerts"
     | "import"
+    | "storages"
   >("dashboard");
   const [initialContractTemplate, setInitialContractTemplate] = useState<
     string | null
   >(null);
+  const [initialContractData, setInitialContractData] = useState<any>(null);
   const [initialPropertyIdForTenant, setInitialPropertyIdForTenant] = useState<
     string | null
   >(null);
@@ -13475,6 +14227,7 @@ export default function App() {
   const [isInstallable, setIsInstallable] = useState(false);
   const [pwaLogs, setPwaLogs] = useState<string[]>([]);
   const [isFixingPwa, setIsFixingPwa] = useState(false);
+  const lastSyncHashRef = useRef<string>("");
 
   const [isJustifyRenovationModalOpen, setIsJustifyRenovationModalOpen] =
     useState(false);
@@ -13557,6 +14310,7 @@ export default function App() {
 
   const isAlertSnoozed = (alertId: string) => {
     if (alertSettings.forceShowUntilResolved) return false;
+    if (alertId.startsWith("contract-expired-")) return false; // Force show expired contracts until resolved
     const record = snoozedAlerts[alertId];
     if (!record) return false;
     return Date.now() - record.timestamp < (record.duration || 172800000);
@@ -13584,6 +14338,9 @@ export default function App() {
 
   const handleNavigate = (tab: any, highlightId?: string) => {
     setActiveTab(tab);
+    if (tab === "storages" && highlightId) {
+      setSelectedStorageId(highlightId);
+    }
     if (highlightId) {
       setHighlightedPaymentId(highlightId);
       // Wait for tab transition before highlighting
@@ -13899,6 +14656,7 @@ export default function App() {
   const [paymentRemainderObservations, setPaymentRemainderObservations] =
     useState<string>("");
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [resetsRemaining, setResetsRemaining] = useState<number>(3);
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState("");
   const [resetReason, setResetReason] = useState("");
@@ -13978,6 +14736,10 @@ export default function App() {
 
   const checkDriveStatus = useCallback(
     async (retries = 5) => {
+      if (!user) {
+        setIsDriveConnected(false);
+        return;
+      }
       try {
         console.log(`[Drive] Checking status... Retries left: ${retries}`);
         const storedTokens = localStorage.getItem("google_drive_tokens");
@@ -14328,7 +15090,10 @@ export default function App() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [stagingRecords, setStagingRecords] = useState<StagingRecord[]>([]);
   const [customAlerts, setCustomAlerts] = useState<CustomAlert[]>([]);
+  const [storages, setStorages] = useState<StorageSpace[]>([]);
+  const [selectedStorageId, setSelectedStorageId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const generatingRef = useRef<Record<string, boolean>>({});
 
   // Synchronize tenant data to localStorage for local testing & development backup
   // and also write to firestore tenant_portal_data for live secure tenant login
@@ -14356,11 +15121,18 @@ export default function App() {
             })),
           };
         });
-        localStorage.setItem("local_tenants_backup", JSON.stringify(backupData));
+
+        const dataStr = JSON.stringify(backupData);
+        if (lastSyncHashRef.current === dataStr) {
+          return;
+        }
+        lastSyncHashRef.current = dataStr;
+
+        localStorage.setItem("local_tenants_backup", dataStr);
 
         // Sync to cloud Firestore tenant_portal_data (so tenants can log in from anywhere)
         const syncToCloud = async () => {
-          for (const item of backupData) {
+          const promises = backupData.map(async (item) => {
             const cleanCpf = item.cpf.replace(/\D/g, "");
             const password = item.password;
             if (cleanCpf && password) {
@@ -14377,7 +15149,8 @@ export default function App() {
                 console.warn(`[Portal Sync] Cloud sync failed for CPF ${cleanCpf}:`, cloudErr);
               }
             }
-          }
+          });
+          await Promise.all(promises);
         };
         syncToCloud();
       } catch (err) {
@@ -14408,12 +15181,24 @@ export default function App() {
               cleanObject({
                 email: u.email,
                 role: role,
+                resetsRemaining: 3,
                 createdAt: serverTimestamp(),
               }),
             );
             setUserRole(role);
+            setResetsRemaining(3);
           } else {
             const data = userDoc.data();
+            let currentResets = data?.resetsRemaining;
+            if (currentResets === undefined || currentResets === null) {
+              currentResets = 3;
+              await setDoc(
+                doc(db, "users", u.uid),
+                { resetsRemaining: 3 },
+                { merge: true }
+              );
+            }
+            setResetsRemaining(currentResets);
             // If the email is in the admin list but the doc says tenant, update it
             if (role === "admin" && data.role !== "admin") {
               await setDoc(
@@ -14519,6 +15304,10 @@ export default function App() {
       collection(db, "custom_alerts"),
       where("ownerId", "==", user.uid),
     );
+    const qStorages = query(
+      collection(db, "storages"),
+      where("ownerId", "==", user.uid),
+    );
 
     const unsubProps = onSnapshot(
       qProps,
@@ -14607,6 +15396,16 @@ export default function App() {
       (err) => handleListError(err, OperationType.LIST, "custom_alerts"),
     );
 
+    const unsubStorages = onSnapshot(
+      qStorages,
+      (snap) => {
+        setStorages(
+          snap.docs.map((d) => ({ id: d.id, ...d.data() }) as StorageSpace),
+        );
+      },
+      (err) => handleListError(err, OperationType.LIST, "storages"),
+    );
+
     return () => {
       unsubProps();
       unsubTenants();
@@ -14617,105 +15416,210 @@ export default function App() {
       unsubTickets();
       unsubStaging();
       unsubCustomAlerts();
+      unsubStorages();
     };
   }, [isAuthReady, user, userRole]);
 
-  // --- Deduplicate Primeiro Aluguel ---
+  
+  const backgroundTasksRunUser = useRef<string | null>(null);
+
+  // --- Background Data Tasks (Deduplicate, Generate, Clean, Late Checks) ---
   useEffect(() => {
-    if (!user || payments.length === 0) return;
-    const deduplicate = async () => {
-      const grouped: Record<string, Payment[]> = {};
-      for (const p of payments) {
-        if (p.type === "rent" && p.description === "Primeiro Aluguel") {
-          const key = `${p.propertyId}_${p.tenantId}`;
-          if (!grouped[key]) grouped[key] = [];
-          grouped[key].push(p);
+    if (!user || payments.length === 0 || contracts.length === 0 || properties.length === 0) return;
+    if (backgroundTasksRunUser.current === user.uid) return;
+    
+    // Set to true immediately so we don't double trigger
+    backgroundTasksRunUser.current = user.uid;
+
+    const runAllBackgroundTasks = async () => {
+      try {
+        console.log("Starting background tasks...");
+        
+        // 1. Deduplicate Primeiro Aluguel
+        const groupedFirstRent: Record<string, Payment[]> = {};
+        for (const p of payments) {
+          if (p.type === "rent" && p.description === "Primeiro Aluguel") {
+            const key = `${p.propertyId}_${p.tenantId}`;
+            if (!groupedFirstRent[key]) groupedFirstRent[key] = [];
+            groupedFirstRent[key].push(p);
+          }
         }
-      }
-      for (const key in grouped) {
-        if (grouped[key].length > 1) {
-          const sorted = grouped[key].sort((a, b) => {
-            if (a.status !== "pending" && b.status === "pending") return -1;
-            if (b.status !== "pending" && a.status === "pending") return 1;
-            return (
-              new Date(a.createdAt || 0).getTime() -
-              new Date(b.createdAt || 0).getTime()
-            );
-          });
-          for (let i = 1; i < sorted.length; i++) {
-            if (sorted[i].status === "pending") {
-              await deleteDoc(doc(db, "payments", sorted[i].id)).catch(
-                console.error,
-              );
+        for (const key in groupedFirstRent) {
+          if (groupedFirstRent[key].length > 1) {
+            const sorted = groupedFirstRent[key].sort((a, b) => {
+              if (a.status !== "pending" && b.status === "pending") return -1;
+              if (b.status !== "pending" && a.status === "pending") return 1;
+              return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+            });
+            for (let i = 1; i < sorted.length; i++) {
+              if (sorted[i].status === "pending") {
+                await deleteDoc(doc(db, "payments", sorted[i].id!)).catch(console.error);
+              }
             }
           }
         }
-      }
-    };
-    deduplicate();
-  }, [user, payments]);
 
-  // Check for late payments
-  useEffect(() => {
-    if (!user || payments.length === 0) return;
+        // 2. Generate Monthly Payments
+        const activeContracts = contracts.filter((c) => c.status === "active");
+        const today = new Date();
+        const nextMonthLimit = addMonths(today, 1);
 
-    const checkLatePayments = async () => {
-      const todayStr = format(new Date(), "yyyy-MM-dd");
-      const todayDate = parseISO(todayStr);
-      for (const p of payments) {
-        if (p.status === "pending" || p.status === "late") {
-          if (p.dueDate < todayStr) {
-            const property = properties.find((pr) => pr.id === p.propertyId);
-            const agreement =
-              p.type === "agreement"
-                ? agreements.find((a) => a.id === p.agreementId)
-                : null;
-            const contract = contracts.find(
-              (c) =>
-                c.tenantId === p.tenantId &&
-                c.propertyId === p.propertyId &&
-                c.status === "active",
-            );
-            const tenant = tenants.find((t) => t.id === p.tenantId);
-            const configSource = agreement || contract || tenant || property;
+        for (const contract of activeContracts) {
+          if (!contract.startDate || !contract.rentValue) continue;
 
-            let interest = 0;
-            if (configSource && configSource.chargeLateFees) {
-              const dueDateObj = parseISO(p.dueDate);
-              const daysLate = differenceInDays(todayDate, dueDateObj);
-              if (daysLate > 0) {
-                // Penalty is fixed R$
-                // Daily is % applied on the initial rent per day
-                interest =
-                  (configSource.lateFeePenalty || 0) +
-                  p.amount *
-                    ((configSource.lateFeeDaily || 0) / 100) *
-                    daysLate;
-              }
-            }
+          let currentPeriod = parseISO(contract.startDate);
+          const endPeriod = contract.endDate ? parseISO(contract.endDate) : nextMonthLimit;
+          const targetEnd = isBefore(endPeriod, nextMonthLimit) ? endPeriod : nextMonthLimit;
 
-            const calculatedInterest = Number(interest.toFixed(2));
-            if (
-              p.status === "pending" ||
-              p.interestAmount !== calculatedInterest
-            ) {
+          while (
+            currentPeriod.getFullYear() < targetEnd.getFullYear() ||
+            (currentPeriod.getFullYear() === targetEnd.getFullYear() &&
+              currentPeriod.getMonth() <= targetEnd.getMonth())
+          ) {
+            const year = currentPeriod.getFullYear();
+            const month = currentPeriod.getMonth();
+
+            const paymentExists = payments.some((p) => {
+              if (
+                p.tenantId !== contract.tenantId ||
+                p.propertyId !== contract.propertyId ||
+                !(p.type === "rent" ||
+                  !p.type ||
+                  (p.type !== "deposit" && p.type !== "agreement") ||
+                  p.description?.toLowerCase().includes("aluguel"))
+              ) return false;
+
+              const checkDateStr = (dateStr?: string) => {
+                if (!dateStr) return false;
+                const parts = dateStr.split('T')[0].split('-');
+                if (parts.length >= 2) {
+                  return parseInt(parts[0], 10) === year && (parseInt(parts[1], 10) - 1) === month;
+                }
+                return false;
+              };
+              return checkDateStr(p.dueDate) || checkDateStr(p.originalDueDate);
+            });
+
+            if (!paymentExists) {
+              const paymentDay = contract.paymentDay || 5;
+              const daysInMonth = new Date(year, month + 1, 0).getDate();
+              const actualDay = Math.min(paymentDay, daysInMonth);
+              const baseDateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(actualDay).padStart(2, "0")}`;
+              const rentAdj = adjustDateToNextBusinessDay(baseDateStr);
+
               try {
-                await updateDoc(doc(db, "payments", p.id), {
-                  status: "late",
-                  interestAmount: calculatedInterest,
+                await addDoc(collection(db, "payments"), cleanObject({
+                  propertyId: contract.propertyId,
+                  tenantId: contract.tenantId,
+                  amount: contract.rentValue,
+                  dueDate: rentAdj.adjustedDate,
+                  originalDueDate: rentAdj.wasAdjusted ? rentAdj.originalDate : undefined,
+                  status: "pending",
+                  ownerId: user.uid,
+                  type: "rent",
+                  description: "Aluguel Mensal",
+                  observations: rentAdj.wasAdjusted ? rentAdj.adjustmentReason : "",
+                  createdAt: new Date().toISOString(),
                   updatedAt: new Date().toISOString(),
-                });
+                }));
               } catch (err) {
-                console.error("Error updating late payment:", err);
+                console.error("Error generating recurring payment:", err);
+              }
+            }
+            currentPeriod = addMonths(currentPeriod, 1);
+          }
+        }
+
+        // 3. Cleanup Duplicates
+        const groupedMonthly: Record<string, Payment[]> = {};
+        for (const p of payments) {
+          const isRentLike = p.type === "rent" || !p.type || (p.type !== "deposit" && p.type !== "agreement") || p.description?.toLowerCase().includes("aluguel");
+          if (isRentLike && p.dueDate) {
+            try {
+              const parts = p.dueDate.split('T')[0].split('-');
+              if (parts.length >= 2) {
+                const key = `${p.propertyId}_${p.tenantId}_${parts[0]}_${parseInt(parts[1], 10) - 1}`;
+                if (!groupedMonthly[key]) groupedMonthly[key] = [];
+                groupedMonthly[key].push(p);
+              }
+            } catch (e) { }
+          }
+        }
+        for (const key in groupedMonthly) {
+          const list = groupedMonthly[key];
+          if (list.length > 1) {
+            const hasSettled = list.some((p) => p.status === "paid" || p.status === "partial");
+            if (hasSettled) {
+              const pendings = list.filter((p) => p.status === "pending" || p.status === "late");
+              for (const p of pendings) {
+                if (p.id) await deleteDoc(doc(db, "payments", p.id)).catch(console.error);
+              }
+            } else {
+              const pendings = list
+                .filter((p) => p.status === "pending" || p.status === "late")
+                .sort((a, b) => (new Date(a.createdAt || 0).getTime()) - (new Date(b.createdAt || 0).getTime()));
+              for (let i = 1; i < pendings.length; i++) {
+                if (pendings[i].id) await deleteDoc(doc(db, "payments", pendings[i].id!)).catch(console.error);
               }
             }
           }
         }
+
+        // 4. Check Late Payments
+        const todayStr = format(new Date(), "yyyy-MM-dd");
+        const todayDate = parseISO(todayStr);
+        for (const p of payments) {
+          if (p.status === "pending" || p.status === "late") {
+            if (p.dueDate < todayStr) {
+              const property = properties.find((pr) => pr.id === p.propertyId);
+              const agreement = p.type === "agreement" ? agreements.find((a) => a.id === p.agreementId) : null;
+              const contract = contracts.find((c) => c.tenantId === p.tenantId && c.propertyId === p.propertyId && c.status === "active");
+              const tenant = tenants.find((t) => t.id === p.tenantId);
+              const configSource = agreement || contract || tenant || property;
+
+              let interest = 0;
+              if (configSource && configSource.chargeLateFees) {
+                const daysLate = differenceInDays(todayDate, parseISO(p.dueDate));
+                if (daysLate > 0) {
+                  interest = (configSource.lateFeePenalty || 0) + (p.amount * ((configSource.lateFeeDaily || 0) / 100) * daysLate);
+                }
+              }
+
+              const calculatedInterest = Number(interest.toFixed(2));
+              if (p.status === "pending" || p.interestAmount !== calculatedInterest) {
+                try {
+                  await updateDoc(doc(db, "payments", p.id!), {
+                    status: "late",
+                    interestAmount: calculatedInterest,
+                    updatedAt: new Date().toISOString(),
+                  });
+                } catch (err) {
+                  console.error("Error updating late payment:", err);
+                }
+              }
+            }
+          }
+        }
+        
+        console.log("Background tasks complete.");
+      } catch (err) {
+        console.error("Background tasks failed:", err);
       }
     };
 
-    checkLatePayments();
-  }, [user, payments, properties, agreements, contracts]);
+    runAllBackgroundTasks();
+  }, [
+    user, 
+    payments.length > 0, 
+    contracts.length > 0, 
+    properties.length > 0,
+    payments,
+    contracts,
+    properties,
+    agreements,
+    tenants
+  ]);
+
 
   const sidebarItems = useMemo(() => {
     const pendingCount = payments.filter(
@@ -14726,6 +15630,8 @@ export default function App() {
     const today = new Date();
 
     const isSnoozed = (alertId: string) => {
+      if (alertSettings.forceShowUntilResolved) return false;
+      if (alertId.startsWith("contract-expired-")) return false; // Force show expired contracts until resolved
       const record = snoozedAlerts[alertId];
       if (!record) return false;
       return Date.now() - record.timestamp < (record.duration || 172800000);
@@ -14774,15 +15680,18 @@ export default function App() {
     );
     latePayments.forEach((p) => addAlert(`pay-late-${p.id}`, "high"));
 
-    // 4. Upcoming agreements
-    const nextAgreements = payments.filter(
-      (p) => p.type === "agreement" && p.status === "pending",
+    // 4. Upcoming payments (Rent, Deposit, Agreement)
+    const nextPayments = payments.filter(
+      (p) =>
+        (p.type === "agreement" || p.type === "rent" || p.type === "deposit") &&
+        p.status === "pending",
     );
-    nextAgreements.forEach((p) => {
+    nextPayments.forEach((p) => {
       const dueDate = parseISO(p.dueDate);
-      const diffDays = differenceInDays(dueDate, today);
-      if (diffDays >= 0 && diffDays <= 7) {
-        addAlert(`agr-next-${p.id}`, "low");
+      const diffDays = differenceInDays(dueDate, startOfDay(today));
+      if (diffDays >= 0 && diffDays <= alertSettings.upcomingRentsDays) {
+        // use same exact alert IDs as AlertsView so snoozing works properly
+        addAlert(`pay-next-${p.id}`, diffDays <= 1 ? "medium" : "low");
       }
     });
 
@@ -14806,17 +15715,43 @@ export default function App() {
       if (contract.status === "active" && contract.endDate) {
         const endDate = parseISO(contract.endDate);
         const diffDays = differenceInDays(endDate, startOfDay(today));
-        if (diffDays >= 0) {
-          if (diffDays === 30) {
-            addAlert(`contract-exp-30-${contract.id}`, "medium");
-          } else if (diffDays === 15) {
-            addAlert(`contract-exp-15-${contract.id}`, "medium");
-          } else if (diffDays <= 5) {
-            addAlert(`contract-exp-daily-${contract.id}-${diffDays}`, "high");
-          }
-        } else {
+        if (diffDays >= 0 && diffDays <= alertSettings.contractsExpiringDays) {
+          addAlert(`contract-exp-${contract.id}`, diffDays <= 5 ? "high" : "medium");
+        } else if (diffDays < 0) {
           addAlert(`contract-expired-${contract.id}`, "high");
         }
+      }
+    });
+
+    // 5.6 Storage contract and deposit alerts
+    storages.forEach((storage) => {
+      if (storage.contractEndDate) {
+        const endDate = parseISO(storage.contractEndDate);
+        const diffDays = differenceInDays(endDate, startOfDay(today));
+        if (diffDays >= 0 && diffDays <= alertSettings.contractsExpiringDays) {
+          addAlert(`storage-contract-exp-${storage.id}`, diffDays <= 5 ? "high" : "medium");
+        } else if (diffDays < 0) {
+          addAlert(`storage-contract-expired-${storage.id}`, "high");
+        }
+
+        if (diffDays < 0 && storage.hasDeposit && storage.depositRefundStatus === "pending") {
+          addAlert(`storage-deposit-pending-${storage.id}`, "medium");
+        }
+      }
+
+      // Storage billing alerts
+      if (storage.billings && storage.billings.length > 0) {
+        storage.billings.forEach((billing) => {
+          if (billing.status !== "paid") {
+            const dueDate = parseISO(billing.dueDate);
+            const diffDays = differenceInDays(dueDate, startOfDay(today));
+            if (diffDays < 0) {
+              addAlert(`storage-billing-late-${storage.id}-${billing.id}`, "high");
+            } else if (diffDays <= 5) {
+              addAlert(`storage-billing-near-${storage.id}-${billing.id}`, diffDays <= 1 ? "high" : "medium");
+            }
+          }
+        });
       }
     });
 
@@ -14837,7 +15772,7 @@ export default function App() {
       { id: "properties", label: "Imóveis", icon: Home },
       { id: "tenants", label: "Inquilinos", icon: Users },
       { id: "contracts", label: "Contratos", icon: FileText },
-      { id: "financial", label: "Financeiro", icon: DollarSign },
+      { id: "receivables", label: "Financeiro", icon: DollarSign },
       { id: "settings", label: "Configurações", icon: Settings },
     ];
 
@@ -14850,6 +15785,8 @@ export default function App() {
     tenants,
     snoozedAlerts,
     contracts,
+    alertSettings,
+    storages,
   ]);
 
   // --- Actions ---
@@ -15028,6 +15965,16 @@ export default function App() {
           updatedAt: new Date().toISOString(),
         });
       }
+
+      // Archive any linked contracts
+      contracts
+        .filter((c) => c.propertyId === id && c.status !== "archived")
+        .forEach((c) => {
+          batch.update(doc(db, "contracts", c.id!), {
+            status: "archived",
+            updatedAt: new Date().toISOString(),
+          });
+        });
 
       // Save property name snapshots on financials
       if (property?.name) {
@@ -15622,6 +16569,28 @@ export default function App() {
           }),
         );
       }
+      
+      if (data.status === "archived" && oldTenant?.status !== "archived") {
+        const activeContracts = contracts.filter(c => c.tenantId === id && c.status === "active");
+        for (const c of activeContracts) {
+          if (c.id) {
+            await updateDoc(doc(db, "contracts", c.id), {
+              status: "archived",
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+        
+        const pendingRents = payments.filter(p => p.tenantId === id && p.status === "pending" && p.type === "rent");
+        for (const p of pendingRents) {
+          if (p.id) {
+            await updateDoc(doc(db, "payments", p.id), {
+              status: "cancelled",
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      }
 
       if (
         data.status === "archived" &&
@@ -16101,6 +17070,9 @@ export default function App() {
         "agreements",
         "contracts",
         "tickets",
+        "custom_alerts",
+        "storages",
+        "staging_records",
       ];
 
       setBackupStepMsg("Organizando dados históricos...");
@@ -16247,6 +17219,18 @@ export default function App() {
         await Promise.all(deletePromises);
       }
 
+      // Decrement or loop the remaining resets (3 -> 2 -> 1 -> 3)
+      let nextResets = resetsRemaining - 1;
+      if (nextResets < 1) {
+        nextResets = 3;
+      }
+      await setDoc(
+        doc(db, "users", user.uid),
+        { resetsRemaining: nextResets },
+        { merge: true }
+      );
+      setResetsRemaining(nextResets);
+
       toast.success(
         "Ciclo concluído com sucesso! Todos os dados foram arquivados e seu backup foi salvo.",
         { duration: 5000 },
@@ -16278,6 +17262,16 @@ export default function App() {
           updatedAt: new Date().toISOString(),
         });
       }
+
+      // Archive any linked contracts
+      contracts
+        .filter((c) => c.tenantId === id && c.status !== "archived")
+        .forEach((c) => {
+          batch.update(doc(db, "contracts", c.id!), {
+            status: "archived",
+            updatedAt: new Date().toISOString(),
+          });
+        });
 
       // Save tenant name snapshots on financials
       const tenant = tenants.find((t) => t.id === id);
@@ -16382,20 +17376,20 @@ export default function App() {
       const payment = payments.find((p) => p.id === paymentId);
       if (!payment) return;
 
-      const isPartial =
-        paidAmount !== undefined &&
-        paidAmount < payment.amount &&
-        !waivedLateFee;
-      const amountToPay =
-        paidAmount !== undefined ? paidAmount : payment.amount;
+      const totalDue = payment.amount + (!waivedLateFee ? (payment.interestAmount || 0) : 0);
+      const amountToPay = paidAmount !== undefined ? paidAmount : totalDue;
+      const isPartial = paidAmount !== undefined && paidAmount < totalDue;
+
+      const principalToRegister = isPartial ? amountToPay : payment.amount;
 
       // Update current payment as paid (or partial)
       await updateDoc(
         doc(db, "payments", paymentId),
         cleanObject({
           status: isPartial ? "partial" : "paid",
-          amount: amountToPay, // Update total amount to what was actually paid
+          amount: principalToRegister,
           paidAmount: amountToPay,
+          interestAmount: (!isPartial && !waivedLateFee) ? (payment.interestAmount || 0) : 0,
           paidDate: new Date().toISOString(),
           receiptUrl: receiptUrl || null,
           evidenceName: evidenceName || null,
@@ -16409,8 +17403,8 @@ export default function App() {
 
       // If partial, create a new pending payment for the remainder
       if (isPartial) {
-        const remainder = payment.amount - amountToPay;
-        const originalAmountForRemainder = payment.amount;
+        const remainder = totalDue - amountToPay;
+        const originalAmountForRemainder = totalDue;
 
         // Extract part number if exists to increment it
         const partMatch = payment.description?.match(/(\d+)ª parte/);
@@ -16473,7 +17467,13 @@ export default function App() {
         cleanObject({
           status: newStatus,
           paidDate: null,
+          paidAmount: 0,
           receiptUrl: null,
+          evidenceName: null,
+          evidenceLocation: null,
+          thumbnailLink: null,
+          waivedLateFee: false,
+          waivedLateFeeReason: null,
           revertReason: reason,
           updatedAt: new Date().toISOString(),
         }),
@@ -16569,7 +17569,7 @@ export default function App() {
       for (const contract of activeContracts) {
         if (contract.id) {
           batch.update(doc(db, "contracts", contract.id), {
-            status: "ended",
+            status: action === "delete" || action === "archived" ? "archived" : "ended",
             endDate: format(new Date(), "yyyy-MM-dd"),
             updatedAt: new Date().toISOString(),
           });
@@ -16659,7 +17659,7 @@ export default function App() {
 
     const totalAgreed = depositPayments.reduce((acc, p) => acc + p.amount, 0);
     const totalReceived = depositPayments
-      .filter((p) => p.status === "paid")
+      .filter((p) => p.status === "paid" || p.status === "partial")
       .reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
 
     // Usage is usually stored in one of the payments (the first one by convention now)
@@ -16692,7 +17692,7 @@ export default function App() {
       };
 
       // We'll add the usage to the first paid payment found
-      const firstPaid = depositPayments.find((p) => p.status === "paid");
+      const firstPaid = depositPayments.find((p) => p.status === "paid" || p.status === "partial");
       if (!firstPaid) return;
 
       const updatedUsage = [...(firstPaid.depositUsage || []), newUsage];
@@ -16720,7 +17720,7 @@ export default function App() {
         return;
       try {
         // Mark all paid deposit payments as refunded
-        for (const p of depositPayments.filter((p) => p.status === "paid")) {
+        for (const p of depositPayments.filter((p) => p.status === "paid" || p.status === "partial")) {
           await onUpdatePayment(p.id!, {
             depositStatus: "refunded",
             updatedAt: new Date().toISOString(),
@@ -17029,10 +18029,10 @@ export default function App() {
 
   const updatePaymentRecord = async (id: string, data: Partial<Payment>) => {
     try {
-      await updateDoc(doc(db, "payments", id), {
+      await updateDoc(doc(db, "payments", id), cleanObject({
         ...data,
         updatedAt: new Date().toISOString(),
-      });
+      }));
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `payments/${id}`);
     }
@@ -17083,6 +18083,11 @@ export default function App() {
               onOpenAlerts={() => setActiveTab("alerts")}
               globalAlertsCount={alertsItem?.badge}
               globalAlertsPriority={alertsItem?.badgeColor || "low"}
+              storages={storages}
+              onNavigateToStorage={(storageId) => {
+                setSelectedStorageId(storageId);
+                setActiveTab("storages");
+              }}
             />
           );
         })();
@@ -17093,6 +18098,7 @@ export default function App() {
             tenants={tenants}
             payments={payments}
             expenses={expenses}
+            contracts={contracts}
             addProperty={addProperty}
             updateProperty={updateProperty}
             deleteProperty={deleteProperty}
@@ -17110,6 +18116,11 @@ export default function App() {
               setInitialTenantIdToEdit(tenantId);
               setActiveTab("tenants");
             }}
+            storages={storages}
+            onNavigateToStorage={(storageId) => {
+              setSelectedStorageId(storageId);
+              setActiveTab("storages");
+            }}
           />
         );
       case "contracts":
@@ -17118,10 +18129,16 @@ export default function App() {
             contracts={contracts}
             properties={properties}
             tenants={tenants}
+            storages={storages}
             onSecurityCheck={executeWithSecurity}
             isDriveConnected={isDriveConnected}
             uploadToDrive={uploadToDrive}
             initialOpenTemplate={initialContractTemplate}
+            initialContractData={initialContractData}
+            onClearInitialContractData={() => {
+              setInitialContractData(null);
+              setInitialContractTemplate(null);
+            }}
           />
         );
       case "tenants":
@@ -17146,11 +18163,16 @@ export default function App() {
             onClearInitialPropertyId={() => setInitialPropertyIdForTenant(null)}
             initialTenantIdToEdit={initialTenantIdToEdit}
             onClearInitialTenantIdToEdit={() => setInitialTenantIdToEdit(null)}
+            onNavigateToGenerateContract={(contractData) => {
+              setInitialContractData(contractData);
+              setActiveTab("contracts");
+            }}
           />
         );
       case "receivables":
       case "financial":
       case "financial_ia":
+      case "storages":
         return (
           <UnifiedFinancialHub
             activeTab={activeTab}
@@ -17162,6 +18184,8 @@ export default function App() {
               agreements,
               setConfirmingPayment,
               setIsPaymentModalOpen,
+              setIsRevertModalOpen,
+              setRevertingPayment,
               onOpenTenantDetail: handleOpenTenantDetail,
               highlightedPaymentId,
               setHighlightedPaymentId,
@@ -17188,6 +18212,26 @@ export default function App() {
               isDriveConnected,
               uploadToDrive,
               setPreviewReceipt,
+              storages,
+              highlightedPaymentId,
+              setHighlightedPaymentId,
+              onNavigateToStorage: (storageId) => {
+                setSelectedStorageId(storageId);
+                setActiveTab("storages");
+              },
+            }}
+            storagesProps={{
+              storages,
+              properties,
+              tenants,
+              contracts,
+              onSecurityCheck: executeWithSecurity,
+              initialSelectedId: selectedStorageId,
+              onClearInitialSelectedId: () => setSelectedStorageId(null),
+              onNavigateToCreateContract: (contractData) => {
+                setInitialContractData(contractData);
+                setActiveTab("contracts");
+              },
             }}
           />
         );
@@ -17212,6 +18256,7 @@ export default function App() {
             customAlerts={customAlerts}
             onCreateCustomAlert={handleCreateCustomAlert}
             onDeleteCustomAlert={handleDeleteCustomAlert}
+            storages={storages}
           />
         );
       case "settings":
@@ -17278,6 +18323,11 @@ export default function App() {
               onOpenAlerts={() => setActiveTab("alerts")}
               globalAlertsCount={alertsItem?.badge}
               globalAlertsPriority={alertsItem?.badgeColor || "low"}
+              storages={storages}
+              onNavigateToStorage={(storageId) => {
+                setSelectedStorageId(storageId);
+                setActiveTab("storages");
+              }}
             />
           );
         })();
@@ -18077,6 +19127,21 @@ export default function App() {
             </div>
           </div>
 
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex gap-3">
+            <ShieldAlert className="w-6 h-6 text-amber-600 shrink-0" />
+            <div className="text-sm text-amber-900">
+              <p className="font-black uppercase tracking-tight text-amber-800">
+                Limite de Reinicializações Ativo (Vínculo de Segurança)
+              </p>
+              <p className="mt-1">
+                Sua conta possui apenas <span className="font-extrabold text-red-600 text-lg underline">{resetsRemaining}</span> {resetsRemaining === 1 ? "reinicialização restante" : "reinicializações restantes"} vinculadas ao seu e-mail do Google.
+              </p>
+              <p className="mt-1 text-xs text-amber-700 font-medium">
+                Por questões de segurança e integridade com o Google Drive, o sistema possui um limite dinâmico de segurança contra redefinições abusivas. Certifique-se de que realmente deseja prosseguir com este ciclo.
+              </p>
+            </div>
+          </div>
+
           <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-500 uppercase">
@@ -18273,10 +19338,9 @@ export default function App() {
                     >
                       <Input
                         id="waiveReason"
-                        placeholder="Motivo da isenção (Obrigatório)"
+                        placeholder="Motivo da isenção (Opcional)"
                         value={waivedLateFeeReason}
                         onChange={(e) => setWaivedLateFeeReason(e.target.value)}
-                        required
                         className="bg-white border-orange-200 text-sm placeholder:text-orange-300"
                       />
                     </motion.div>
@@ -18287,13 +19351,11 @@ export default function App() {
           })()}
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Valor Pago (R$)</label>
-            <Input
+            <CurrencyInput
               id="payment-amount-input"
-              type="number"
+              label="Valor Pago"
               value={paymentAmountInput}
-              onChange={(e) => setPaymentAmountInput(Number(e.target.value))}
-              placeholder="Digite o valor pago"
+              onChange={(val) => setPaymentAmountInput(val)}
               className="font-bold text-emerald-600"
             />
             {confirmingPayment &&
@@ -18404,8 +19466,7 @@ export default function App() {
               className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-md font-bold"
               disabled={
                 isSubmitting ||
-                paymentAmountInput <= 0 ||
-                (waiveLateFee && !waivedLateFeeReason.trim())
+                paymentAmountInput <= 0
               }
               onClick={() => {
                 if (confirmingPayment) {
@@ -18640,7 +19701,7 @@ export default function App() {
                   if (!tenant) return null;
 
                   const totalReceived = depositPayments
-                    .filter((p) => p.status === "paid")
+                    .filter((p) => p.status === "paid" || p.status === "partial")
                     .reduce((acc, p) => acc + (p.paidAmount || p.amount), 0);
 
                   const allUsages = depositPayments.flatMap(
@@ -18935,7 +19996,9 @@ export default function App() {
             <Input
               label="Nº de Parcelas"
               id="agreement-duration"
-              type="number"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               min="1"
               value={agreementForm.durationMonths}
               onChange={(e) =>
@@ -18982,20 +20045,14 @@ export default function App() {
             {agreementForm.chargeLateFees && (
               <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-200">
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                    Multa Fixa (R$)
-                    <InfoTooltip text="Valor cobrado uma única vez pelo atraso (R$)." />
-                  </label>
-                  <Input
+                  <CurrencyInput
                     id="agreement-lateFeePenalty"
-                    type="number"
-                    step="0.01"
-                    min="0"
+                    label="Multa Fixa"
                     value={agreementForm.lateFeePenalty}
-                    onChange={(e) =>
+                    onChange={(val) =>
                       setAgreementForm({
                         ...agreementForm,
-                        lateFeePenalty: Number(e.target.value),
+                        lateFeePenalty: val,
                       })
                     }
                   />
@@ -19007,16 +20064,16 @@ export default function App() {
                   </label>
                   <Input
                     id="agreement-lateFeeDaily"
-                    type="number"
-                    step="0.01"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     value={agreementForm.lateFeeDaily}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const val = e.target.value.replace(",", ".");
                       setAgreementForm({
                         ...agreementForm,
-                        lateFeeDaily: Number(e.target.value),
-                      })
-                    }
+                        lateFeeDaily: val === "" ? 0 : Number(val),
+                      });
+                    }}
                   />
                 </div>
               </div>
@@ -19703,6 +20760,29 @@ export default function App() {
                 >
                   <Edit className="w-4 h-4 mr-2" /> Editar
                 </Button>
+                
+                {selectedTenantForDetail.status !== "archived" && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 hover:bg-slate-100"
+                    onClick={() => {
+                      setIsTenantDetailModalOpen(false);
+                      const linkedContracts = contracts.filter(
+                        (c) => c.tenantId === selectedTenantForDetail.id && c.status === "active"
+                      );
+                      let warningMsg = `Ao confirmar, você arquivará o registro de ${selectedTenantForDetail.name}.`;
+                      if (linkedContracts.length > 0) {
+                        warningMsg = `Atenção: O inquilino "${selectedTenantForDetail.name}" possui ${linkedContracts.length} contrato(s) ativo(s). Ao arquivar o inquilino, o contrato e as parcelas pendentes também serão arquivados ou cancelados. Você poderá consultar no histórico.`;
+                      }
+                      executeWithSecurity(
+                        () => updateTenant(selectedTenantForDetail.id, { status: "archived" }),
+                        warningMsg,
+                      );
+                    }}
+                  >
+                    <Archive className="w-4 h-4 mr-2" /> Arquivar
+                  </Button>
+                )}
                 {selectedTenantForDetail.contractFile && (
                   <a
                     href={selectedTenantForDetail.contractFile}
@@ -19720,9 +20800,16 @@ export default function App() {
                   variant="danger"
                   onClick={() => {
                     setIsTenantDetailModalOpen(false);
+                    const linkedContracts = contracts.filter(
+                      (c) => c.tenantId === selectedTenantForDetail.id && c.status !== "archived"
+                    );
+                    let warningMsg = `Ao confirmar, você excluirá permanentemente o registro de ${selectedTenantForDetail.name}.`;
+                    if (linkedContracts.length > 0) {
+                      warningMsg = `Atenção: O inquilino "${selectedTenantForDetail.name}" possui ${linkedContracts.length} contrato(s) de locação vinculado(s). Ao confirmar a exclusão, este inquilino será removido e o contrato vinculado será automaticamente ARQUIVADO por segurança para o seu histórico. Você poderá encontrar o contrato arquivado a qualquer momento na seção de Contratos, utilizando o filtro 'Arquivados'.`;
+                    }
                     executeWithSecurity(
                       () => deleteTenant(selectedTenantForDetail.id),
-                      `Ao confirmar, você excluirá permanentemente o registro de ${selectedTenantForDetail.name}.`,
+                      warningMsg,
                     );
                   }}
                 >

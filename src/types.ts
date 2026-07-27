@@ -184,7 +184,7 @@ export interface Contract {
   evidenceLocation?: string;
   thumbnailLink?: string;
   aiContractText?: string;
-  status: "active" | "ended" | "broken";
+  status: "active" | "ended" | "broken" | "archived";
   ownerId: string;
   createdAt?: any;
   updatedAt?: any;
@@ -335,4 +335,75 @@ export interface FirestoreErrorInfo {
       photoUrl: string | null;
     }[];
   };
+}
+
+export interface StorageItem {
+  id: string;
+  name: string;
+  description?: string;
+  location?: string;
+  quantity: number;
+  cost: number;
+  dateAdded?: string;
+  // Space-specific structured metadata
+  garageSpots?: number;
+  garageSpotNumbers?: string;
+  storedVehicle?: string;
+  sector?: string;
+  palletOrShelf?: string;
+  boxOrContainer?: string;
+  volumeM3?: number;
+  // Movement tracking
+  status?: "in_stock" | "out" | "sold" | "returned";
+  takenBy?: string;
+  movementDate?: string;
+  expectedReturnDate?: string;
+  soldPrice?: number;
+}
+
+export interface StorageSpace {
+  id?: string;
+  name: string;
+  spaceType?: "warehouse" | "room" | "cabinet" | "drawer" | "space" | "garage" | "storage_room" | "other";
+  address?: string;
+  monthlyCost: number;
+  dueDay: number;
+  propertyId?: string;
+  ownerId: string;
+  contractFile?: string;
+  evidenceName?: string;
+  evidenceLocation?: string;
+  items?: StorageItem[];
+  createdAt?: any;
+  updatedAt?: any;
+  // Tenant contract properties for Storage Space (as requested by user)
+  contractStartDate?: string;
+  contractEndDate?: string;
+  landlordName?: string;
+  landlordContact?: string;
+  hasDeposit?: boolean;
+  depositValue?: number;
+  depositRefundStatus?: "pending" | "refunded" | "partially_used" | "lost";
+  depositPaymentType?: "cash" | "installments";
+  depositInstallments?: number;
+  depositIsPaid?: boolean;
+  depositPaymentFile?: string;
+  depositPaymentFileName?: string;
+  rescissionFine?: number;
+  readjustmentIndex?: string;
+  paymentMethod?: string;
+  billings?: StorageBilling[];
+  status?: "active" | "archived";
+}
+
+export interface StorageBilling {
+  id: string;
+  dueDate: string; // ISO date string yyyy-MM-dd
+  amount: number;
+  paidAmount: number;
+  status: "paid" | "unpaid" | "partial";
+  paymentDate?: string;
+  notes?: string;
+  confirmedAt?: string;
+  fineAmount?: number; // Multa ou juros
 }

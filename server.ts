@@ -700,6 +700,63 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
 
 // Vite middleware for development
 async function startServer() {
+  let isReady = false;
+
+  // Temporary middleware to hold requests until Vite (or static) is ready
+  app.use((req, res, next) => {
+    if (isReady) return next();
+    
+    // If it's a page request, send a nice loading screen
+    // Using 503 prevents the Service Worker from caching this temporary screen
+    if (req.accepts('html')) {
+      res.status(503).send(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Iniciando...</title>
+          <style>
+            body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: white; }
+            .loader { border: 4px solid rgba(255,255,255,0.1); border-left-color: #6366f1; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 1rem; }
+            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+          </style>
+          <script>
+            // Refresh automatically when ready
+            setInterval(() => {
+              fetch('/api/health').then(r => { if (r.ok) window.location.reload(); });
+            }, 1000);
+          </script>
+        </head>
+        <body>
+          <div class="loader"></div>
+          <h2>Preparando ambiente...</h2>
+          <p style="color: #94a3b8; font-size: 14px;">Isso leva apenas alguns segundos.</p>
+        </body>
+        </html>
+      `);
+    } else {
+      // For assets/api, just wait
+      const check = setInterval(() => {
+        if (isReady) {
+          clearInterval(check);
+          next();
+        }
+      }, 100);
+    }
+  });
+
+  // Health endpoint for the loading screen to poll
+  app.get('/api/health', (req, res) => {
+    if (isReady) res.json({ status: 'ok' });
+    else res.status(503).json({ status: 'starting' });
+  });
+
+  // Bind port immediately so the proxy can connect and avoid showing the "Please wait" page
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -707,17 +764,15 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
+    isReady = true;
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
+    isReady = true;
   }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
 }
 
 startServer().catch(console.error);

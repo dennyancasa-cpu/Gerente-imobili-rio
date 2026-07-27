@@ -29,7 +29,7 @@ export const getDriveAgentResponse = async (diagnostics: any, userMessage?: stri
   try {
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: userMessage || "Diagnosticar conexão drive."
     });
     return response.text || "Sem resposta.";
@@ -59,7 +59,7 @@ Extraia as seguintes informações e retorne APENAS um JSON válido, sem mais ne
 }`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.5-flash",
     contents: [
       { text: prompt },
       {
@@ -178,7 +178,7 @@ export const generateLeaseContract = async (tenantData: any, propertyData?: any,
   `;
   
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.5-flash",
     contents: prompt
   });
 
@@ -242,7 +242,7 @@ export const getLegalConsultantResponse = async (userMessage: string, history: {
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: finalSequence,
       config: {
         systemInstruction,
@@ -336,7 +336,7 @@ export const getManagerAgentResponse = async (context: {
     const apiTools: any[] = [{ googleSearch: {} }];
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: finalSequence,
       config: {
         systemInstruction,
@@ -374,7 +374,7 @@ Gere um relatório textual (2 a 4 parágrafos) em Português-BR para ir no topo 
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: prompt,
       config: {
         temperature: 0.3
@@ -417,7 +417,7 @@ ${JSON.stringify({
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: prompt,
       config: {
         temperature: 0.3
@@ -498,7 +498,7 @@ ${text}
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.5-flash",
     contents: contents
   });
 
@@ -543,7 +543,7 @@ Inquilinos cadastrados: ${tenantsJson}
 `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.5-flash",
     contents: prompt
   });
 
@@ -615,7 +615,7 @@ ${text}
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.5-flash",
     contents: contents
   });
 

@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { Contract, Property, Tenant, OperationType } from '../types';
+import React, { useState, useMemo } from 'react';
+import { Contract, Property, Tenant, OperationType, StorageSpace } from '../types';
 import { 
   FileText, Plus, Search, CheckCircle2, XCircle, Clock, 
   Trash2, AlertTriangle, Upload, Eye, FileSignature, Sparkles,
-  ChevronDown, ChevronUp, Maximize
+  ChevronDown, ChevronUp, Maximize, RotateCcw, Archive
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -15,6 +15,27 @@ import { addDoc, collection, doc, updateDoc, deleteDoc } from 'firebase/firestor
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const cleanObject = (obj: any): any => {
+  if (obj === null || obj === undefined) return null;
+  if (Array.isArray(obj)) return obj.map(cleanObject).filter(v => v !== undefined);
+  if (typeof obj === 'object') {
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== null && proto !== Object.prototype) {
+      return obj;
+    }
+    const cleaned: any = {};
+    Object.keys(obj).forEach(key => {
+      const val = obj[key];
+      if (val !== undefined) {
+        cleaned[key] = cleanObject(val);
+      }
+    });
+    return cleaned;
+  }
+  return obj;
+};
+
 import { db, auth } from '../firebase';
 import { handleFirestoreError } from '../utils/firestoreError';
 import { toast } from 'sonner';
@@ -28,9 +49,23 @@ interface ContractsViewProps {
   isDriveConnected: boolean;
   uploadToDrive?: (fileName: string, fileData: string, mimeType: string, folderName?: string) => Promise<any>;
   initialOpenTemplate?: string | null;
+  initialContractData?: any;
+  onClearInitialContractData?: () => void;
+  storages?: StorageSpace[];
 }
 
-export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck, isDriveConnected, uploadToDrive, initialOpenTemplate }: ContractsViewProps) => {
+export const ContractsView = ({
+  contracts,
+  properties,
+  tenants,
+  onSecurityCheck,
+  isDriveConnected,
+  uploadToDrive,
+  initialOpenTemplate,
+  initialContractData,
+  onClearInitialContractData,
+  storages = []
+}: ContractsViewProps) => {
   const [filterStatus, setFilterStatus] = useState<Contract['status'] | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -42,6 +77,11 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
   const [aiDocumentType, setAiDocumentType] = useState(initialOpenTemplate || 'Contrato de Locação');
   const [isModelsExpanded, setIsModelsExpanded] = useState(false);
   const [isFullscreenAiEditor, setIsFullscreenAiEditor] = useState(false);
+  const [isRenewArchiveModalOpen, setIsRenewArchiveModalOpen] = useState(false);
+  const [renewArchiveMode, setRenewArchiveMode] = useState<'renew' | 'archive'>('renew');
+  const [targetContract, setTargetContract] = useState<Contract | null>(null);
+  const [raEndDate, setRaEndDate] = useState('');
+  const [raObservations, setRaObservations] = useState('');
 
   React.useEffect(() => {
     if (initialOpenTemplate) {
@@ -49,6 +89,26 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
       setIsModalOpen(true);
     }
   }, [initialOpenTemplate]);
+
+  React.useEffect(() => {
+    if (initialContractData) {
+      setFormData(prev => ({
+        ...prev,
+        ...initialContractData,
+        startDate: initialContractData.startDate || format(new Date(), 'yyyy-MM-dd'),
+        rentValue: initialContractData.rentValue || 0,
+        paymentDay: initialContractData.paymentDay || 5,
+        status: initialContractData.status || 'active'
+      }));
+      if (initialContractData.aiDocumentType) {
+        setAiDocumentType(initialContractData.aiDocumentType);
+      }
+      setIsModalOpen(true);
+      if (onClearInitialContractData) {
+        onClearInitialContractData();
+      }
+    }
+  }, [initialContractData, onClearInitialContractData]);
   
   const [formData, setFormData] = useState<Partial<Contract>>({
     tenantId: '',
@@ -63,32 +123,138 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
     status: 'active'
   });
 
-  const getTenantName = (id: string) => tenants.find(t => t.id === id)?.name || 'Desconhecido';
-  const getPropertyName = (id: string) => properties.find(p => p.id === id)?.name || 'Desconhecido';
+  const getTenantName = (id: string) => {
+    if (id === 'proprietario') return 'Próprio (Depósito/Garagem)';
+    return tenants.find(t => t.id === id)?.name || 'Desconhecido';
+  };
+
+  const getPropertyName = (id: string) => {
+    if (id?.startsWith('storage-')) {
+      const storageId = id.replace('storage-', '');
+      return storages?.find(s => s.id === storageId)?.name || 'Depósito/Garagem';
+    }
+    return properties.find(p => p.id === id)?.name || 'Desconhecido';
+  };
+
+  const warnings = useMemo(() => {
+    const list: string[] = [];
+    if (!formData.propertyId) return list;
+
+    // 1. Property active contract check
+    const activeContractForProperty = contracts.find(c => 
+      c.status === 'active' && 
+      c.propertyId === formData.propertyId && 
+      c.id !== editingContract?.id
+    );
+    if (activeContractForProperty) {
+      const propName = getPropertyName(formData.propertyId);
+      list.push(`O imóvel/espaço "${propName}" já possui um contrato ativo com o inquilino "${getTenantName(activeContractForProperty.tenantId)}"! Criar outro contrato ativo para o mesmo imóvel pode causar conflitos de faturamento.`);
+    }
+
+    // 2. Tenant active contract check
+    if (formData.tenantId && formData.tenantId !== 'proprietario') {
+      const activeContractForTenant = contracts.find(c => 
+        c.status === 'active' && 
+        c.tenantId === formData.tenantId && 
+        c.id !== editingContract?.id
+      );
+      if (activeContractForTenant) {
+        list.push(`O inquilino "${getTenantName(formData.tenantId)}" já possui um contrato ativo para o imóvel "${getPropertyName(activeContractForTenant.propertyId)}"!`);
+      }
+
+      // Check for duplicate tenant (by CPF or Name) with active contract
+      const selectedTenant = tenants.find(t => t.id === formData.tenantId);
+      if (selectedTenant) {
+        const cleanedCPF = selectedTenant.cpf ? selectedTenant.cpf.replace(/\D/g, '') : '';
+        const sameCPFOrNameTenants = tenants.filter(t => 
+          t.id !== selectedTenant.id && 
+          (
+            (cleanedCPF && t.cpf && t.cpf.replace(/\D/g, '') === cleanedCPF) ||
+            t.name.trim().toLowerCase() === selectedTenant.name.trim().toLowerCase()
+          )
+        );
+        
+        const duplicateActiveContracts = contracts.filter(c => 
+          c.status === 'active' && 
+          sameCPFOrNameTenants.some(d => d.id === c.tenantId) && 
+          c.id !== editingContract?.id
+        );
+
+        if (duplicateActiveContracts.length > 0) {
+          duplicateActiveContracts.forEach(c => {
+            list.push(`Atenção: Detectamos outro cadastro de inquilino ativo com o mesmo nome ou CPF (${selectedTenant.cpf || 'sem CPF'}) que já possui um contrato ativo para o imóvel "${getPropertyName(c.propertyId)}". Certifique-se de que não está duplicando o contrato.`);
+          });
+        }
+      }
+    }
+
+    return list;
+  }, [formData.propertyId, formData.tenantId, contracts, tenants, editingContract]);
 
   const filteredContracts = contracts.filter(c => {
-    const matchesStatus = filterStatus === 'all' || c.status === filterStatus;
+    const matchesStatus = filterStatus === 'all' ? c.status !== 'archived' : c.status === filterStatus;
     const matchesSearch = 
       getTenantName(c.tenantId).toLowerCase().includes(searchQuery.toLowerCase()) || 
       getPropertyName(c.propertyId).toLowerCase().includes(searchQuery.toLowerCase());
     return matchesStatus && matchesSearch;
   });
 
-  const handlePropertyChange = (propertyId: string) => {
-    const property = properties.find(p => p.id === propertyId);
-    if (property) {
+  const handleTenantChange = (tenantId: string) => {
+    const tenant = tenants.find(t => t.id === tenantId);
+    if (tenant) {
       setFormData(prev => ({
         ...prev,
-        propertyId,
-        rentValue: property.rentValue || prev.rentValue,
-        paymentDay: property.paymentDay || prev.paymentDay,
-        chargeLateFees: property.chargeLateFees !== undefined ? property.chargeLateFees : prev.chargeLateFees,
-        lateFeePenalty: property.lateFeePenalty || prev.lateFeePenalty,
-        lateFeeDaily: property.lateFeeDaily || prev.lateFeeDaily,
-        lateFeeType: property.lateFeeType || prev.lateFeeType
+        tenantId,
+        depositValue: tenant.depositValue !== undefined ? tenant.depositValue : prev.depositValue,
+        depositInstallments: tenant.depositInstallments !== undefined ? tenant.depositInstallments : prev.depositInstallments,
+        depositDay: tenant.depositDay !== undefined ? tenant.depositDay : prev.depositDay,
+        rentValue: tenant.rentValue !== undefined ? tenant.rentValue : prev.rentValue,
+        paymentDay: tenant.paymentDay !== undefined ? tenant.paymentDay : prev.paymentDay,
+        chargeLateFees: tenant.chargeLateFees !== undefined ? tenant.chargeLateFees : prev.chargeLateFees,
+        lateFeePenalty: tenant.lateFeePenalty !== undefined ? tenant.lateFeePenalty : prev.lateFeePenalty,
+        lateFeeDaily: tenant.lateFeeDaily !== undefined ? tenant.lateFeeDaily : prev.lateFeeDaily,
+        lateFeeType: tenant.lateFeeType !== undefined ? tenant.lateFeeType : prev.lateFeeType,
+        startDate: tenant.startDate || prev.startDate || format(new Date(), 'yyyy-MM-dd'),
+        endDate: tenant.endDate || prev.endDate,
       }));
     } else {
-      setFormData(prev => ({ ...prev, propertyId }));
+      setFormData(prev => ({ ...prev, tenantId }));
+    }
+  };
+
+  const handlePropertyChange = (propertyId: string) => {
+    if (propertyId?.startsWith('storage-')) {
+      const storageId = propertyId.replace('storage-', '');
+      const storage = storages?.find(s => s.id === storageId);
+      if (storage) {
+        setFormData(prev => ({
+          ...prev,
+          propertyId,
+          tenantId: 'proprietario',
+          rentValue: storage.monthlyCost || prev.rentValue,
+          paymentDay: storage.dueDay || prev.paymentDay,
+          startDate: storage.contractStartDate || prev.startDate || format(new Date(), 'yyyy-MM-dd'),
+          endDate: storage.contractEndDate || prev.endDate,
+          depositValue: storage.hasDeposit ? (storage.depositValue || 0) : 0,
+        }));
+      }
+    } else {
+      const property = properties.find(p => p.id === propertyId);
+      if (property) {
+        setFormData(prev => ({
+          ...prev,
+          propertyId,
+          tenantId: prev.tenantId === 'proprietario' ? '' : prev.tenantId,
+          rentValue: property.rentValue || prev.rentValue,
+          paymentDay: property.paymentDay || prev.paymentDay,
+          chargeLateFees: property.chargeLateFees !== undefined ? property.chargeLateFees : prev.chargeLateFees,
+          lateFeePenalty: property.lateFeePenalty || prev.lateFeePenalty,
+          lateFeeDaily: property.lateFeeDaily || prev.lateFeeDaily,
+          lateFeeType: property.lateFeeType || prev.lateFeeType
+        }));
+      } else {
+        setFormData(prev => ({ ...prev, propertyId }));
+      }
     }
   };
 
@@ -133,8 +299,34 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
       toast.error('Preencha pelo menos Inquilino, Imóvel e Valor do Aluguel antes de gerar.');
       return;
     }
-    const tenant = tenants.find(t => t.id === formData.tenantId);
-    const prop = properties.find(p => p.id === formData.propertyId);
+    
+    let tenant = tenants.find(t => t.id === formData.tenantId) as any;
+    if (formData.tenantId === 'proprietario') {
+      tenant = {
+        name: 'Eu mesmo (Proprietário)',
+        type: 'individual',
+        email: auth.currentUser?.email || '',
+        phone: '',
+        document: '',
+        status: 'allocated',
+        observations: 'Contrato de locação de depósito/garagem onde sou o inquilino.'
+      };
+    }
+
+    let prop = properties.find(p => p.id === formData.propertyId) as any;
+    if (formData.propertyId?.startsWith('storage-')) {
+      const storageId = formData.propertyId.replace('storage-', '');
+      const storage = storages?.find(s => s.id === storageId);
+      if (storage) {
+        prop = {
+          name: storage.name,
+          address: storage.address || 'Não informado',
+          status: 'rented',
+          rentValue: storage.monthlyCost,
+          paymentDay: storage.dueDay,
+        };
+      }
+    }
     
     // Build combined data
     const combinedData = {
@@ -199,34 +391,134 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
       }
 
       if (editingContract?.id) {
-        await updateDoc(doc(db, 'contracts', editingContract.id), contractData);
+        await updateDoc(doc(db, 'contracts', editingContract.id), cleanObject(contractData));
+
+        // 1. If property changed, free up the old property
+        const propertyChanged = editingContract.propertyId !== contractData.propertyId;
+        const tenantChanged = editingContract.tenantId !== contractData.tenantId;
+
+        if (propertyChanged) {
+          if (!editingContract.propertyId.startsWith('storage-')) {
+            await updateDoc(doc(db, 'properties', editingContract.propertyId), {
+              currentTenantId: null,
+              status: 'vacant'
+            });
+          } else {
+            const storageId = editingContract.propertyId.replace('storage-', '');
+            await updateDoc(doc(db, 'storages', storageId), {
+              contractStartDate: "",
+              contractEndDate: "",
+              monthlyCost: 0
+            });
+          }
+        }
+
+        // 2. If tenant changed, free up the old tenant
+        if (tenantChanged && editingContract.tenantId !== 'proprietario') {
+          await updateDoc(doc(db, 'tenants', editingContract.tenantId), {
+            propertyId: null,
+            status: 'waiting'
+          });
+        }
+
+        // 3. Update the new/current property & tenant status based on new contract status
+        if (contractData.status === 'active') {
+          // Bind/Update the current property
+          if (!contractData.propertyId.startsWith('storage-')) {
+            await updateDoc(doc(db, 'properties', contractData.propertyId), cleanObject({
+              currentTenantId: contractData.tenantId,
+              status: 'rented',
+              rentValue: contractData.rentValue,
+              paymentDay: contractData.paymentDay,
+              chargeLateFees: contractData.chargeLateFees,
+              lateFeePenalty: contractData.lateFeePenalty,
+              lateFeeDaily: contractData.lateFeeDaily,
+              lateFeeType: contractData.lateFeeType
+            }));
+          } else {
+            const storageId = contractData.propertyId.replace('storage-', '');
+            await updateDoc(doc(db, 'storages', storageId), cleanObject({
+              contractStartDate: contractData.startDate,
+              contractEndDate: contractData.endDate || "",
+              monthlyCost: contractData.rentValue,
+              dueDay: contractData.paymentDay,
+              contractFile: contractData.contractFile || ""
+            }));
+          }
+
+          // Bind/Update the current tenant
+          if (contractData.tenantId !== 'proprietario') {
+            await updateDoc(doc(db, 'tenants', contractData.tenantId), {
+              propertyId: contractData.propertyId,
+              status: 'allocated'
+            });
+          }
+        } else {
+          // Status is ended or broken: free up the current property and tenant
+          if (!contractData.propertyId.startsWith('storage-')) {
+            await updateDoc(doc(db, 'properties', contractData.propertyId), {
+              currentTenantId: null,
+              status: 'vacant'
+            });
+          } else {
+            const storageId = contractData.propertyId.replace('storage-', '');
+            await updateDoc(doc(db, 'storages', storageId), {
+              contractStartDate: "",
+              contractEndDate: "",
+              monthlyCost: 0
+            });
+          }
+
+          if (contractData.tenantId !== 'proprietario') {
+            await updateDoc(doc(db, 'tenants', contractData.tenantId), {
+              propertyId: null,
+              status: 'waiting'
+            });
+          }
+        }
+
         toast.success('Contrato atualizado com sucesso!');
       } else {
-        await addDoc(collection(db, 'contracts'), contractData);
+        await addDoc(collection(db, 'contracts'), cleanObject(contractData));
         
-        // Also update Property to set currentTenantId
-        const propertyRef = doc(db, 'properties', contractData.propertyId);
-        
-        const propertyUpdateData: any = {
-            currentTenantId: contractData.tenantId,
-            status: 'rented',
-            rentValue: contractData.rentValue,
-            paymentDay: contractData.paymentDay,
-            chargeLateFees: contractData.chargeLateFees,
-        };
-        
-        if (contractData.lateFeePenalty !== undefined) propertyUpdateData.lateFeePenalty = contractData.lateFeePenalty;
-        if (contractData.lateFeeDaily !== undefined) propertyUpdateData.lateFeeDaily = contractData.lateFeeDaily;
-        if (contractData.lateFeeType !== undefined) propertyUpdateData.lateFeeType = contractData.lateFeeType;
-        
-        await updateDoc(propertyRef, propertyUpdateData);
+        // Also update Property to set currentTenantId (only if it's a real property)
+        if (!contractData.propertyId.startsWith('storage-')) {
+          const propertyRef = doc(db, 'properties', contractData.propertyId);
+          
+          const propertyUpdateData: any = {
+              currentTenantId: contractData.tenantId,
+              status: 'rented',
+              rentValue: contractData.rentValue,
+              paymentDay: contractData.paymentDay,
+              chargeLateFees: contractData.chargeLateFees,
+          };
+          
+          if (contractData.lateFeePenalty !== undefined) propertyUpdateData.lateFeePenalty = contractData.lateFeePenalty;
+          if (contractData.lateFeeDaily !== undefined) propertyUpdateData.lateFeeDaily = contractData.lateFeeDaily;
+          if (contractData.lateFeeType !== undefined) propertyUpdateData.lateFeeType = contractData.lateFeeType;
+          
+          await updateDoc(propertyRef, cleanObject(propertyUpdateData));
+        } else {
+          // It's a storage space, update the storage space contract details
+          const storageId = contractData.propertyId.replace('storage-', '');
+          const storageRef = doc(db, 'storages', storageId);
+          await updateDoc(storageRef, cleanObject({
+            contractStartDate: contractData.startDate,
+            contractEndDate: contractData.endDate || "",
+            monthlyCost: contractData.rentValue,
+            dueDay: contractData.paymentDay,
+            contractFile: contractData.contractFile || ""
+          }));
+        }
 
-        // Also update Tenant default allocations
-        const tenantRef = doc(db, 'tenants', contractData.tenantId);
-        await updateDoc(tenantRef, {
-            propertyId: contractData.propertyId,
-            status: 'allocated'
-        });
+        // Also update Tenant default allocations (only if it's a real tenant)
+        if (contractData.tenantId !== 'proprietario') {
+          const tenantRef = doc(db, 'tenants', contractData.tenantId);
+          await updateDoc(tenantRef, cleanObject({
+              propertyId: contractData.propertyId,
+              status: 'allocated'
+          }));
+        }
 
         // Generate First Rent
         const dueDateObj = new Date();
@@ -239,12 +531,12 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
         const dueDateStr = format(dueDateObj, 'yyyy-MM-dd');
         const firstRentAdjustment = adjustDateToNextBusinessDay(dueDateStr);
         
-        await addDoc(collection(db, 'payments'), {
+        await addDoc(collection(db, 'payments'), cleanObject({
           propertyId: contractData.propertyId,
           tenantId: contractData.tenantId,
           amount: contractData.rentValue || 0,
           dueDate: firstRentAdjustment.adjustedDate,
-          originalDueDate: firstRentAdjustment.wasAdjusted ? firstRentAdjustment.originalDate : undefined,
+          originalDueDate: firstRentAdjustment.wasAdjusted ? firstRentAdjustment.originalDate : null,
           status: 'pending',
           ownerId: ownerId,
           type: 'rent',
@@ -252,7 +544,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
           observations: firstRentAdjustment.wasAdjusted ? firstRentAdjustment.adjustmentReason : '',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
-        });
+        }));
 
         // Generate Deposit Installments
         if (contractData.depositValue && contractData.depositValue > 0) {
@@ -274,12 +566,12 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
              const installmentDueDate = format(currentObjDate, 'yyyy-MM-dd');
              const depositAdj = adjustDateToNextBusinessDay(installmentDueDate);
              
-             await addDoc(collection(db, 'payments'), {
+             await addDoc(collection(db, 'payments'), cleanObject({
                propertyId: contractData.propertyId,
                tenantId: contractData.tenantId,
                amount: installmentValue,
                dueDate: depositAdj.adjustedDate,
-               originalDueDate: depositAdj.wasAdjusted ? depositAdj.originalDate : undefined,
+               originalDueDate: depositAdj.wasAdjusted ? depositAdj.originalDate : null,
                status: 'pending',
                ownerId: ownerId,
                type: 'deposit',
@@ -287,7 +579,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                observations: depositAdj.wasAdjusted ? depositAdj.adjustmentReason : '',
                createdAt: new Date().toISOString(),
                updatedAt: new Date().toISOString()
-             });
+             }));
           }
         }
 
@@ -302,11 +594,80 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
     }
   };
 
+  const handleOpenRenewArchive = (contract: Contract, mode: 'renew' | 'archive') => {
+    setTargetContract(contract);
+    setRenewArchiveMode(mode);
+    setRaEndDate(contract.endDate || '');
+    setRaObservations(contract.observations || '');
+    setIsRenewArchiveModalOpen(true);
+  };
+
+  const handleRenewArchiveSubmit = async () => {
+    if (!targetContract || !targetContract.id) return;
+    setIsSubmitting(true);
+    try {
+      let updateData: Partial<Contract> = {};
+      if (renewArchiveMode === 'renew') {
+        updateData = {
+          endDate: raEndDate,
+          status: 'active',
+          observations: raObservations,
+          updatedAt: new Date().toISOString()
+        };
+      } else {
+        updateData = {
+          status: 'archived',
+          observations: raObservations,
+          updatedAt: new Date().toISOString()
+        };
+      }
+      await updateDoc(doc(db, 'contracts', targetContract.id), updateData);
+      toast.success(renewArchiveMode === 'renew' ? 'Contrato renovado/ajustado com sucesso!' : 'Contrato arquivado com sucesso!');
+      setIsRenewArchiveModalOpen(false);
+      setTargetContract(null);
+    } catch (error) {
+      console.error(error);
+      toast.error('Erro ao atualizar contrato');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     onSecurityCheck(async () => {
       try {
+        const contractToDelete = contracts.find(c => c.id === id);
         await deleteDoc(doc(db, 'contracts', id));
-        toast.success('Contrato excluído!');
+        
+        if (contractToDelete) {
+          // Free up property/storage
+          if (!contractToDelete.propertyId.startsWith('storage-')) {
+            const propertyRef = doc(db, 'properties', contractToDelete.propertyId);
+            await updateDoc(propertyRef, {
+              currentTenantId: null,
+              status: 'vacant'
+            });
+          } else {
+            const storageId = contractToDelete.propertyId.replace('storage-', '');
+            const storageRef = doc(db, 'storages', storageId);
+            await updateDoc(storageRef, {
+              contractStartDate: "",
+              contractEndDate: "",
+              monthlyCost: 0
+            });
+          }
+          
+          // Free up tenant
+          if (contractToDelete.tenantId !== 'proprietario') {
+            const tenantRef = doc(db, 'tenants', contractToDelete.tenantId);
+            await updateDoc(tenantRef, {
+              propertyId: null,
+              status: 'waiting'
+            });
+          }
+        }
+
+        toast.success('Contrato excluído com sucesso!');
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, 'contracts');
         toast.error('Erro ao excluir contrato.');
@@ -336,6 +697,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
               <div className="grid grid-cols-3 sm:grid-cols-3 gap-2">
                 {[
                   { tag: 'Contrato Locação', type: 'Contrato de Locação', icon: FileText },
+                  { tag: 'Renovar Aluguel', type: 'Termo de Renovação de Aluguel', icon: FileText },
                   { tag: 'Termo Vistoria', type: 'Termo Vistoria', icon: FileText },
                   { tag: 'Recibo Aluguel', type: 'Recibo de Aluguel', icon: FileText },
                   { tag: 'Recibo Caução', type: 'Recibo Caução', icon: FileText },
@@ -379,19 +741,39 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
         </div>
       </header>
 
+      {/* Banner de Contratos Vencidos */}
+      {(() => {
+        const todayStr = format(new Date(), 'yyyy-MM-dd');
+        const expiredActiveCount = contracts.filter(c => c.status === 'active' && c.endDate && c.endDate < todayStr).length;
+        if (expiredActiveCount > 0) {
+          return (
+            <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex items-start gap-3 text-rose-800 shadow-sm mb-6">
+              <AlertTriangle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5 animate-pulse" />
+              <div>
+                <h4 className="font-bold text-sm">Contratos Vencidos Detectados!</h4>
+                <p className="text-xs text-rose-600 mt-1 leading-relaxed">
+                  Você possui {expiredActiveCount} {expiredActiveCount === 1 ? 'contrato vencido' : 'contratos vencidos'} que ainda {expiredActiveCount === 1 ? 'está configurado' : 'estão configurados'} como <strong className="font-bold">Ativo</strong>. Regularize a situação editando o contrato para renovar a data de término ou mudar o status de Ativo para <strong className="font-bold">Encerrado</strong> / <strong className="font-bold">Quebrado</strong>.
+                </p>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      })()}
+
       <div className="flex flex-col md:flex-row gap-4 items-center bg-white p-4 rounded-xl shadow-sm border border-slate-100">
         <div className="relative flex-1 w-full">
           <Search className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input 
             type="text" 
-            placeholder="Buscar por inquilino ou móvel..." 
+            placeholder="Buscar por inquilino ou imóvel..." 
             className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 hover:border-slate-300 font-medium text-slate-700 placeholder:text-slate-400"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
           />
         </div>
         <div className="flex gap-2 w-full md:w-auto shrink-0 overflow-x-auto pb-2 md:pb-0 hide-scrollbar">
-          {(['all', 'active', 'ended', 'broken'] as const).map(status => (
+          {(['all', 'active', 'ended', 'broken', 'archived'] as const).map(status => (
             <button
               key={status}
               onClick={() => setFilterStatus(status)}
@@ -404,53 +786,83 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
             >
               {status === 'all' ? 'Todos' : 
                status === 'active' ? 'Ativos' : 
-               status === 'ended' ? 'Encerrados' : 'Quebrados'}
+               status === 'ended' ? 'Encerrados' : 
+               status === 'broken' ? 'Quebrados' : 'Arquivados'}
             </button>
           ))}
         </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {filteredContracts.map(contract => (
-          <div key={contract.id} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col hover:border-indigo-200 hover:shadow-md transition-all group">
-            <div className="flex justify-between items-start mb-4">
-               <div>
-                  <h3 className="font-bold text-slate-900 truncate pr-4" title={getTenantName(contract.tenantId)}>
-                     {getTenantName(contract.tenantId)}
-                  </h3>
-                  <p className="text-xs font-semibold text-slate-500 mt-0.5 truncate" title={getPropertyName(contract.propertyId)}>
-                     {getPropertyName(contract.propertyId)}
-                  </p>
-               </div>
-               <span className={cn(
-                  "px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg shrink-0",
-                  contract.status === 'active' ? "bg-emerald-100 text-emerald-800" :
-                  contract.status === 'ended' ? "bg-slate-100 text-slate-600" : "bg-red-100 text-red-800"
-               )}>
-                  {contract.status === 'active' ? 'Ativo' : contract.status === 'ended' ? 'Encerrado' : 'Quebrado'}
-               </span>
-            </div>
+        {filteredContracts.map(contract => {
+          const todayStr = format(new Date(), 'yyyy-MM-dd');
+          const isExpired = contract.status === 'active' && contract.endDate && contract.endDate < todayStr;
 
-            <div className="space-y-3 mb-6 flex-1">
-               <div className="flex justify-between text-sm">
-                  <span className="text-slate-500 font-medium">Aluguel:</span>
-                  <span className="font-bold text-slate-900">
-                    R$ {contract.rentValue?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                  </span>
-               </div>
-               <div className="flex justify-between text-sm border-b border-slate-100 pb-3">
-                  <span className="text-slate-500 font-medium">Vencimento:</span>
-                  <span className="font-bold text-slate-900">Dia {contract.paymentDay}</span>
-               </div>
-               
-               <div className="flex justify-between text-xs">
-                  <span className="text-slate-500">Início:</span>
-                  <span className="font-semibold text-slate-700">
-                    {contract.startDate ? format(parseISO(contract.startDate), 'dd/MM/yyyy') : 'N/A'}
-                  </span>
-               </div>
-            </div>
+          return (
+            <div key={contract.id} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col hover:border-indigo-200 hover:shadow-md transition-all group">
+              <div className="flex justify-between items-start mb-4">
+                 <div>
+                    <h3 className="font-bold text-slate-900 truncate pr-4" title={getTenantName(contract.tenantId)}>
+                       {getTenantName(contract.tenantId)}
+                    </h3>
+                    <p className="text-xs font-semibold text-slate-500 mt-0.5 truncate" title={getPropertyName(contract.propertyId)}>
+                       {getPropertyName(contract.propertyId)}
+                    </p>
+                 </div>
+                 <span className={cn(
+                    "px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg shrink-0",
+                    isExpired ? "bg-rose-100 text-rose-700 border border-rose-200" :
+                    contract.status === 'active' ? "bg-emerald-100 text-emerald-800" :
+                    contract.status === 'ended' ? "bg-slate-100 text-slate-600" : 
+                    contract.status === 'broken' ? "bg-red-100 text-red-800" : "bg-indigo-100 text-indigo-800"
+                 )}>
+                    {isExpired ? 'Vencido (Ativo)' :
+                     contract.status === 'active' ? 'Ativo' : 
+                     contract.status === 'ended' ? 'Encerrado' : 
+                     contract.status === 'broken' ? 'Quebrado' : 'Arquivado'}
+                 </span>
+              </div>
 
+              <div className="space-y-3 mb-6 flex-1">
+                 <div className="flex justify-between text-sm">
+                    <span className="text-slate-500 font-medium">Aluguel:</span>
+                    <span className="font-bold text-slate-900">
+                      R$ {contract.rentValue?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    </span>
+                 </div>
+                 <div className="flex justify-between text-sm border-b border-slate-100 pb-3">
+                    <span className="text-slate-500 font-medium">Vencimento:</span>
+                    <span className="font-bold text-slate-900">Dia {contract.paymentDay}</span>
+                 </div>
+                 
+                 <div className="flex justify-between text-xs">
+                    <span className="text-slate-500">Início:</span>
+                    <span className="font-semibold text-slate-700">
+                      {contract.startDate ? format(parseISO(contract.startDate), 'dd/MM/yyyy') : 'N/A'}
+                    </span>
+                 </div>
+                 {contract.endDate && (
+                    <div className="flex justify-between text-xs mt-1">
+                       <span className="text-slate-500">Término:</span>
+                       <span className={cn(
+                          "font-semibold",
+                          isExpired ? "text-rose-600 font-bold" : "text-slate-700"
+                       )}>
+                          {format(parseISO(contract.endDate), 'dd/MM/yyyy')}
+                       </span>
+                    </div>
+                 )}
+                 {contract.status === 'active' && (
+                    <div className={`flex gap-2 mt-4 pt-4 border-t ${isExpired ? 'border-rose-100' : 'border-slate-100'}`}>
+                       <button onClick={() => handleOpenRenewArchive(contract, 'renew')} className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex justify-center items-center gap-1.5 ${isExpired ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-sm' : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-800'}`}>
+                          <RotateCcw className="w-3.5 h-3.5" /> Renovar
+                       </button>
+                       <button onClick={() => handleOpenRenewArchive(contract, 'archive')} className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex justify-center items-center gap-1.5 ${isExpired ? 'bg-white border border-rose-200 hover:bg-rose-50 text-rose-700' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}`}>
+                          <Archive className="w-3.5 h-3.5" /> Arquivar
+                       </button>
+                    </div>
+                 )}
+              </div>
             <div className="flex items-center justify-between border-t border-slate-100 pt-4 mt-auto">
                 {contract.contractFile ? (
                    <a href={contract.contractFile} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-3 py-1.5 rounded-lg">
@@ -474,7 +886,8 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                </div>
             </div>
           </div>
-        ))}
+        );
+      })}
 
         {filteredContracts.length === 0 && (
           <div className="col-span-full py-16 flex flex-col items-center justify-center text-center">
@@ -498,12 +911,27 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
             </div>
             
             <div className="p-6 overflow-y-auto space-y-6 text-sm">
+                {warnings.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2 animate-fade-in text-amber-800">
+                    <div className="flex items-center gap-2 font-bold text-amber-900">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                      <span>Aviso de Procedimento / Duplicidade</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-1.5 text-xs leading-relaxed">
+                      {warnings.map((warning, idx) => (
+                        <li key={idx} className="marker:text-amber-600">{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 <div className="grid sm:grid-cols-2 gap-5">
                     <div className="space-y-2">
                         <label className="font-semibold text-slate-700">Inquilino <span className="text-red-500">*</span></label>
                         <select className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none" 
-                                value={formData.tenantId || ''} onChange={e => setFormData({...formData, tenantId: e.target.value})}>
+                                value={formData.tenantId || ''} onChange={e => handleTenantChange(e.target.value)}>
                            <option value="">Selecione...</option>
+                           <option value="proprietario">Eu mesmo (Proprietário - Depósito/Garagem)</option>
                            {tenants.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                         </select>
                     </div>
@@ -517,6 +945,15 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                                {p.name} ({p.status === 'vacant' ? 'Livre' : p.status === 'rented' ? 'Alugado' : 'Reforma'}) - R$ {p.rentValue?.toLocaleString()}
                              </option>
                            ))}
+                           {storages && storages.length > 0 && (
+                             <optgroup label="Depósitos e Garagens">
+                               {storages.map(s => (
+                                 <option key={`storage-${s.id}`} value={`storage-${s.id}`}>
+                                   {s.name} - R$ {s.monthlyCost?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                 </option>
+                               ))}
+                             </optgroup>
+                           )}
                         </select>
                     </div>
                 </div>
@@ -544,7 +981,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                    </div>
                    <div className="space-y-2">
                       <label className="font-semibold text-slate-700">Vencimento (Dia) <span className="text-red-500">*</span></label>
-                      <input type="number" min="1" max="31" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                      <input type="text" inputMode="numeric" pattern="[0-9]*" min="1" max="31" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
                              value={formData.paymentDay} onFocus={e => e.target.select()} onChange={e => setFormData({...formData, paymentDay: Number(e.target.value)})} />
                    </div>
                    <div className="space-y-2">
@@ -565,7 +1002,8 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                        <div className="space-y-1.5">
                           <label className="text-xs font-bold text-slate-500 uppercase">Valor Caução (R$)</label>
                           <input 
-                            type="number"
+                            type="text"
+                            inputMode="decimal"
                             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
                                                          value={formData.depositValue || ''}
                              onFocus={e => e.target.select()}
@@ -576,7 +1014,9 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                        <div className="space-y-1.5">
                           <label className="text-xs font-bold text-slate-500 uppercase">Parcelas</label>
                           <input 
-                            type="number"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
                             min="1"
                             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
                                                          value={formData.depositInstallments || 1}
@@ -587,7 +1027,9 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                        <div className="space-y-1.5 sm:col-span-2">
                           <label className="text-xs font-bold text-slate-500 uppercase">Data/Dia Pagamento Caução</label>
                           <input 
-                            type="number"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
                             min="1"
                             max="31"
                             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
@@ -614,7 +1056,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                             <div>
                                 <label className="text-xs font-bold text-slate-500 uppercase">Multa Fixa (R$)</label>
                                 <div className="flex gap-2 mt-1.5">
-                                    <input type="number" step="0.01" className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
+                                    <input type="text" inputMode="decimal" step="0.01" className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
                                            value={formData.lateFeePenalty || 0} onFocus={e => e.target.select()} onChange={e => setFormData({...formData, lateFeePenalty: Number(e.target.value)})} />
                                     <div className="px-3 py-2 border rounded-lg bg-slate-50 text-slate-500 font-bold shadow-sm font-mono flex items-center justify-center">
                                        R$
@@ -623,7 +1065,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                             </div>
                             <div>
                                 <label className="text-xs font-bold text-slate-500 uppercase">Juros ao dia (%)</label>
-                                <input type="number" step="0.001" className="w-full mt-1.5 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
+                                <input type="text" inputMode="decimal" step="0.001" className="w-full mt-1.5 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white shadow-sm"
                                        value={formData.lateFeeDaily || 0} onFocus={e => e.target.select()} onChange={e => setFormData({...formData, lateFeeDaily: Number(e.target.value)})} />
                             </div>
                         </div>
@@ -680,6 +1122,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                         className="text-xs px-2 py-2 font-medium rounded-lg bg-white border border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 max-w-[150px]"
                       >
                         <option value="Contrato de Locação">Contrato Locação</option>
+                        <option value="Termo de Renovação de Aluguel">Renovação de Aluguel</option>
                         <option value="Contrato Simples">Contrato Simples</option>
                         <option value="Recibo Caução">Recibo Caução</option>
                         <option value="Termo Vistoria">Termo Vistoria</option>
@@ -734,6 +1177,7 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
                       <option value="active">🟢 Ativo</option>
                       <option value="ended">⚪ Encerrado (Fim natural)</option>
                       <option value="broken">🔴 Quebrado (Rescisão antecipada)</option>
+                      <option value="archived">📁 Arquivado (Imóvel/Inquilino Excluído)</option>
                    </select>
                 </div>
             </div>
@@ -796,6 +1240,77 @@ export const ContractsView = ({ contracts, properties, tenants, onSecurityCheck,
             </div>
          </div>
       )}
+
+      {isRenewArchiveModalOpen && targetContract && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl flex flex-col overflow-hidden">
+            <div className={`p-6 flex items-center gap-4 ${renewArchiveMode === 'renew' ? 'bg-emerald-600' : 'bg-slate-800'}`}>
+              <div className="p-3 bg-white/20 rounded-2xl text-white">
+                {renewArchiveMode === 'renew' ? <RotateCcw className="w-6 h-6" /> : <Archive className="w-6 h-6" />}
+              </div>
+              <div className="text-white">
+                <h2 className="text-xl font-bold tracking-tight">
+                  {renewArchiveMode === 'renew' ? 'Renovar / Ajustar' : 'Arquivar Contrato'}
+                </h2>
+                <p className="text-sm opacity-90">
+                  {getTenantName(targetContract.tenantId)}
+                </p>
+              </div>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              {renewArchiveMode === 'renew' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Nova Data de Término</label>
+                  <input
+                    type="date"
+                    className="w-full bg-slate-50 text-slate-900 rounded-xl px-4 py-3 border border-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
+                    value={raEndDate}
+                    onChange={(e) => setRaEndDate(e.target.value)}
+                  />
+                  <p className="text-xs text-slate-500">
+                    O contrato voltará para o status "Ativo". Deixe em branco se for indeterminado.
+                  </p>
+                </div>
+              )}
+              
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">Observações sobre o Acordo</label>
+                <textarea
+                  className="w-full bg-slate-50 text-slate-900 rounded-xl px-4 py-3 border border-slate-200 focus:outline-none focus:border-indigo-500 transition-colors resize-none"
+                  rows={4}
+                  placeholder={renewArchiveMode === 'renew' ? "Ex: Renovou por mais 12 meses com aluguel ajustado..." : "Ex: Contrato encerrado, chaves entregues..."}
+                  value={raObservations}
+                  onChange={(e) => setRaObservations(e.target.value)}
+                ></textarea>
+                <p className="text-xs text-slate-500">
+                  Importante para lembrar o que foi combinado com o inquilino.
+                </p>
+              </div>
+            </div>
+            
+            <div className="p-6 border-t border-slate-100 bg-slate-50 flex gap-3 justify-end shrink-0">
+              <button
+                onClick={() => setIsRenewArchiveModalOpen(false)}
+                className="px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition"
+                disabled={isSubmitting}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleRenewArchiveSubmit}
+                disabled={isSubmitting}
+                className={`px-6 py-2.5 rounded-xl font-bold text-white shadow-sm transition flex justify-center items-center gap-2 ${
+                  renewArchiveMode === 'renew' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-800 hover:bg-slate-900'
+                }`}
+              >
+                {isSubmitting ? 'Salvando...' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

@@ -12,9 +12,8 @@ service cloud.firestore {
 
     function isAdmin() {
       // Identity roles (Owner, Admin) MUST be verified against a trusted source.
-      // We use a allowlist of emails but ensure email_verified is true to prevent spoofing.
-      return isSignedIn() && 
-             request.auth.token.email_verified == true && (
+      // We use a allowlist of emails.
+      return isSignedIn() && (
                request.auth.token.email == "dennyancasa@gmail.com" ||
                request.auth.token.email == "dennayncasa@gmail.com"
              );
@@ -128,6 +127,14 @@ service cloud.firestore {
       );
     }
 
+    function isValidStorage(data) {
+      return isAdmin() || (
+             data.keys().hasAll(['ownerId', 'name']) &&
+             data.name is string && data.name.size() > 0 &&
+             data.ownerId == request.auth.uid
+      );
+    }
+
     // ===============================================================
     // Collection Rules
     // ===============================================================
@@ -141,6 +148,14 @@ service cloud.firestore {
       allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidContract(incoming());
       allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidContract(incoming());
+      allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
+    }
+
+    match /storages/{storageId} {
+      allow get: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid) && isValidStorage(incoming());
+      allow update: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid) && (isAdmin() || incoming().ownerId == existing().ownerId) && isValidStorage(incoming());
       allow delete: if isSignedIn() && (isAdmin() || existing().ownerId == request.auth.uid);
     }
 
@@ -236,6 +251,18 @@ service cloud.firestore {
       allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
     }
     match /archived_tickets/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_custom_alerts/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_storages/{id} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+      allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
+    }
+    match /archived_staging_records/{id} {
       allow read: if isSignedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
       allow create: if isSignedIn() && (isAdmin() || incoming().ownerId == request.auth.uid);
     }

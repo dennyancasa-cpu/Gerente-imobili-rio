@@ -9,10 +9,13 @@ interface Message {
 
 const getBotResponse = (input: string): string => {
   const lowerInput = input.toLowerCase();
-  const prefix = "Meste IA: ";
+  const prefix = "Mestre IA: ";
   
   if (lowerInput.includes('recibo') || lowerInput.includes('comprovante') || lowerInput.includes('quitação')) {
     return prefix + 'Para **gerar um recibo**, vá na aba "Financeiro", encontre o pagamento (em "Recebimentos" ou histórico) e clique em "Gerar Recibo". Você pode escolher entre o **Recibo Simples** ou o **Recibo Detalhado** (que inclui dados do imóvel e inquilino).';
+  }
+  if (lowerInput.includes('garagem') || lowerInput.includes('garagens') || lowerInput.includes('espaço') || lowerInput.includes('espaco') || lowerInput.includes('storage') || lowerInput.includes('galpão') || lowerInput.includes('galpao') || lowerInput.includes('box') || (lowerInput.includes('depósito') && !lowerInput.includes('caução') && !lowerInput.includes('garantia'))) {
+    return prefix + 'Para gerenciar **Aluguel de Espaço (Depósitos e Garagens)**, utilize a aba dedicada no menu lateral. Lá você pode cadastrar novos espaços locados, automatizar a geração de mensalidades clicando em **"Gerar Cobranças"** e acompanhar/confirmar os pagamentos diretamente. O faturamento dessas locações utiliza a cor **Azul Indigo** para diferenciação visual rápida!';
   }
   if (lowerInput.includes('imóvel') || lowerInput.includes('imovel') || lowerInput.includes('casa') || lowerInput.includes('apartamento')) {
     return prefix + 'Para **cadastrar um imóvel**, utilize a aba "Imóveis" > "Novo Imóvel". Preencha os detalhes como endereço, valor base e dia de vencimento. Você também pode editar imóveis existentes para atualizar fotos ou valores.';
@@ -20,7 +23,7 @@ const getBotResponse = (input: string): string => {
   if (lowerInput.includes('inquilino') || lowerInput.includes('morador')) {
     return prefix + 'Na aba "Inquilinos", você pode cadastrar novos moradores. Lembre-se de mudar o status para **"Alocado"** e selecionar o imóvel correspondente para que o sistema comece a gerar as cobranças mensais.';
   }
-  if (lowerInput.includes('caução') || lowerInput.includes('caucao') || lowerInput.includes('depósito') || lowerInput.includes('garantia')) {
+  if (lowerInput.includes('caução') || lowerInput.includes('caucao') || lowerInput.includes('depósito de garantia') || lowerInput.includes('garantia')) {
     return prefix + 'O sistema permite registrar o **Caução** no momento da alocação do inquilino. Este valor fica registrado como um crédito ou garantia, facilitando o acerto de contas ao final do contrato.';
   }
   if (lowerInput.includes('acordo') || lowerInput.includes('renegoc') || lowerInput.includes('atrasad') || lowerInput.includes('parcela')) {
@@ -36,7 +39,10 @@ const getBotResponse = (input: string): string => {
     return prefix + 'Você pode registrar **Despesas** (como reformas, IPTU ou taxas) na aba Financeiro. Isso é essencial para calcular seu lucro líquido real ao final de cada mês.';
   }
   if (lowerInput.includes('versão') || lowerInput.includes('versao') || lowerInput.includes('atualiz')) {
-    return prefix + 'O sistema está na versão **6.0.0**. Estamos sempre evoluindo! Nossa última grande novidade é a **Central IA** para migração inteligente de contratos.';
+    return prefix + 'O sistema está na versão **6.4.0**. Estamos sempre evoluindo! Nossa última grande novidade é a ferramenta **Aluguel de Espaço** integrada diretamente ao hub financeiro, além da **Renovação de Aluguel** simplificada na aba de Contratos e a **Central IA** para migração inteligente.';
+  }
+  if (lowerInput.includes('renov') || lowerInput.includes('manter') || lowerInput.includes('prorrog')) {
+    return prefix + 'Para **renovar um aluguel**, utilize nossa nova ferramenta de contratos! Na aba **Contratos**, selecione **"Renovação de Aluguel"** no organizador inteligente ou escolha o modelo correspondente. Isso facilita estender a vigência do contrato mantendo as condições acordadas entre proprietário e inquilino em um novo termo aditivo de forma rápida e segura.';
   }
   if (lowerInput.includes('import') || lowerInput.includes('contrato já tenho') || lowerInput.includes('central ia')) {
     return prefix + 'A **Central IA** (no menu lateral) permite que você cole o texto ou anexe fotos de um contrato de aluguel que você já tem. A nossa inteligência vai ler, criar o imóvel, cadastrar o inquilino automaticamente e ainda apontar pontos de melhoria no seu documento!';
@@ -48,7 +54,7 @@ const getBotResponse = (input: string): string => {
     return prefix + 'Olá! Eu sou o assistente inteligente do Gerente Imobiliário. Como posso facilitar sua gestão hoje?';
   }
 
-  return prefix + 'Como sua inteligência artificial de suporte, posso te ajudar com: **Importação por IA**, **Gerar Recibos**, **Cadastrar Imóveis**, **Gerenciar Inquilinos**, **Lançar Despesas**, **Realizar Acordos** ou configurar a **Central Cloud**. O que deseja saber agora?';
+  return prefix + 'Como sua inteligência artificial de suporte, posso te ajudar com: **Importação por IA**, **Renovação de Aluguel**, **Gerar Recibos**, **Cadastrar Imóveis**, **Gerenciar Inquilinos**, **Lançar Despesas**, **Realizar Acordos** ou configurar a **Central Cloud**. O que deseja saber agora?';
 };
 
 export function HelpView() {
@@ -154,18 +160,17 @@ export function HelpView() {
                 <Bot className="w-6 h-6" />
               </div>
               <div>
-                <span className="bg-emerald-500 text-white px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider">Novo no v6.0</span>
-                <h3 className="text-xl font-bold text-slate-800">1. Central IA (Importação Mágica)</h3>
+                <span className="bg-emerald-500 text-white px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider">Novo no v6.1</span>
+                <h3 className="text-xl font-bold text-slate-800">1. Central IA e Renovação Simplificada</h3>
               </div>
             </div>
             <p className="text-slate-600 leading-relaxed">
-              Já tem um contrato alugado e quer passar a gestão para o app? Não digite tudo manualmente.
+              O sistema se tornou ainda mais prático para contratos novos e existentes:
             </p>
             <ul className="space-y-3 mt-4 text-sm text-indigo-900/80">
-              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Acesse <strong>Central IA</strong> no menu lateral.</li>
-              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Cole o texto do seu contrato antigo ou tire uma foto dele.</li>
-              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Clique em "Extrair". A inteligência artificial vai criar o Inquilino e o Imóvel de uma vez só!</li>
-              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Ainda receberá dicas do Consultor Jurídico de onde o seu antigo contrato estava arriscado.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> <strong>Renovação de Aluguel:</strong> Se o proprietário e inquilino concordarem em manter a locação, gere o termo de renovação diretamente com um clique no organizador inteligente de Contratos.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> <strong>Central IA (Importação):</strong> Cole o texto ou tire foto de qualquer contrato antigo para que o robô faça o cadastro completo num piscar de olhos.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> <strong>Auditoria Jurídica:</strong> Obtenha observações e alertas automáticos sobre cláusulas perigosas.</li>
             </ul>
           </div>
 
@@ -226,6 +231,22 @@ export function HelpView() {
               <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> No <strong>Financeiro</strong>, localize o pagamento desejado.</li>
               <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> Clique no botão <strong>Gerar Recibo</strong>.</li>
               <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-purple-500 shrink-0" /> Escolha entre Simples ou Detalhado. Você pode imprimir ou salvar em PDF para enviar ao inquilino.</li>
+            </ul>
+          </div>
+
+          <div className="bg-white p-6 rounded-3xl border shadow-sm space-y-4 hover:shadow-md transition-all">
+            <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mb-4">
+              <DollarSign className="w-6 h-6" />
+            </div>
+            <h3 className="text-xl font-bold text-slate-800">6. Aluguel de Espaço (Depósitos/Garagens)</h3>
+            <p className="text-slate-600 leading-relaxed">
+              Gerencie a locação de garagens, boxes, galpões e depósitos comerciais ou residenciais de forma organizada.
+            </p>
+            <ul className="space-y-3 mt-4 text-sm text-slate-600">
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Acesse a aba <strong>Aluguel de Espaço</strong> no menu lateral e clique em <strong>Cadastrar Novo Espaço</strong>.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Insira os dados de vigência, valor, dados do locador e vencimento. Registre o depósito caução e controle o status do reembolso.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> Clique em <strong>Gerar Cobranças</strong> para preencher o cronograma financeiro e depois use o botão <strong>Confirmar Pagamento</strong> para dar baixa.</li>
+              <li className="flex gap-3"><CheckCircle2 className="w-5 h-5 text-indigo-500 shrink-0" /> <strong>Diferenciação Visual:</strong> Os recebimentos dessas locações usam a cor <strong>Azul Indigo</strong> para fácil distinção dos aluguéis residenciais padrão.</li>
             </ul>
           </div>
 
