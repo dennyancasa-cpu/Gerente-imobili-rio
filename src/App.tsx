@@ -3983,6 +3983,44 @@ const PropertiesView = ({
               </div>
             </div>
           </div>
+          
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
+              Informações Financeiras
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Valor de Mercado Estimado (R$)
+                </label>
+                <Input
+                  id="marketValue"
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="Ex: 350000"
+                  value={formData.marketValue || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, marketValue: Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Chave PIX (Para Recebimento)
+                </label>
+                <Input
+                  id="pixKey"
+                  type="text"
+                  placeholder="CPF, E-mail, Celular ou Aleatória"
+                  value={formData.pixKey || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, pixKey: e.target.value })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+
           {formData.status !== "renovation" && (
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
@@ -11948,7 +11986,7 @@ const SettingsView = ({
       if (regs.length === 0) {
         logs.push("⚙️ Tentando registrar Service Worker forçadamente...");
         try {
-          await navigator.serviceWorker.register("/sw.js?v=6.4.0");
+          await navigator.serviceWorker.register("/sw.js?v=6.6.0");
           logs.push("✅ SW registrado forçadamente!");
         } catch (e: any) {
           logs.push(`❌ Erro ao registrar SW: ${e.message}`);
@@ -12637,7 +12675,7 @@ const SettingsView = ({
             Gerente Imobiliário
           </p>
           <p className="text-[10px] font-medium text-slate-400 mt-1">
-            Versão 6.4.0 <span className="mx-1.5 opacity-50">•</span> 30/06/2026
+            Versão 6.6.0 <span className="mx-1.5 opacity-50">•</span> 27/07/2026
           </p>
         </div>
       </div>
@@ -14034,10 +14072,10 @@ const UnifiedFinancialHub = ({
                   : "bg-slate-200/50 text-slate-400",
               )}
             >
-              <Box className="w-3.5 h-3.5 sm:w-4 sm:h-4 relative z-10" />
+              <Warehouse className="w-3.5 h-3.5 sm:w-4 sm:h-4 relative z-10" />
             </div>
             <span className="relative z-10 tracking-tight text-center leading-tight">
-              Aluguel de Espaço
+              Espaço & Ativos
             </span>
           </button>
         </div>
@@ -14051,6 +14089,7 @@ const UnifiedFinancialHub = ({
           expenses={financialProps.expenses}
           agreements={financialProps.agreements}
           storages={storagesProps.storages}
+          tenants={financialProps.tenants}
         />
       ) : activeTab === "financial" ? (
         <FinancialView {...financialProps} />
@@ -14108,7 +14147,7 @@ export default function App() {
 
   useEffect(() => {
     const handleSWUpdate = () => {
-      toast.info("Uma nova versão do Gerente Imobiliário (v6.4.0) está disponível!", {
+      toast.info("Uma nova versão do Gerente Imobiliário (v6.6.0) está disponível!", {
         description: "Recomendamos atualizar para carregar as melhorias mais recentes e evitar erros. Clique no botão abaixo para carregar agora.",
         duration: Infinity, // Mantém ativo até interação do usuário
         action: {
@@ -15109,6 +15148,7 @@ export default function App() {
             password: t.accessPassword || "",
             tenantName: t.name ? t.name.split(" ")[0] : "Inquilino",
             propertyName: relatedProperty ? relatedProperty.name : "Imóvel",
+            propertyPixKey: relatedProperty?.pixKey || "",
             payments: relatedPayments.map((p) => ({
               id: p.id,
               amount: p.amount,
@@ -15118,6 +15158,7 @@ export default function App() {
               status: p.status,
               type: p.type || "rent",
               description: p.description || "",
+              receiptUrl: p.receiptUrl || "",
             })),
           };
         });
@@ -15142,6 +15183,7 @@ export default function App() {
                   tenantId: item.id,
                   tenantName: item.tenantName,
                   propertyName: item.propertyName,
+                  propertyPixKey: item.propertyPixKey,
                   payments: item.payments,
                   lastSynced: new Date().toISOString()
                 }, { merge: true });
@@ -15773,6 +15815,7 @@ export default function App() {
       { id: "tenants", label: "Inquilinos", icon: Users },
       { id: "contracts", label: "Contratos", icon: FileText },
       { id: "receivables", label: "Financeiro", icon: DollarSign },
+      { id: "storages", label: "Espaço & Ativos", icon: Warehouse },
       { id: "settings", label: "Configurações", icon: Settings },
     ];
 
@@ -18661,25 +18704,67 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-4">
-                          <div className="font-extrabold text-sm text-white">
-                            {formatBRL(p.amount)}
-                          </div>
-                          <span
-                            className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${
-                              isPaid
-                                ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
+                        <div className="flex flex-col items-end sm:items-end w-full sm:w-auto gap-3">
+                          <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-4">
+                            <div className="font-extrabold text-sm text-white">
+                              {formatBRL(p.amount)}
+                            </div>
+                            <span
+                              className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${
+                                isPaid
+                                  ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
+                                  : isLate
+                                    ? "bg-rose-500/10 text-rose-500 border border-rose-500/20"
+                                    : "bg-amber-500/10 text-amber-500 border border-amber-500/20"
+                              }`}
+                            >
+                              {isPaid
+                                ? "Pago"
                                 : isLate
-                                  ? "bg-rose-500/10 text-rose-500 border border-rose-500/20"
-                                  : "bg-amber-500/10 text-amber-500 border border-amber-500/20"
-                            }`}
-                          >
-                            {isPaid
-                              ? "Pago"
-                              : isLate
-                                ? "Atrasado"
-                                : "Em Aberto"}
-                          </span>
+                                  ? "Atrasado"
+                                  : "Em Aberto"}
+                            </span>
+                          </div>
+                          
+                          <div className="flex flex-wrap gap-2 justify-end w-full">
+                            {!isPaid && (
+                                <button
+                                  onClick={() => {
+                                    if (tenantUser.propertyPixKey) {
+                                      navigator.clipboard.writeText(tenantUser.propertyPixKey);
+                                      toast.success("Chave PIX copiada! " + tenantUser.propertyPixKey);
+                                    } else {
+                                      toast.error("O proprietário ainda não cadastrou uma chave PIX.");
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 bg-[#818cf8]/20 hover:bg-[#818cf8]/30 text-[#818cf8] border border-[#818cf8]/30 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                                >
+                                  <QrCode className="w-3.5 h-3.5" /> Pagar com PIX
+                                </button>
+                            )}
+                            
+                            {isPaid && p.receiptUrl && (
+                                <a
+                                  href={p.receiptUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                                >
+                                  <Download className="w-3.5 h-3.5" /> Recibo
+                                </a>
+                            )}
+                            
+                            {!isPaid && p.receiptUrl && (
+                                <a
+                                  href={p.receiptUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                                >
+                                  <Download className="w-3.5 h-3.5" /> 2ª Via / Boleto
+                                </a>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -18687,6 +18772,73 @@ export default function App() {
               </div>
             )}
           </div>
+
+          <div className="bg-[#111622]/40 border border-white/5 rounded-3xl p-6 backdrop-blur-md mb-12">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                <Hammer className="w-5 h-5 text-amber-500" />
+                Chamados de Manutenção
+              </h2>
+              <button
+                onClick={() => {
+                  const title = window.prompt("Qual o problema?");
+                  if (!title) return;
+                  const description = window.prompt("Descreva o problema com mais detalhes:");
+                  if (!description) return;
+                  
+                  const newTicket = {
+                    title,
+                    description,
+                    tenantId: tenantUser.tenantId,
+                    propertyId: tenantUser.propertyId || '', // we need propertyId, but tenantUser might not have it directly if we didn't add it. We can find it from the global `tenants` if available.
+                    status: "open",
+                    priority: "medium",
+                    createdAt: new Date().toISOString()
+                  };
+                  
+                  const relatedTenant = tenants.find(t => t.id === tenantUser.tenantId);
+                  if (relatedTenant && relatedTenant.propertyId) {
+                      newTicket.propertyId = relatedTenant.propertyId;
+                  }
+                  
+                  addDoc(collection(db, "tickets"), newTicket)
+                    .then(() => toast.success("Chamado aberto com sucesso!"))
+                    .catch(err => toast.error("Erro ao abrir chamado."));
+                }}
+                className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> Novo Chamado
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {tickets.filter(t => t.tenantId === tenantUser.tenantId).length === 0 ? (
+                <div className="text-center py-8 text-slate-500 text-sm">
+                  Você não tem nenhum chamado aberto.
+                </div>
+              ) : (
+                tickets
+                  .filter(t => t.tenantId === tenantUser.tenantId)
+                  .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                  .map(t => (
+                    <div key={t.id} className="bg-[#161b26]/50 border border-white/5 p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                      <div>
+                        <div className="font-semibold text-sm text-slate-200">{t.title}</div>
+                        <div className="text-xs text-slate-400 mt-0.5">{t.description}</div>
+                      </div>
+                      <span className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full shrink-0 ${
+                        t.status === 'open' ? 'bg-rose-500/10 text-rose-500' :
+                        t.status === 'in_progress' ? 'bg-amber-500/10 text-amber-500' :
+                        'bg-emerald-500/10 text-emerald-500'
+                      }`}>
+                        {t.status === 'open' ? 'Aberto' : t.status === 'in_progress' ? 'Em Andamento' : 'Resolvido'}
+                      </span>
+                    </div>
+                  ))
+              )}
+            </div>
+          </div>
+
         </div>
       </div>
     );

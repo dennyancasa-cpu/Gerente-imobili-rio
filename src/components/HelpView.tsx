@@ -39,7 +39,7 @@ const getBotResponse = (input: string): string => {
     return prefix + 'Você pode registrar **Despesas** (como reformas, IPTU ou taxas) na aba Financeiro. Isso é essencial para calcular seu lucro líquido real ao final de cada mês.';
   }
   if (lowerInput.includes('versão') || lowerInput.includes('versao') || lowerInput.includes('atualiz')) {
-    return prefix + 'O sistema está na versão **6.4.0**. Estamos sempre evoluindo! Nossa última grande novidade é a ferramenta **Aluguel de Espaço** integrada diretamente ao hub financeiro, além da **Renovação de Aluguel** simplificada na aba de Contratos e a **Central IA** para migração inteligente.';
+    return prefix + 'O sistema está na versão **6.6.0**. Estamos sempre evoluindo! Nossa última grande novidade é a ferramenta **Aluguel de Espaço** integrada diretamente ao hub financeiro, além da **Renovação de Aluguel** simplificada na aba de Contratos e a **Central IA** para migração inteligente.';
   }
   if (lowerInput.includes('renov') || lowerInput.includes('manter') || lowerInput.includes('prorrog')) {
     return prefix + 'Para **renovar um aluguel**, utilize nossa nova ferramenta de contratos! Na aba **Contratos**, selecione **"Renovação de Aluguel"** no organizador inteligente ou escolha o modelo correspondente. Isso facilita estender a vigência do contrato mantendo as condições acordadas entre proprietário e inquilino em um novo termo aditivo de forma rápida e segura.';

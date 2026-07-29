@@ -96,6 +96,7 @@ export const Auth: React.FC<AuthProps> = ({ onTenantLogin }) => {
             tenantId: portalData.tenantId,
             tenantName: portalData.tenantName || 'Inquilino',
             propertyName: portalData.propertyName || 'Imóvel',
+            propertyPixKey: portalData.propertyPixKey || '',
             payments: portalData.payments || []
           });
           setLoading(false);
@@ -138,6 +139,7 @@ export const Auth: React.FC<AuthProps> = ({ onTenantLogin }) => {
                 tenantId: matched.id,
                 tenantName: matched.tenantName,
                 propertyName: matched.propertyName,
+                propertyPixKey: matched.propertyPixKey || '',
                 payments: matched.payments
               });
               setLoading(false);

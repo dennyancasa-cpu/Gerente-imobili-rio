@@ -71,6 +71,8 @@ export interface Property {
   paymentDay?: number; // Keeping for backward compatibility temporarily
   currentTenantId?: string;
   ownerId: string;
+  marketValue?: number;
+  pixKey?: string;
   chargeLateFees?: boolean;
   lateFeePenalty?: number;
   lateFeeDaily?: number;
@@ -178,6 +180,8 @@ export interface Contract {
   lateFeePenalty?: number;
   lateFeeDaily?: number;
   lateFeeType?: "percentage" | "fixed";
+  readjustmentIndex?: "IPCA" | "IGPM" | "none";
+  lastReadjustmentDate?: string;
   observations?: string;
   contractFile?: string;
   evidenceName?: string;
@@ -353,8 +357,12 @@ export interface StorageItem {
   palletOrShelf?: string;
   boxOrContainer?: string;
   volumeM3?: number;
-  // Movement tracking
+  // Movement & Inventory Attributes
   status?: "in_stock" | "out" | "sold" | "returned";
+  condition?: "new" | "good" | "fair" | "poor" | "expiring_soon" | "expired";
+  category?: string;
+  expirationDate?: string;
+  photoUrl?: string;
   takenBy?: string;
   movementDate?: string;
   expectedReturnDate?: string;

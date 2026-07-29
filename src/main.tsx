@@ -6,7 +6,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 
 if ('serviceWorker' in navigator) {
   const registerSW = () => {
-    navigator.serviceWorker.register('/sw.js?v=6.4.0').then(registration => {
+    navigator.serviceWorker.register('/sw.js?v=6.6.0').then(registration => {
       console.log('SW registered: ', registration);
       
       // Se já houver um worker esperando ativação, notifica imediatamente

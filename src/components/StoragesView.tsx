@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { StorageSpace, StorageItem, Property, StorageBilling, Tenant, Contract } from "../types";
 import {
   Box,
+  Warehouse,
   Plus,
   Search,
   Trash2,
@@ -23,7 +24,14 @@ import {
   ChevronDown,
   ChevronUp,
   Briefcase,
-  Home
+  Home,
+  MoreVertical,
+  Eye,
+  Camera,
+  AlertCircle,
+  Calendar,
+  Tag,
+  Image as ImageIcon
 } from "lucide-react";
 import { db, auth } from "../firebase";
 import { addDoc, collection, doc, updateDoc, deleteDoc, writeBatch } from "firebase/firestore";
@@ -50,6 +58,47 @@ const cleanObject = (obj: any): any => {
   return obj;
 };
 
+const getItemConditionBadge = (condition?: string) => {
+  switch (condition) {
+    case "new":
+      return { label: "Novo / Excelente", bg: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+    case "good":
+      return { label: "Bom Estado", bg: "bg-blue-50 text-blue-700 border-blue-200" };
+    case "fair":
+      return { label: "Estado Regular", bg: "bg-slate-100 text-slate-700 border-slate-200" };
+    case "poor":
+      return { label: "Ruim / Danificado", bg: "bg-red-50 text-red-700 border-red-200" };
+    case "expiring_soon":
+      return { label: "A Vencer Próximo", bg: "bg-amber-50 text-amber-800 border-amber-200" };
+    case "expired":
+      return { label: "Vencido / Expirado", bg: "bg-purple-50 text-purple-700 border-purple-200" };
+    default:
+      return { label: "Bom Estado", bg: "bg-blue-50 text-blue-700 border-blue-200" };
+  }
+};
+
+const getItemExpirationStatus = (expirationDate?: string) => {
+  if (!expirationDate) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const parts = expirationDate.split("-");
+  if (parts.length !== 3) return null;
+  const y = parseInt(parts[0]);
+  const m = parseInt(parts[1]);
+  const d = parseInt(parts[2]);
+  if (!y || !m || !d) return null;
+  const exp = new Date(y, m - 1, d);
+  const diffTime = exp.getTime() - today.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) {
+    return { isExpired: true, days: Math.abs(diffDays), label: `VENCEU há ${Math.abs(diffDays)}d (${d.toString().padStart(2, "0")}/${m.toString().padStart(2, "0")}/${y})` };
+  } else if (diffDays <= 30) {
+    return { isExpiringSoon: true, days: diffDays, label: `Vence em ${diffDays}d (${d.toString().padStart(2, "0")}/${m.toString().padStart(2, "0")}/${y})` };
+  }
+  return { isOk: true, days: diffDays, label: `Validade: ${d.toString().padStart(2, "0")}/${m.toString().padStart(2, "0")}/${y}` };
+};
+
 interface StoragesViewProps {
   storages: StorageSpace[];
   properties: Property[];
@@ -74,6 +123,7 @@ export const StoragesView = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPropertyFilter, setSelectedPropertyFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"active" | "archived">("active");
+  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
 
   // State for Storage Modal (Create/Edit)
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
@@ -110,6 +160,11 @@ export const StoragesView = ({
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [activeStorageForItem, setActiveStorageForItem] = useState<StorageSpace | null>(null);
   const [editingItem, setEditingItem] = useState<StorageItem | null>(null);
+  const [itemSearchQuery, setItemSearchQuery] = useState("");
+  const [itemConditionFilter, setItemConditionFilter] = useState<string>("all");
+  const [isItemSearchOpen, setIsItemSearchOpen] = useState(false);
+  const [selectedItemForDetail, setSelectedItemForDetail] = useState<StorageItem | null>(null);
+
   const [itemFormData, setItemFormData] = useState({
     name: "",
     description: "",
@@ -124,6 +179,10 @@ export const StoragesView = ({
     boxOrContainer: "",
     volumeM3: 0,
     status: "in_stock" as "in_stock" | "out" | "sold" | "returned",
+    condition: "good" as "new" | "good" | "fair" | "poor" | "expiring_soon" | "expired",
+    category: "",
+    expirationDate: "",
+    photoUrl: "",
     takenBy: "",
     movementDate: "",
     expectedReturnDate: "",
@@ -132,6 +191,7 @@ export const StoragesView = ({
 
   // Selected Storage for detailed view
   const [selectedStorageId, setSelectedStorageId] = useState<string | null>(null);
+  const [isContractDetailsOpen, setIsContractDetailsOpen] = useState(false);
 
   // Billing tracking state
   const [isBillingModalOpen, setIsBillingModalOpen] = useState(false);
@@ -567,8 +627,9 @@ export const StoragesView = ({
         billings.sort((a, b) => b.dueDate.localeCompare(a.dueDate));
         storagePayload.billings = billings;
 
-        await addDoc(collection(db, "storages"), cleanObject(storagePayload));
-        toast.success("Novo espaço locado cadastrado com sucesso com faturamento automático iniciado!");
+        const docRef = await addDoc(collection(db, "storages"), cleanObject(storagePayload));
+        setSelectedStorageId(docRef.id);
+        toast.success("Novo espaço cadastrado com sucesso! Direcionado para os materiais guardados.");
       }
       setIsStorageModalOpen(false);
     } catch (error) {
@@ -677,6 +738,10 @@ export const StoragesView = ({
         boxOrContainer: item.boxOrContainer || "",
         volumeM3: item.volumeM3 || 0,
         status: item.status || "in_stock",
+        condition: item.condition || "good",
+        category: item.category || "",
+        expirationDate: item.expirationDate || "",
+        photoUrl: item.photoUrl || "",
         takenBy: item.takenBy || "",
         movementDate: item.movementDate || "",
         expectedReturnDate: item.expectedReturnDate || "",
@@ -698,6 +763,10 @@ export const StoragesView = ({
         boxOrContainer: "",
         volumeM3: 0,
         status: "in_stock",
+        condition: "good",
+        category: "",
+        expirationDate: "",
+        photoUrl: "",
         takenBy: "",
         movementDate: "",
         expectedReturnDate: "",
@@ -734,6 +803,43 @@ export const StoragesView = ({
     setItemFormData(prev => ({ ...prev, location: current }));
   };
 
+  // Image compressor for item photo upload
+  const handleItemPhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("A foto deve ter no máximo 8MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+        const maxDim = 400;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx?.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+        setItemFormData(prev => ({ ...prev, photoUrl: dataUrl }));
+      };
+      img.src = evt.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
   // Submit item save
   const handleSaveItem = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -766,6 +872,10 @@ export const StoragesView = ({
                 boxOrContainer: itemFormData.boxOrContainer || "",
                 volumeM3: Number(itemFormData.volumeM3) || 0,
                 status: itemFormData.status,
+                condition: itemFormData.condition,
+                category: itemFormData.category,
+                expirationDate: itemFormData.expirationDate,
+                photoUrl: itemFormData.photoUrl,
                 takenBy: itemFormData.takenBy,
                 movementDate: itemFormData.movementDate,
                 expectedReturnDate: itemFormData.expectedReturnDate,
@@ -791,6 +901,10 @@ export const StoragesView = ({
           boxOrContainer: itemFormData.boxOrContainer || "",
           volumeM3: Number(itemFormData.volumeM3) || 0,
           status: itemFormData.status,
+          condition: itemFormData.condition,
+          category: itemFormData.category,
+          expirationDate: itemFormData.expirationDate,
+          photoUrl: itemFormData.photoUrl,
           takenBy: itemFormData.takenBy,
           movementDate: itemFormData.movementDate,
           expectedReturnDate: itemFormData.expectedReturnDate,
@@ -1114,9 +1228,9 @@ export const StoragesView = ({
         itemsVal,
         ratio: 100,
         breakevenMonths: 999,
-        verdict: "Excelente custo-benefício (custo zero!)",
+        verdict: "Excelente custo-benefício (custo zero)",
         verdictType: "good" as const,
-        advice: "Você não tem custos recorrentes para este espaço de armazenamento. Vale muito a pena manter."
+        advice: "Você não possui custo mensal recorrente para este espaço. É uma ótima opção para manter pertences com tranquilidade."
       };
     }
 
@@ -1127,21 +1241,21 @@ export const StoragesView = ({
     let advice = "";
 
     if (itemsVal === 0) {
-      verdict = "Desocupar urgente (Vazio / Sem materiais)";
-      verdictType = "danger";
-      advice = `Você está pagando R$ ${monthlyCost.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} por mês por um depósito vazio! Cancele o aluguel ou venda/remova os itens o quanto antes.`;
-    } else if (breakevenMonths < 3) {
-      verdict = "Custo muito alto / Não vale a pena";
-      verdictType = "danger";
-      advice = `O custo de armazenamento (R$ ${monthlyCost}/mês) vai ultrapassar o valor total de todos os materiais guardados (R$ ${itemsVal}) em apenas ${Math.round(breakevenMonths)} meses! Recomendamos desocupar o depósito, usar ou vender essas coisas imediatamente.`;
-    } else if (breakevenMonths < 12) {
-      verdict = "Custo moderado / Recomenda-se atenção";
+      verdict = "Lembrete de Desapego (Espaço Vazio)";
       verdictType = "warning";
-      advice = `Em menos de 1 ano (${Math.round(breakevenMonths)} meses), o custo do aluguel superará o valor dos itens guardados. Planeje usar esses materiais em breve ou repense o armazenamento.`;
+      advice = `Este espaço custa R$ ${monthlyCost.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}/mês e está sem itens cadastrados. Se não estiver utilizando, considere avaliar o encerramento do contrato.`;
+    } else if (breakevenMonths < 3) {
+      verdict = "Alerta de Desapego";
+      verdictType = "warning";
+      advice = `O custo do aluguel (R$ ${monthlyCost}/mês) se aproxima do valor estimado dos itens (R$ ${itemsVal.toLocaleString("pt-BR")}). Vale refletir se os objetos possuem valor sentimental ou se vale a pena desapegar e economizar.`;
+    } else if (breakevenMonths < 12) {
+      verdict = "Atenção ao Custo-Benefício";
+      verdictType = "warning";
+      advice = `Em cerca de ${Math.round(breakevenMonths)} meses, o valor pago em aluguel atingirá o valor dos pertences. Uma boa oportunidade para organizar seus itens e avaliar o que manter.`;
     } else {
-      verdict = "Bom custo-benefício";
+      verdict = "Bom Custo-Benefício";
       verdictType = "good";
-      advice = `O valor dos materiais (R$ ${itemsVal}) é expressivo em relação ao aluguel mensal de R$ ${monthlyCost} (${Math.round(breakevenMonths)} meses de margem). É economicamente razoável manter o depósito a curto/médio prazo.`;
+      advice = `O valor dos pertences (R$ ${itemsVal.toLocaleString("pt-BR")}) justifica o custo mensal de R$ ${monthlyCost} (${Math.round(breakevenMonths)} meses de margem).`;
     }
 
     return {
@@ -1156,130 +1270,124 @@ export const StoragesView = ({
   return (
     <div id="storages-view-container" className="space-y-6">
       {/* Header and Add Button */}
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <header className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-            <Box className="w-5 h-5 text-emerald-600" />
-            Aluguel de Espaço
+            <Warehouse className="w-5 h-5 text-emerald-600" />
+            Espaço & Ativos
           </h1>
           <p className="text-slate-500 text-xs mt-0.5">
-            Administre os espaços alugados (como garagens, depósitos, escritórios ou espaços adicionais), controle o inventário de materiais e analise o custo-benefício de manter o espaço.
+            Administre seus espaços locados (garagens, depósitos, quartos ou contêineres), controle o inventário e acompanhe cobranças.
           </p>
         </div>
         <button
           onClick={() => handleOpenStorageModal()}
-          className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition font-semibold text-sm shadow-sm shrink-0"
+          className="p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl transition font-bold text-sm shadow-md hover:shadow-emerald-200 shrink-0 flex items-center justify-center active:scale-95"
+          title="Cadastrar Novo Espaço Locado"
         >
-          <Plus className="w-4 h-4" />
-          Cadastrar Novo Espaço Locado
+          <Plus className="w-5 h-5 stroke-[2.5]" />
         </button>
       </header>
 
-      {/* Main Grid: Storage List and Details */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Storage List Section */}
-        <div className="lg:col-span-5 space-y-4">
-          {/* Filters & Search */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-3 shadow-sm">
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-              <input
-                type="text"
-                placeholder="Pesquisar espaço, endereço ou materiais guardados..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-slate-50 text-slate-900 rounded-lg pl-9 pr-3 py-2 text-sm border border-slate-200 focus:outline-none focus:border-emerald-500 focus:bg-white transition-all"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block font-mono">STATUS DO ESPAÇO</label>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as "active" | "archived")}
-                className="w-full bg-slate-50 text-slate-700 rounded-lg px-2.5 py-1.5 text-xs border border-slate-200 focus:outline-none focus:bg-white transition-colors"
-              >
-                <option value="active">Ativos</option>
-                <option value="archived">Arquivados</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block font-mono">FILTRAR POR IMÓVEL</label>
-              <select
-                value={selectedPropertyFilter}
-                onChange={(e) => setSelectedPropertyFilter(e.target.value)}
-                className="w-full bg-slate-50 text-slate-700 rounded-lg px-2.5 py-1.5 text-xs border border-slate-200 focus:outline-none focus:bg-white transition-colors"
-              >
-                <option value="all">Todos os Imóveis / Fora do Projeto</option>
-                <option value="none">Apenas Gastos Fora do Projeto</option>
-                {properties.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+      {/* Main Container: Storage List Grid */}
+      <div className="space-y-4">
+        {/* Compact Tactical Filters & Search Bar */}
+        <div className="bg-white p-2.5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between gap-2">
+          {/* Lupa Search */}
+          <div className="relative flex-1 min-w-[140px]">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Buscar..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-slate-50 hover:bg-slate-100/70 focus:bg-white text-slate-900 rounded-xl pl-9 pr-3 py-1.5 text-xs border border-slate-200/80 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/10 transition-all placeholder:text-slate-400 font-medium"
+            />
           </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as "active" | "archived")}
+              className="bg-slate-50 text-slate-700 rounded-xl px-3 py-2 text-xs border border-slate-200/80 focus:outline-none focus:bg-white transition-colors font-medium cursor-pointer"
+            >
+              <option value="active">Ativos</option>
+              <option value="archived">Arquivados</option>
+            </select>
+            <select
+              value={selectedPropertyFilter}
+              onChange={(e) => setSelectedPropertyFilter(e.target.value)}
+              className="bg-slate-50 text-slate-700 rounded-xl px-3 py-2 text-xs border border-slate-200/80 focus:outline-none focus:bg-white transition-colors font-medium max-w-[160px] truncate cursor-pointer"
+            >
+              <option value="all">Todos Imóveis</option>
+              <option value="none">Fora do Projeto</option>
+              {properties.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
 
-          {/* List of storage items */}
-          <div className="space-y-3">
-            {filteredStorages.length === 0 ? (
-              <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-                <Box className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                <p className="text-slate-500 text-sm font-semibold">Nenhum espaço locado localizado.</p>
-                <p className="text-slate-400 text-xs mt-1">Clique em "Cadastrar Novo Espaço Locado" para começar.</p>
-              </div>
-            ) : (
-              filteredStorages.map((storage) => {
-                const analysis = getStorageAnalysis(storage);
-                const isSelected = selectedStorageId === storage.id;
-                const itemsCount = storage.items?.length || 0;
+        {/* Cards Grid of Storage Spaces */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredStorages.length === 0 ? (
+            <div className="col-span-full text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+              <Warehouse className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <p className="text-slate-500 text-sm font-semibold">Nenhum espaço locado encontrado.</p>
+              <p className="text-slate-400 text-xs mt-1">Clique no botão "+" acima para cadastrar um novo espaço.</p>
+            </div>
+          ) : (
+            filteredStorages.map((storage) => {
+              const analysis = getStorageAnalysis(storage);
+              const itemsCount = storage.items?.length || 0;
+              const badge = getSpaceTypeBadge(storage.spaceType);
 
-                return (
-                  <div
-                    key={storage.id}
-                    id={storage.id}
-                    onClick={() => setSelectedStorageId(storage.id || null)}
-                    className={`p-4 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-                      isSelected
-                        ? "bg-emerald-50/55 border-emerald-500 shadow-sm text-slate-900"
-                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/40 text-slate-700"
-                    }`}
-                  >
-                    <div className="flex justify-between items-start">
-                      <div>
+              return (
+                <div
+                  key={storage.id}
+                  id={storage.id}
+                  onClick={() => setSelectedStorageId(storage.id || null)}
+                  className="p-4 bg-white rounded-2xl border border-slate-200/90 hover:border-emerald-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden group flex flex-col justify-between"
+                >
+                  <div>
+                    {/* Top Row: Title, Space Badge & Price */}
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <h3 className="font-bold text-sm text-slate-900">{storage.name}</h3>
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border uppercase tracking-wider ${badge.className}`}>
+                            {badge.label}
+                          </span>
                           {storage.propertyId ? (
-                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] border border-indigo-100 font-bold uppercase tracking-wide">
+                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded-md text-[9px] border border-indigo-100 font-bold uppercase tracking-wide">
                               Vinculado
                             </span>
                           ) : (
-                            <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] border border-slate-200 font-bold uppercase tracking-wide">
+                            <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[9px] border border-slate-200 font-bold uppercase tracking-wide">
                               Fora do Projeto
                             </span>
                           )}
-                          {(() => {
-                            const badge = getSpaceTypeBadge(storage.spaceType);
-                            return (
-                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border uppercase tracking-wide ${badge.className}`}>
-                                {badge.label}
-                              </span>
-                            );
-                          })()}
                         </div>
+                        <h3 className="font-bold text-base text-slate-900 group-hover:text-emerald-700 transition-colors mt-2 truncate">
+                          {storage.name}
+                        </h3>
                         {storage.address && (
-                          <p className="text-xs text-slate-500 mt-1 line-clamp-1">{storage.address}</p>
+                          <p className="text-xs text-slate-500 mt-1 flex items-center gap-1 line-clamp-1">
+                            <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            {storage.address}
+                          </p>
                         )}
                       </div>
-                      <div className="text-right">
-                        <span className="text-xs text-red-600 font-bold block">
+
+                      <div className="text-right shrink-0">
+                        <span className="text-base font-extrabold text-red-600 block font-mono">
                           R$ {storage.monthlyCost?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                         </span>
-                        <span className="text-[10px] text-slate-400 block font-mono">Venc. Dia {storage.dueDay}</span>
+                        <span className="text-[10px] text-slate-400 block font-medium">Venc. dia {storage.dueDay}</span>
                       </div>
                     </div>
 
+                    {/* Search match highlight if searching */}
                     {searchQuery && (
                       (() => {
                         const matchingItems = storage.items?.filter((item) =>
@@ -1288,14 +1396,14 @@ export const StoragesView = ({
                         ) || [];
                         if (matchingItems.length > 0) {
                           return (
-                            <div className="mt-2.5 p-2 bg-amber-50/70 border border-amber-100 rounded-lg text-[10px] text-amber-900">
+                            <div className="mt-2.5 p-2 bg-amber-50/70 border border-amber-100 rounded-xl text-[10px] text-amber-900">
                               <div className="font-bold flex items-center gap-1 mb-1">
                                 <Box className="w-3 h-3 text-amber-600 shrink-0" />
                                 Materiais encontrados ({matchingItems.length}):
                               </div>
                               <div className="space-y-1 max-h-24 overflow-y-auto">
                                 {matchingItems.map((item, idx) => (
-                                  <div key={idx} className="flex justify-between items-center bg-white/50 px-1.5 py-0.5 rounded">
+                                  <div key={idx} className="flex justify-between items-center bg-white/60 px-2 py-0.5 rounded">
                                     <span className="truncate">{item.name}</span>
                                     <span className="font-mono font-bold text-amber-700 whitespace-nowrap">{item.quantity} un</span>
                                   </div>
@@ -1307,34 +1415,36 @@ export const StoragesView = ({
                         return null;
                       })()
                     )}
-
-                    <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center text-xs">
-                      <span className="text-slate-500">
-                        {itemsCount} material(is) • R$ {analysis.itemsVal.toLocaleString("pt-BR")}
-                      </span>
-                      
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold font-sans ${
-                          analysis.verdictType === "good"
-                            ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
-                            : analysis.verdictType === "warning"
-                            ? "bg-amber-50 text-amber-700 border border-amber-100"
-                            : "bg-red-50 text-red-700 border border-red-100"
-                        }`}
-                      >
-                        {analysis.verdict}
-                      </span>
-                    </div>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </div>
 
-        {/* Storage Details Section */}
-        <div className="lg:col-span-7">
-          {selectedStorageId ? (
+                  {/* Footer Row: Metrics & Viability Pill */}
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center text-xs">
+                    <div className="flex items-center gap-1.5 text-slate-600 text-[11px] font-medium">
+                      <Box className="w-4 h-4 text-emerald-600" />
+                      <span><strong>{itemsCount}</strong> pertences (R$ {analysis.itemsVal.toLocaleString("pt-BR")})</span>
+                    </div>
+                    
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold font-sans ${
+                        analysis.verdictType === "good"
+                          ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                          : analysis.verdictType === "warning"
+                          ? "bg-amber-50 text-amber-700 border border-amber-100"
+                          : "bg-red-50 text-red-700 border border-red-100"
+                      }`}
+                    >
+                      {analysis.verdict}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+        {/* Storage Details Floating Modal & Sub-modal */}
+        {selectedStorageId && (
             (() => {
               const storage = storages.find((s) => s.id === selectedStorageId);
               if (!storage) return null;
@@ -1342,327 +1452,362 @@ export const StoragesView = ({
               const analysis = getStorageAnalysis(storage);
 
               return (
-                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-                  {/* Detail Header */}
-                  <div className="p-4 sm:p-6 bg-slate-50/55 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start gap-4">
+                <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in duration-200">
+                  <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xl w-full max-w-4xl my-auto overflow-hidden relative flex flex-col max-h-[90vh]">
+                    {/* Detail Header with 3-dots option menu & close button */}
+                    <div className="p-4 sm:p-5 bg-slate-50/90 border-b border-slate-200/80 flex justify-between items-start gap-3 relative shrink-0">
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        <h2 className="text-xl font-bold text-slate-900">{storage.name}</h2>
+                        <h2 className="text-lg sm:text-xl font-bold text-slate-900">{storage.name}</h2>
                         {storage.propertyId ? (
-                          <span className="px-2.5 py-0.5 bg-indigo-50 text-indigo-700 rounded-full text-xs font-semibold border border-indigo-100 flex items-center gap-1">
-                            <Home className="w-3 h-3" />
+                          <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md text-[11px] font-bold border border-indigo-100 flex items-center gap-1">
+                            <Home className="w-3 h-3 text-indigo-600" />
                             {getPropertyName(storage.propertyId)}
                           </span>
                         ) : (
-                          <span className="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-xs font-semibold border border-slate-200 flex items-center gap-1">
-                            <Briefcase className="w-3 h-3" />
-                            Despesa Geral Proprietário
+                          <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[11px] font-bold border border-slate-200 flex items-center gap-1">
+                            <Briefcase className="w-3 h-3 text-slate-500" />
+                            Fora do Projeto
                           </span>
                         )}
                         {(() => {
                           const badge = getSpaceTypeBadge(storage.spaceType);
                           return (
-                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border flex items-center gap-1.5 ${badge.className}`}>
-                              <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
-                              {badge.label} <span className="opacity-50">•</span> <span className="text-[10px] font-medium font-sans lowercase">{badge.scale}</span>
+                            <span className={`px-2 py-0.5 rounded-md text-[11px] font-bold border flex items-center gap-1 ${badge.className}`}>
+                              {badge.label}
                             </span>
                           );
                         })()}
                       </div>
                       {storage.address && (
-                        <p className="text-xs text-slate-500 mt-2">{storage.address}</p>
+                        <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                          <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          {storage.address}
+                        </p>
                       )}
                     </div>
-                    <div className="flex gap-2 shrink-0 items-center flex-wrap sm:flex-nowrap w-full sm:w-auto justify-start sm:justify-end">
-                      {onNavigateToCreateContract && storage.status !== "archived" && (
-                        <button
-                          onClick={() => handleCreateContractFromStorage(storage)}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition text-xs font-semibold flex items-center gap-1.5 shadow-sm whitespace-nowrap"
-                          title="Gerar contrato na ferramenta de contratos"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                          <span>Gerar Contrato</span>
-                        </button>
-                      )}
-                      
-                      {storage.status === "archived" ? (
-                        <button
-                          onClick={() => handleRestoreStorage(storage.id!)}
-                          className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg border border-indigo-100 transition"
-                          title="Restaurar espaço"
-                        >
-                          <ArchiveRestore className="w-4 h-4" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleArchiveStorage(storage.id!)}
-                          className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg border border-slate-200 transition"
-                          title="Arquivar espaço"
-                        >
-                          <Archive className="w-4 h-4" />
-                        </button>
-                      )}
-                      
+
+                    {/* Header Actions: 3-Dots Menu & Close Button */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="relative">
                       <button
-                        onClick={() => handleOpenStorageModal(storage)}
-                        className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition"
-                        title="Editar depósito"
+                        onClick={() => setIsActionMenuOpen(!isActionMenuOpen)}
+                        className="p-2 hover:bg-slate-200/80 text-slate-600 rounded-xl transition border border-slate-200/80 bg-white shadow-sm flex items-center justify-center"
+                        title="Opções do Espaço"
                       >
-                        <Edit className="w-4 h-4" />
+                        <MoreVertical className="w-5 h-5 text-slate-700" />
                       </button>
+
+                      {isActionMenuOpen && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-40"
+                            onClick={() => setIsActionMenuOpen(false)}
+                          />
+                          <div className="absolute right-0 top-full mt-8 sm:mt-2 w-60 sm:w-56 bg-white rounded-2xl shadow-2xl border border-slate-200 py-2 z-50 text-sm sm:text-xs divide-y divide-slate-100 animate-in fade-in slide-in-from-top-2 duration-150">
+                            <div className="py-1">
+                              <button
+                                onClick={() => {
+                                  setIsActionMenuOpen(false);
+                                  setIsContractDetailsOpen(true);
+                                }}
+                                className="w-full text-left px-4 sm:px-3.5 py-2.5 sm:py-2 text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 font-bold transition active:bg-indigo-100"
+                              >
+                                <FileText className="w-4 h-4 text-indigo-600 shrink-0" />
+                                Contrato de Locação
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  setIsActionMenuOpen(false);
+                                  handleOpenStorageModal(storage);
+                                }}
+                                className="w-full text-left px-4 sm:px-3.5 py-2.5 sm:py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 font-semibold transition active:bg-slate-100"
+                              >
+                                <Edit className="w-4 h-4 text-slate-500 shrink-0" />
+                                Editar Espaço
+                              </button>
+                            </div>
+
+                            <div className="py-1">
+                              {storage.status === "archived" ? (
+                                <button
+                                  onClick={() => {
+                                    setIsActionMenuOpen(false);
+                                    handleRestoreStorage(storage.id!);
+                                  }}
+                                  className="w-full text-left px-4 sm:px-3.5 py-2.5 sm:py-2 text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 font-semibold transition active:bg-indigo-100"
+                                >
+                                  <ArchiveRestore className="w-4 h-4 text-indigo-600 shrink-0" />
+                                  Restaurar Espaço
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setIsActionMenuOpen(false);
+                                    handleArchiveStorage(storage.id!);
+                                  }}
+                                  className="w-full text-left px-4 sm:px-3.5 py-2.5 sm:py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 font-semibold transition active:bg-slate-100"
+                                >
+                                  <Archive className="w-4 h-4 text-slate-500 shrink-0" />
+                                  Arquivar Espaço
+                                </button>
+                              )}
+
+                              <button
+                                onClick={() => {
+                                  setIsActionMenuOpen(false);
+                                  handleDeleteStorage(storage.id!);
+                                }}
+                                className="w-full text-left px-4 sm:px-3.5 py-2.5 sm:py-2 text-red-600 hover:bg-red-50 flex items-center gap-2.5 font-semibold transition active:bg-red-100"
+                              >
+                                <Trash2 className="w-4 h-4 text-red-500 shrink-0" />
+                                Excluir Espaço
+                              </button>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                      </div>
+
                       <button
-                        onClick={() => handleDeleteStorage(storage.id!)}
-                        className="p-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg border border-red-100 transition"
-                        title="Excluir depósito"
+                        onClick={() => setSelectedStorageId(null)}
+                        className="p-2 hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 rounded-xl transition border border-slate-200/80 bg-white shadow-sm flex items-center justify-center"
+                        title="Fechar Janela"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <X className="w-5 h-5" />
                       </button>
                     </div>
                   </div>
 
-                  {/* Rental details & contract */}
-                  <div className="p-6 border-b border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50/20">
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-1.5 text-slate-700">
-                        <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <h4 className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">CONTRATO DE LOCAÇÃO</h4>
-                      </div>
-                      
-                      <div className="space-y-2 text-xs">
-                        <div className="flex justify-between py-1 border-b border-slate-100">
-                          <span className="text-slate-500">Valor Aluguel:</span>
-                          <span className="font-bold text-red-600">
-                            R$ {storage.monthlyCost?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}/mês
-                          </span>
-                        </div>
-                        <div className="flex justify-between py-1 border-b border-slate-100">
-                          <span className="text-slate-500">Dia Vencimento:</span>
-                          <span className="font-semibold text-slate-800">Todo dia {storage.dueDay}</span>
-                        </div>
-                        <div className="flex justify-between py-1 border-b border-slate-100">
-                          <span className="text-slate-500">Início do Contrato:</span>
-                          <span className="font-medium text-slate-800">
-                            {(() => {
-                              if (!storage.contractStartDate) return "-";
-                              const parts = storage.contractStartDate.split("-");
-                              return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : storage.contractStartDate;
-                            })()}
-                          </span>
-                        </div>
-                        <div className="flex justify-between py-1 border-b border-slate-100">
-                          <span className="text-slate-500">Término do Contrato:</span>
-                          <span className="font-medium text-slate-800">
-                            {(() => {
-                              if (!storage.contractEndDate) return "Indeterminado";
-                              const parts = storage.contractEndDate.split("-");
-                              return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : storage.contractEndDate;
-                            })()}
-                          </span>
-                        </div>
-                        <div className="flex justify-between py-1 border-b border-slate-100">
-                          <span className="text-slate-500">Índice Reajuste:</span>
-                          <span className="font-medium text-slate-800">{storage.readjustmentIndex || "-"}</span>
-                        </div>
-                        <div className="flex justify-between py-1 border-b border-slate-100">
-                          <span className="text-slate-500">Multa Rescisória:</span>
-                          <span className="font-medium text-slate-800">
-                            {storage.rescissionFine ? `R$ ${storage.rescissionFine.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "-"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between py-1 border-b border-slate-100">
-                          <span className="text-slate-500">Forma de Pagamento:</span>
-                          <span className="font-medium text-slate-800">{storage.paymentMethod || "-"}</span>
-                        </div>
-                        <div className="flex justify-between py-1">
-                          <span className="text-slate-500">Local de Guarda Físico:</span>
-                          <span className="text-slate-800 font-medium truncate max-w-[180px]" title={storage.evidenceLocation || "Não informado"}>
-                            {storage.evidenceLocation || "Não informado"}
-                          </span>
-                        </div>
+                  {/* Modal Scrollable Body */}
+                  <div className="overflow-y-auto p-4 sm:p-6 space-y-6 flex-1">
+
+                  {/* Materials list */}
+                  <div className="p-4 sm:p-6 border-b border-slate-100 space-y-4">
+                    <div className="flex justify-between items-center gap-2">
+                      <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                        <Hammer className="w-5 h-5 text-emerald-600 shrink-0" />
+                        Materiais
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setIsItemSearchOpen(!isItemSearchOpen)}
+                          className={`p-2 rounded-xl border transition flex items-center justify-center ${
+                            isItemSearchOpen || itemSearchQuery || itemConditionFilter !== "all"
+                              ? "bg-emerald-100 text-emerald-800 border-emerald-300 shadow-xs"
+                              : "bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200/80"
+                          }`}
+                          title="Buscar Material"
+                        >
+                          <Search className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          onClick={() => handleOpenItemModal(storage)}
+                          className="flex items-center gap-1.5 text-xs text-white font-bold bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded-xl transition shadow-xs active:bg-emerald-800"
+                          title="Adicionar Material"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span className="hidden sm:inline">Adicionar Material</span>
+                        </button>
                       </div>
                     </div>
 
-                    <div className="space-y-4">
-                      {/* Locador */}
-                      <div className="space-y-2">
-                        <h4 className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">LOCADOR (PROPRIETÁRIO DO ESPAÇO)</h4>
-                        <div className="bg-white p-3 rounded-xl border border-slate-200/60 shadow-sm space-y-1.5 text-xs">
-                          <p className="font-semibold text-slate-800 flex items-center justify-between">
-                            <span>{storage.landlordName || "Não Informado"}</span>
-                          </p>
-                          {storage.landlordContact && (
-                            <p className="text-slate-500 font-mono text-[11px]">{storage.landlordContact}</p>
-                          )}
-                        </div>
-                      </div>
+                    {(() => {
+                      const allItems = storage.items || [];
+                      const activeItems = allItems.filter(item => item.status === "in_stock" || !item.status);
+                      const archivedItems = allItems.filter(item => item.status && item.status !== "in_stock");
+                      const baseItems = itemTab === "active" ? activeItems : archivedItems;
 
-                      {/* Garantia / Depósito */}
-                      <div className="space-y-2 pt-1">
-                        <h4 className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">GARANTIA / CAUÇÃO</h4>
-                        {storage.hasDeposit ? (
-                          <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 space-y-2 text-xs">
-                            <div className="flex justify-between items-center">
-                              <span className="text-indigo-700 font-medium">Valor do Depósito:</span>
-                              <span className="font-bold text-indigo-900">
-                                R$ {storage.depositValue?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                              </span>
-                            </div>
-                            
-                            <div className="flex justify-between items-center pt-1 border-t border-indigo-100/40">
-                              <span className="text-indigo-700 font-medium">Forma de Pagamento:</span>
-                              <span className="font-semibold text-indigo-900 uppercase text-[10px]">
-                                {storage.depositPaymentType === "installments" 
-                                  ? `Parcelado (${storage.depositInstallments || 1}x)` 
-                                  : "À Vista"}
-                              </span>
-                            </div>
+                      const filteredItems = baseItems.filter((item) => {
+                        const q = itemSearchQuery.toLowerCase().trim();
+                        if (q) {
+                          const matchesName = (item.name || "").toLowerCase().includes(q);
+                          const matchesCategory = (item.category || "").toLowerCase().includes(q);
+                          const matchesLoc = (item.location || "").toLowerCase().includes(q);
+                          const matchesTakenBy = (item.takenBy || "").toLowerCase().includes(q);
+                          const matchesDesc = (item.description || "").toLowerCase().includes(q);
+                          if (!matchesName && !matchesCategory && !matchesLoc && !matchesTakenBy && !matchesDesc) return false;
+                        }
 
-                            <div className="flex justify-between items-center pt-1 border-t border-indigo-100/40">
-                              <span className="text-indigo-700 font-medium">Status de Pagamento:</span>
-                              <span className={`px-2 py-0.5 text-[10px] rounded-full font-bold uppercase tracking-wider ${
-                                storage.depositIsPaid 
-                                  ? "bg-emerald-100 text-emerald-800 border border-emerald-200" 
-                                  : "bg-amber-100 text-amber-800 border border-amber-200"
-                              }`}>
-                                {storage.depositIsPaid ? "Pago" : "Pendente"}
-                              </span>
-                            </div>
+                        if (itemConditionFilter !== "all") {
+                          const cond = item.condition || "good";
+                          if (itemConditionFilter === "expiring_or_expired") {
+                            const expStatus = getItemExpirationStatus(item.expirationDate);
+                            if (!expStatus || (!expStatus.isExpired && !expStatus.isExpiringSoon && cond !== "expiring_soon" && cond !== "expired")) return false;
+                          } else if (cond !== itemConditionFilter) {
+                            return false;
+                          }
+                        }
 
-                            <div className="flex justify-between items-center pt-1 border-t border-indigo-100/40">
-                              <span className="text-indigo-700 font-medium">Status Reembolso:</span>
-                              <span className="px-2 py-0.5 text-[10px] rounded-full font-bold uppercase tracking-wider bg-white text-indigo-700 border border-indigo-100">
-                                {storage.depositRefundStatus === "refunded"
-                                  ? "Reembolsado"
-                                  : storage.depositRefundStatus === "partially_used"
-                                  ? "Uso Parcial"
-                                  : storage.depositRefundStatus === "lost"
-                                  ? "Retido/Perdido"
-                                  : "Pendente"}
-                              </span>
+                        return true;
+                      });
+
+                      return (
+                        <div className="space-y-3">
+                          {/* Tabs + Filter Options */}
+                          <div className="bg-slate-50/80 p-2.5 rounded-2xl border border-slate-200/80 space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div className="flex gap-4">
+                                <button
+                                  onClick={() => setItemTab("active")}
+                                  className={`pb-1 text-xs font-bold transition flex items-center gap-1.5 ${itemTab === "active" ? "text-emerald-700 border-b-2 border-emerald-600" : "text-slate-400 hover:text-slate-600"}`}
+                                >
+                                  Em Estoque
+                                  <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded text-[10px] font-mono">{activeItems.length}</span>
+                                </button>
+                                <button
+                                  onClick={() => setItemTab("archived")}
+                                  className={`pb-1 text-xs font-bold transition flex items-center gap-1.5 ${itemTab === "archived" ? "text-indigo-700 border-b-2 border-indigo-600" : "text-slate-400 hover:text-slate-600"}`}
+                                >
+                                  Arquivo / Movimentados
+                                  <span className="bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded text-[10px] font-mono">{archivedItems.length}</span>
+                                </button>
+                              </div>
+
+                              <div className="text-[11px] font-mono text-slate-500 font-semibold">
+                                Total: <span className="text-slate-900 font-bold">{filteredItems.length} {filteredItems.length === 1 ? "item" : "itens"}</span>
+                              </div>
                             </div>
 
-                            {storage.depositIsPaid && storage.depositPaymentFile && (
-                              <div className="pt-2 border-t border-indigo-100/40 space-y-1.5">
-                                <span className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider block font-mono">Comprovante de Pagamento</span>
-                                <div className="p-2 bg-white/75 border border-indigo-100 rounded-lg flex justify-between items-center text-[11px]">
-                                  <div className="flex items-center gap-1.5 min-w-0">
-                                    <FileText className="w-4 h-4 text-emerald-500 shrink-0" />
-                                    <span className="font-medium text-slate-700 truncate max-w-[140px]">
-                                      {storage.depositPaymentFileName || "comprovante_caucao.pdf"}
-                                    </span>
-                                  </div>
-                                  <a
-                                    href={storage.depositPaymentFile}
-                                    download={storage.depositPaymentFileName || "comprovante_caucao"}
-                                    className="p-1 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded transition"
-                                    title="Baixar Comprovante"
+                            {/* Search & Filters Bar */}
+                            {(isItemSearchOpen || itemSearchQuery || itemConditionFilter !== "all") && (
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-slate-200/60 animate-in fade-in duration-150">
+                                <div className="sm:col-span-2 relative">
+                                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    placeholder="Buscar por nome, categoria, localização..."
+                                    value={itemSearchQuery}
+                                    onChange={(e) => setItemSearchQuery(e.target.value)}
+                                    className="w-full bg-white text-slate-900 rounded-xl pl-8 pr-8 py-1.5 text-xs border border-slate-200 focus:outline-none focus:border-emerald-500 shadow-xs"
+                                  />
+                                  {itemSearchQuery && (
+                                    <button
+                                      onClick={() => setItemSearchQuery("")}
+                                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+
+                                <div>
+                                  <select
+                                    value={itemConditionFilter}
+                                    onChange={(e) => setItemConditionFilter(e.target.value)}
+                                    className="w-full bg-white text-slate-900 rounded-xl px-2.5 py-1.5 text-xs border border-slate-200 focus:outline-none focus:border-emerald-500 font-medium shadow-xs"
                                   >
-                                    <ExternalLink className="w-3 h-3" />
-                                  </a>
+                                    <option value="all">Todas as Condições</option>
+                                    <option value="new">🟢 Novo / Excelente</option>
+                                    <option value="good">🔵 Bom Estado</option>
+                                    <option value="fair">⚪ Estado Regular</option>
+                                    <option value="poor">🔴 Ruim / Com Defeito</option>
+                                    <option value="expiring_or_expired">⚠️ A Vencer / Vencido</option>
+                                  </select>
                                 </div>
                               </div>
                             )}
                           </div>
-                        ) : (
-                          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                            <span className="text-slate-400 font-medium text-[11px]">Nenhum depósito de caução registrado.</span>
-                          </div>
-                        )}
-                      </div>
 
-                      {/* Contrato Físico / Digital */}
-                      <div className="space-y-2 pt-1">
-                        <h4 className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">CONTRATO / COMPROVANTE</h4>
-                        {storage.contractFile ? (
-                          <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 flex justify-between items-center">
-                            <div className="flex items-center gap-2">
-                              <FileText className="w-8 h-8 text-emerald-500 shrink-0" />
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-emerald-800 truncate max-w-[150px]">
-                                  {storage.evidenceName || "contrato_deposito.pdf"}
-                                </p>
-                                <span className="text-[10px] text-emerald-600 font-mono font-bold block">CONTRATO ARMAZENADO</span>
+                          {filteredItems.length === 0 ? (
+                            <div className="p-8 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                              <Box className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                              <p className="text-slate-500 text-xs font-medium">
+                                {itemSearchQuery || itemConditionFilter !== "all" 
+                                  ? "Nenhum material encontrado para estes filtros." 
+                                  : itemTab === "active" ? "Nenhum material em estoque no momento." : "Nenhum material arquivado."}
+                              </p>
+                              <p className="text-slate-400 text-[10px] mt-0.5">
+                                {itemTab === "active" ? "Cadastre os materiais para gerenciar estoque, estado e localização." : "Materiais vendidos, devolvidos ou em uso aparecerão aqui."}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="w-full rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-xs divide-y divide-slate-100">
+                              {/* List Column Headers */}
+                              <div className="grid grid-cols-12 gap-2 px-3.5 py-2.5 bg-slate-50/90 text-[11px] font-black text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                                <div className="col-span-6 sm:col-span-7 font-mono">Objeto / Material</div>
+                                <div className="col-span-3 sm:col-span-2 text-center font-mono">Quantidade</div>
+                                <div className="col-span-3 text-right font-mono">Valor</div>
                               </div>
-                            </div>
-                            <a
-                              href={storage.contractFile}
-                              download={storage.evidenceName || "contrato_deposito"}
-                              className="p-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg transition"
-                              title="Baixar Contrato"
-                            >
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
-                          </div>
-                        ) : (
-                          <div className="p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 flex flex-col items-center justify-center text-center">
-                            <Upload className="w-4 h-4 text-slate-400 mb-1" />
-                            <p className="text-[11px] text-slate-500 font-medium">Nenhum contrato digital anexado.</p>
-                            <div className="flex gap-2 justify-center mt-2.5 w-full">
-                              <button
-                                onClick={() => handleOpenStorageModal(storage)}
-                                className="text-[11px] text-emerald-600 hover:text-emerald-700 hover:underline font-semibold bg-white px-2 py-1 rounded-md border border-slate-200 shadow-sm transition"
-                              >
-                                Importar agora
-                              </button>
-                              {onNavigateToCreateContract && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleCreateContractFromStorage(storage)}
-                                  className="text-[11px] text-indigo-600 hover:text-indigo-700 hover:underline font-semibold bg-white px-2 py-1 rounded-md border border-slate-200 shadow-sm transition flex items-center gap-1"
-                                >
-                                  <FileText className="w-3 h-3" />
-                                  Gerar com IA
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
 
-                  {/* Custo Benefício Insight Analysis */}
-                  <div className="p-5 border-b border-slate-100">
-                    <div className={`p-4 rounded-xl border ${
-                      analysis.verdictType === "good"
-                        ? "bg-emerald-50/50 border-emerald-100/60"
-                        : analysis.verdictType === "warning"
-                        ? "bg-amber-50/50 border-amber-100/60"
-                        : "bg-red-50/50 border-red-100/60"
-                    }`}>
-                      <div className="flex items-start gap-3">
-                        <AlertTriangle className={`w-5 h-5 mt-0.5 shrink-0 ${
-                          analysis.verdictType === "good"
-                            ? "text-emerald-600"
-                            : analysis.verdictType === "warning"
-                            ? "text-amber-600"
-                            : "text-red-600"
-                        }`} />
-                        <div className="space-y-1">
-                          <h5 className={`text-xs font-bold font-sans ${
-                            analysis.verdictType === "good"
-                              ? "text-emerald-700"
-                              : analysis.verdictType === "warning"
-                              ? "text-amber-700"
-                              : "text-red-700"
-                          }`}>
-                            ANÁLISE DE VIABILIDADE FINANCEIRA: {analysis.verdict.toUpperCase()}
-                          </h5>
-                          <p className="text-xs text-slate-600 leading-relaxed">
-                            {analysis.advice}
-                          </p>
-                          {analysis.breakevenMonths > 0 && analysis.breakevenMonths < 999 && (
-                            <div className="text-[11px] text-slate-500 pt-1 font-mono">
-                              Ponto de Equilíbrio (Breakeven): <strong className="text-slate-800">{analysis.breakevenMonths.toFixed(1)} meses</strong> de aluguel cobrem o valor dos materiais.
+                              {/* List Rows */}
+                              {filteredItems.map((item) => {
+                                const totalVal = item.status === "sold" && item.soldPrice
+                                  ? item.soldPrice
+                                  : (item.cost || 0) * (item.quantity || 1);
+
+                                return (
+                                  <div
+                                    key={item.id}
+                                    onClick={() => setSelectedItemForDetail(item)}
+                                    className="grid grid-cols-12 gap-2 px-3.5 py-3 items-center hover:bg-emerald-50/60 cursor-pointer transition active:bg-emerald-100/50 group"
+                                  >
+                                    {/* Objeto / Material */}
+                                    <div className="col-span-6 sm:col-span-7 flex items-center gap-3 min-w-0">
+                                      {item.photoUrl ? (
+                                        <img
+                                          src={item.photoUrl}
+                                          alt={item.name}
+                                          className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0 shadow-xs"
+                                        />
+                                      ) : (
+                                        <div className="w-10 h-10 rounded-xl bg-slate-100 border border-slate-200/80 flex items-center justify-center shrink-0 text-slate-400">
+                                          <Box className="w-5 h-5 text-slate-400" />
+                                        </div>
+                                      )}
+                                      <div className="min-w-0 flex-1">
+                                        <div className="font-extrabold text-slate-900 text-sm truncate leading-tight group-hover:text-emerald-800 transition">
+                                          {item.name}
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                                          {item.category && (
+                                            <span className="px-1.5 py-0.2 text-[9px] font-semibold bg-slate-100 text-slate-600 rounded border border-slate-200">
+                                              {item.category}
+                                            </span>
+                                          )}
+                                          {item.location && (
+                                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-100 font-mono">
+                                              <MapPin className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                                              {item.location}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Quantidade */}
+                                    <div className="col-span-3 sm:col-span-2 text-center">
+                                      <span className="inline-block px-2.5 py-1 rounded-lg text-xs font-bold font-mono bg-slate-100 text-slate-800 border border-slate-200/80">
+                                        {item.quantity} un
+                                      </span>
+                                    </div>
+
+                                    {/* Valor */}
+                                    <div className="col-span-3 text-right">
+                                      <span className="text-xs sm:text-sm font-extrabold text-slate-900 font-mono block">
+                                        R$ {totalVal.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                      {item.cost > 0 && item.quantity > 1 && (
+                                        <span className="text-[10px] text-slate-400 font-mono block">
+                                          Un: R$ {(item.cost || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
-                      </div>
-                    </div>
+                      );
+                    })()}
                   </div>
 
                   {/* ACOMPANHAMENTO DE COBRANÇA */}
-                  <div className="p-6 border-b border-slate-100 space-y-4">
+                  <div className="p-6 space-y-4">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
@@ -1897,167 +2042,247 @@ export const StoragesView = ({
                     )}
                   </div>
 
-                  {/* Materials list */}
-                  <div className="p-6 space-y-4">
-                    <div className="flex justify-between items-center">
-                      <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                        <Hammer className="w-4 h-4 text-emerald-600" />
-                        Materiais Guardados no Depósito
-                      </h3>
-                      <button
-                        onClick={() => handleOpenItemModal(storage)}
-                        className="flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-800 font-semibold bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg border border-emerald-100 transition"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Adicionar Material
-                      </button>
-                    </div>
-
-                    {(() => {
-                      const activeItems = (storage.items || []).filter(item => item.status === "in_stock" || !item.status);
-                      const archivedItems = (storage.items || []).filter(item => item.status && item.status !== "in_stock");
-                      const displayItems = itemTab === "active" ? activeItems : archivedItems;
-
-                      return (
-                        <div className="space-y-4">
-                          <div className="flex border-b border-slate-200 gap-4 mb-2 px-1">
-                            <button
-                              onClick={() => setItemTab("active")}
-                              className={`pb-2 text-xs font-bold transition flex items-center gap-1.5 ${itemTab === "active" ? "text-emerald-700 border-b-2 border-emerald-600" : "text-slate-400 hover:text-slate-600"}`}
-                            >
-                              Em Estoque
-                              <span className="bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded text-[10px]">{activeItems.length}</span>
-                            </button>
-                            <button
-                              onClick={() => setItemTab("archived")}
-                              className={`pb-2 text-xs font-bold transition flex items-center gap-1.5 ${itemTab === "archived" ? "text-indigo-700 border-b-2 border-indigo-600" : "text-slate-400 hover:text-slate-600"}`}
-                            >
-                              Arquivo / Movimentados
-                              <span className="bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded text-[10px]">{archivedItems.length}</span>
-                            </button>
-                          </div>
-
-                          {displayItems.length === 0 ? (
-                            <div className="p-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                              <Box className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                              <p className="text-slate-500 text-xs font-medium">
-                                {itemTab === "active" ? "Nenhum material em estoque no momento." : "Nenhum material arquivado."}
-                              </p>
-                              <p className="text-slate-400 text-[10px] mt-0.5">
-                                {itemTab === "active" ? "Cadastre os materiais para ver o cálculo do custo de manutenção." : "Materiais vendidos, devolvidos ou em uso aparecerão aqui."}
-                              </p>
-                            </div>
-                          ) : (
-                            <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-                              <table className="w-full text-left border-collapse">
-                                <thead>
-                                  <tr className="border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/80">
-                                    <th className="py-2.5 px-3">Material</th>
-                                    <th className="py-2.5 px-3">Status / Qtd</th>
-                                    <th className="py-2.5 px-3 text-right">Valor Unitário</th>
-                                    <th className="py-2.5 px-3 text-right">{itemTab === "archived" ? "Venda/Total" : "Valor Total"}</th>
-                                    <th className="py-2.5 px-3 text-center">Ações</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
-                                  {displayItems.map((item) => (
-                                    <tr key={item.id} className="hover:bg-slate-50/40">
-                                      <td className="py-2.5 px-3">
-                                        <div className="font-semibold text-slate-800">{item.name}</div>
-                                        <div className="flex flex-wrap gap-1.5 mt-1 items-center">
-                                          {item.location && (
-                                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-100 uppercase tracking-wider font-mono">
-                                              <MapPin className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                                              {item.location}
-                                            </span>
-                                          )}
-                                          {item.dateAdded && (
-                                            <span className="text-[9px] text-slate-400">Adicionado: {item.dateAdded}</span>
-                                          )}
-                                        </div>
-                                      </td>
-                                      <td className="py-2.5 px-3">
-                                        <div className="flex items-center gap-2 mb-1">
-                                          {(() => {
-                                            const status = item.status || "in_stock";
-                                            switch(status) {
-                                              case "in_stock":
-                                                return <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-emerald-100 text-emerald-700 border border-emerald-200">Em Estoque</span>;
-                                              case "out":
-                                                return <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-amber-100 text-amber-700 border border-amber-200">Saiu / Em Uso</span>;
-                                              case "sold":
-                                                return <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-indigo-100 text-indigo-700 border border-indigo-200">Vendido</span>;
-                                              case "returned":
-                                                return <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-slate-100 text-slate-600 border border-slate-200">Devolvido</span>;
-                                              default:
-                                                return null;
-                                            }
-                                          })()}
-                                          <div className="text-[10px] text-emerald-600 font-bold font-mono">Qtd: {item.quantity}</div>
-                                        </div>
-                                        {item.takenBy && (
-                                          <div className="text-[10px] text-slate-500 italic">
-                                            Por: <span className="font-semibold text-slate-700">{item.takenBy}</span>
-                                          </div>
-                                        )}
-                                        {item.movementDate && (
-                                          <div className="text-[9px] text-slate-400 mt-0.5">
-                                            Movimentação: {item.movementDate}
-                                          </div>
-                                        )}
-                                      </td>
-                                      <td className="py-2.5 px-3 text-right font-mono text-slate-600">
-                                        R$ {item.cost?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                                      </td>
-                                      <td className="py-2.5 px-3 text-right font-bold text-slate-900 font-mono">
-                                        {item.status === "sold" && item.soldPrice ? (
-                                          <span className="text-indigo-600">R$ {item.soldPrice.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
-                                        ) : (
-                                          <span>R$ {(item.cost * item.quantity).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
-                                        )}
-                                      </td>
-                                      <td className="py-2.5 px-3 text-center">
-                                        <div className="flex justify-center gap-1.5">
-                                          <button
-                                            onClick={() => handleOpenItemModal(storage, item)}
-                                            className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-700 transition"
-                                            title="Editar material"
-                                          >
-                                            <Edit className="w-3.5 h-3.5" />
-                                          </button>
-                                          {itemTab === "archived" && (
-                                            <button
-                                              onClick={() => handleDeleteItem(storage, item.id)}
-                                              className="p-1 hover:bg-red-50 rounded text-slate-400 hover:text-red-600 transition"
-                                              title="Remover material"
-                                            >
-                                              <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                          )}
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                  {/* 3. ANÁLISE DE VIABILIDADE FINANCEIRA: ALERTA DE DESAPEGO (BELOW BILLING) */}
+                  <div className="bg-white rounded-2xl border border-slate-200/90 p-5 space-y-3 shadow-sm">
+                    <div className={`p-4 rounded-2xl border ${
+                      analysis.verdictType === "good"
+                        ? "bg-emerald-50/60 border-emerald-100"
+                        : analysis.verdictType === "warning"
+                        ? "bg-amber-50/60 border-amber-100"
+                        : "bg-red-50/60 border-red-100"
+                    }`}>
+                      <div className="flex items-start gap-3">
+                        <AlertTriangle className={`w-5 h-5 mt-0.5 shrink-0 ${
+                          analysis.verdictType === "good"
+                            ? "text-emerald-600"
+                            : analysis.verdictType === "warning"
+                            ? "text-amber-600"
+                            : "text-red-600"
+                        }`} />
+                        <div className="space-y-1">
+                          <h5 className={`text-xs font-extrabold tracking-wide uppercase ${
+                            analysis.verdictType === "good"
+                              ? "text-emerald-800"
+                              : analysis.verdictType === "warning"
+                              ? "text-amber-800"
+                              : "text-red-800"
+                          }`}>
+                            ANÁLISE DE VIABILIDADE FINANCEIRA: {analysis.verdict.toUpperCase()}
+                          </h5>
+                          <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                            {analysis.advice}
+                          </p>
+                          {analysis.breakevenMonths > 0 && analysis.breakevenMonths < 999 && (
+                            <div className="text-[11px] text-slate-500 pt-1 font-mono">
+                              Ponto de Equilíbrio (Breakeven): <strong className="text-slate-900">{analysis.breakevenMonths.toFixed(1)} meses</strong> de aluguel cobrem o valor dos materiais.
                             </div>
                           )}
                         </div>
-                      );
-                    })()}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              );
-            })()
-          ) : (
-            <div className="bg-slate-50 p-12 text-center rounded-2xl border border-slate-200/60 flex flex-col items-center justify-center min-h-[300px]">
-              <Box className="w-12 h-12 text-slate-300 mb-3 animate-pulse" />
-              <p className="text-slate-500 font-semibold">Selecione um depósito ou garagem</p>
-              <p className="text-slate-400 text-xs mt-1">Veja e administre materiais guardados, anexos de contratos e relatórios de custo-benefício.</p>
+              </div>
             </div>
-          )}
-        </div>
-      </div>
+          );
+        })()
+      )}
+
+      {/* Sub-Modal: Contrato de Locação */}
+      {isContractDetailsOpen && selectedStorageId && (
+        (() => {
+          const storage = storages.find((s) => s.id === selectedStorageId);
+          if (!storage) return null;
+
+          return (
+            <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in duration-200">
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-2xl my-auto overflow-hidden relative flex flex-col max-h-[90vh]">
+                {/* Header */}
+                <div className="p-4 sm:p-5 bg-slate-50/90 border-b border-slate-200 flex justify-between items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-indigo-600 shrink-0" />
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900">Contrato de Locação</h3>
+                      <p className="text-xs text-slate-500">{storage.name}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setIsContractDetailsOpen(false)}
+                    className="p-1.5 hover:bg-slate-200/80 text-slate-500 hover:text-slate-800 rounded-xl transition border border-slate-200 bg-white"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Content */}
+                <div className="p-5 sm:p-6 overflow-y-auto space-y-6 text-xs text-slate-700">
+                  {/* Financial & Contract terms */}
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">TERMOS DO CONTRATO DE LOCAÇÃO</h4>
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 divide-y divide-slate-200/60">
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Valor do Aluguel:</span>
+                        <span className="font-extrabold text-red-600 font-mono text-sm">
+                          R$ {storage.monthlyCost?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}/mês
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Dia de Vencimento:</span>
+                        <span className="font-semibold text-slate-800">Todo dia {storage.dueDay}</span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Início do Contrato:</span>
+                        <span className="font-medium text-slate-800">
+                          {(() => {
+                            if (!storage.contractStartDate) return "-";
+                            const parts = storage.contractStartDate.split("-");
+                            return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : storage.contractStartDate;
+                          })()}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Término do Contrato:</span>
+                        <span className="font-medium text-slate-800">
+                          {(() => {
+                            if (!storage.contractEndDate) return "Indeterminado";
+                            const parts = storage.contractEndDate.split("-");
+                            return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : storage.contractEndDate;
+                          })()}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Índice de Reajuste:</span>
+                        <span className="font-medium text-slate-800">{storage.readjustmentIndex || "-"}</span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Multa Rescisória:</span>
+                        <span className="font-medium text-slate-800">
+                          {storage.rescissionFine ? `R$ ${storage.rescissionFine.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "-"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Forma de Pagamento:</span>
+                        <span className="font-medium text-slate-800">{storage.paymentMethod || "-"}</span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-slate-500 font-medium">Local de Guarda Físico:</span>
+                        <span className="text-slate-800 font-medium truncate max-w-[200px]" title={storage.evidenceLocation || "Não informado"}>
+                          {storage.evidenceLocation || "Não informado"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Landlord details */}
+                  <div className="space-y-2">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">LOCADOR (PROPRIETÁRIO DO ESPAÇO)</h4>
+                    <div className="bg-white p-3.5 rounded-2xl border border-slate-200 space-y-1">
+                      <p className="font-bold text-slate-900">{storage.landlordName || "Não Informado"}</p>
+                      {storage.landlordContact && (
+                        <p className="text-slate-500 font-mono text-[11px]">{storage.landlordContact}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Deposit / Guarantee */}
+                  <div className="space-y-2">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">GARANTIA / DEPOSITO CAUÇÃO</h4>
+                    {storage.hasDeposit ? (
+                      <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 space-y-2.5">
+                        <div className="flex justify-between items-center">
+                          <span className="text-indigo-700 font-medium">Valor do Depósito:</span>
+                          <span className="font-extrabold text-indigo-900 font-mono">
+                            R$ {storage.depositValue?.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center pt-1.5 border-t border-indigo-100/60">
+                          <span className="text-indigo-700 font-medium">Forma de Pagamento:</span>
+                          <span className="font-semibold text-indigo-900 uppercase text-[10px]">
+                            {storage.depositPaymentType === "installments" 
+                              ? `Parcelado (${storage.depositInstallments || 1}x)` 
+                              : "À Vista"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center pt-1.5 border-t border-indigo-100/60">
+                          <span className="text-indigo-700 font-medium">Status de Pagamento:</span>
+                          <span className={`px-2 py-0.5 text-[10px] rounded-full font-bold uppercase tracking-wider ${
+                            storage.depositIsPaid 
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-200" 
+                              : "bg-amber-100 text-amber-800 border border-amber-200"
+                          }`}>
+                            {storage.depositIsPaid ? "Pago" : "Pendente"}
+                          </span>
+                        </div>
+                        {storage.depositIsPaid && storage.depositPaymentFile && (
+                          <div className="pt-2 border-t border-indigo-100/60 flex justify-between items-center">
+                            <span className="text-indigo-700 font-semibold">Comprovante de Pagamento:</span>
+                            <a
+                              href={storage.depositPaymentFile}
+                              download={storage.depositPaymentFileName || "comprovante_caucao"}
+                              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition font-bold text-[10px] flex items-center gap-1 shadow-sm"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              Baixar Comprovante
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center text-slate-400 font-medium">
+                        Nenhum depósito de caução registrado.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Contract file attachment */}
+                  <div className="space-y-2">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">DOCUMENTO DO CONTRATO DIGITAL</h4>
+                    {storage.contractFile ? (
+                      <div className="p-3.5 bg-emerald-50 rounded-2xl border border-emerald-100 flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                          <FileText className="w-8 h-8 text-emerald-600 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-emerald-900 truncate">
+                              {storage.evidenceName || "contrato_deposito.pdf"}
+                            </p>
+                            <span className="text-[10px] text-emerald-600 font-mono font-bold block">DOCUMENTO ARMAZENADO</span>
+                          </div>
+                        </div>
+                        <a
+                          href={storage.contractFile}
+                          download={storage.evidenceName || "contrato_deposito"}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition text-xs font-bold flex items-center gap-1 shadow-sm"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Baixar
+                        </a>
+                      </div>
+                    ) : (
+                      <div className="p-5 bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-center space-y-2">
+                        <Upload className="w-6 h-6 text-slate-300 mx-auto" />
+                        <p className="text-slate-500 font-medium">Nenhum documento de contrato anexado.</p>
+                        {onNavigateToCreateContract && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsContractDetailsOpen(false);
+                              handleCreateContractFromStorage(storage);
+                            }}
+                            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            Gerar Contrato com IA
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()
+      )}
 
       {/* Financial Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-slate-150 pt-6">
@@ -2629,16 +2854,100 @@ export const StoragesView = ({
                 })()}
 
                 <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1 font-mono">NOME DO MATERIAL / OBJETO *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: Porcelanato Portobello, Janela Blindex, Furadeira"
+                        value={itemFormData.name}
+                        onChange={(e) => setItemFormData({ ...itemFormData, name: e.target.value })}
+                        className="w-full bg-slate-50 text-slate-900 rounded-lg px-3 py-2 text-sm border border-slate-200 focus:outline-none focus:border-emerald-500 focus:bg-white transition-all font-semibold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1 font-mono">CATEGORIA</label>
+                      <input
+                        type="text"
+                        list="item-categories"
+                        placeholder="Ex: Material de Construção, Ferramentas"
+                        value={itemFormData.category}
+                        onChange={(e) => setItemFormData({ ...itemFormData, category: e.target.value })}
+                        className="w-full bg-slate-50 text-slate-900 rounded-lg px-3 py-2 text-sm border border-slate-200 focus:outline-none focus:border-emerald-500 focus:bg-white transition-all"
+                      />
+                      <datalist id="item-categories">
+                        <option value="Material de Construção" />
+                        <option value="Ferramentas & Equipamentos" />
+                        <option value="Móveis & Decoração" />
+                        <option value="Eletrônicos & Mídia" />
+                        <option value="Peças & Componentes" />
+                        <option value="Caixas & Armazenamento" />
+                        <option value="Documentos & Arquivo" />
+                        <option value="Outros" />
+                      </datalist>
+                    </div>
+                  </div>
+
+                  {/* ESTADO DO OBJETO & VALIDADE */}
+                  <div className="bg-amber-50/40 border border-amber-200/80 rounded-xl p-3.5 space-y-3">
+                    <h4 className="text-[10px] font-black text-amber-800 uppercase tracking-widest flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-amber-600" />
+                      Estado do Objeto & Validade
+                    </h4>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-amber-900 uppercase tracking-wider block mb-1 font-mono">ESTADO / CONDIÇÃO</label>
+                        <select
+                          value={itemFormData.condition || "good"}
+                          onChange={(e) => setItemFormData({ ...itemFormData, condition: e.target.value as any })}
+                          className="w-full bg-white text-slate-900 rounded-lg px-3 py-2 text-xs border border-amber-200 focus:outline-none focus:border-amber-500 font-semibold"
+                        >
+                          <option value="new">🟢 Novo / Excelente estado</option>
+                          <option value="good">🔵 Bom estado</option>
+                          <option value="fair">⚪ Estado Regular</option>
+                          <option value="poor">🔴 Ruim / Com defeito ou danificado</option>
+                          <option value="expiring_soon">🟡 A Vencer Próximo (Atenção)</option>
+                          <option value="expired">🟣 Vencido / Expirado</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-bold text-amber-900 uppercase tracking-wider block mb-1 font-mono">DATA DE VALIDADE (OPCIONAL)</label>
+                        <input
+                          type="date"
+                          value={itemFormData.expirationDate}
+                          onChange={(e) => setItemFormData({ ...itemFormData, expirationDate: e.target.value })}
+                          className="w-full bg-white text-slate-900 rounded-lg px-3 py-2 text-xs border border-amber-200 focus:outline-none focus:border-amber-500 font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* FOTO DO OBJETO */}
                   <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1 font-mono">NOME DO MATERIAL *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ex: Porcelanato Portobello, Janela Blindex"
-                      value={itemFormData.name}
-                      onChange={(e) => setItemFormData({ ...itemFormData, name: e.target.value })}
-                      className="w-full bg-slate-50 text-slate-900 rounded-lg px-3 py-2 text-sm border border-slate-200 focus:outline-none focus:border-emerald-500 focus:bg-white transition-all"
-                    />
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1 font-mono">FOTO DO OBJETO / MATERIAL</label>
+                    {itemFormData.photoUrl ? (
+                      <div className="relative w-32 h-32 rounded-xl overflow-hidden border-2 border-emerald-500 shadow-sm group">
+                        <img src={itemFormData.photoUrl} alt="Foto do Objeto" className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => setItemFormData({ ...itemFormData, photoUrl: "" })}
+                          className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded-full shadow hover:bg-red-700 transition"
+                          title="Remover Foto"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="flex items-center gap-2 px-3 py-2.5 bg-slate-50 border border-dashed border-slate-300 hover:border-emerald-500 rounded-xl cursor-pointer text-slate-600 hover:text-emerald-700 transition text-xs font-semibold">
+                        <Camera className="w-4 h-4 text-slate-400" />
+                        Anexar / Tirar Foto do Objeto
+                        <input type="file" accept="image/*" capture="environment" onChange={handleItemPhotoUpload} className="hidden" />
+                      </label>
+                    )}
                   </div>
 
                   <div>
@@ -3034,6 +3343,201 @@ export const StoragesView = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK DETAIL VIEW MODAL FOR STORED ITEM */}
+      {selectedItemForDetail && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/80 shrink-0">
+              <div className="flex items-center gap-2">
+                <Box className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wide">
+                  Detalhes do Objeto
+                </h3>
+              </div>
+              <button
+                onClick={() => setSelectedItemForDetail(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-full transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4">
+              {/* Photo Banner if available */}
+              {selectedItemForDetail.photoUrl ? (
+                <div className="w-full h-48 rounded-2xl overflow-hidden border border-slate-200 bg-slate-900 shadow-inner">
+                  <img
+                    src={selectedItemForDetail.photoUrl}
+                    alt={selectedItemForDetail.name}
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+              ) : (
+                <div className="w-full py-8 rounded-2xl bg-slate-50 border border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-400">
+                  <Box className="w-10 h-10 mb-1 opacity-50" />
+                  <span className="text-xs font-medium">Sem foto cadastrada</span>
+                </div>
+              )}
+
+              {/* Title & Badges */}
+              <div>
+                <div className="flex items-start justify-between gap-2">
+                  <h2 className="text-lg font-black text-slate-900 leading-tight">
+                    {selectedItemForDetail.name}
+                  </h2>
+                  {selectedItemForDetail.category && (
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+                      {selectedItemForDetail.category}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2 mt-2.5">
+                  {/* Status Badge */}
+                  {(() => {
+                    const status = selectedItemForDetail.status || "in_stock";
+                    switch(status) {
+                      case "in_stock":
+                        return <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">🟢 Em Estoque</span>;
+                      case "out":
+                        return <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-100 text-amber-800 border border-amber-200">🟡 Saiu / Em Uso</span>;
+                      case "sold":
+                        return <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-indigo-100 text-indigo-800 border border-indigo-200">🔵 Vendido</span>;
+                      case "returned":
+                        return <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-slate-100 text-slate-700 border border-slate-200">⚪ Devolvido</span>;
+                      default:
+                        return null;
+                    }
+                  })()}
+
+                  {/* Condition Badge */}
+                  {(() => {
+                    const badge = getItemConditionBadge(selectedItemForDetail.condition);
+                    return (
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${badge.bg}`}>
+                        {badge.label}
+                      </span>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Expiration Alert */}
+              {selectedItemForDetail.expirationDate && (() => {
+                const expStatus = getItemExpirationStatus(selectedItemForDetail.expirationDate);
+                if (!expStatus) return null;
+                return (
+                  <div className={`p-3 rounded-xl border flex items-center gap-2 text-xs font-semibold ${
+                    expStatus.isExpired 
+                      ? "bg-red-50 text-red-800 border-red-200" 
+                      : expStatus.isExpiringSoon 
+                      ? "bg-amber-50 text-amber-800 border-amber-200" 
+                      : "bg-slate-50 text-slate-700 border-slate-200"
+                  }`}>
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{expStatus.label}</span>
+                  </div>
+                );
+              })()}
+
+              {/* Key Details Grid */}
+              <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 text-xs">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Quantidade</span>
+                  <span className="font-extrabold text-slate-900 text-sm font-mono">{selectedItemForDetail.quantity} un</span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Custo Unitário</span>
+                  <span className="font-extrabold text-slate-900 text-sm font-mono">
+                    R$ {(selectedItemForDetail.cost || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Valor Total</span>
+                  <span className="font-extrabold text-emerald-700 text-sm font-mono">
+                    R$ {((selectedItemForDetail.cost || 0) * (selectedItemForDetail.quantity || 1)).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Localização</span>
+                  <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
+                    <MapPin className="w-3 h-3 text-emerald-600 shrink-0" />
+                    {selectedItemForDetail.location || "Não informada"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Description */}
+              {selectedItemForDetail.description && (
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Descrição / Observações</span>
+                  <p className="text-xs text-slate-700 bg-slate-50 p-3 rounded-xl border border-slate-200 whitespace-pre-wrap leading-relaxed">
+                    {selectedItemForDetail.description}
+                  </p>
+                </div>
+              )}
+
+              {/* Tracking Details */}
+              {(selectedItemForDetail.takenBy || selectedItemForDetail.movementDate || selectedItemForDetail.expectedReturnDate) && (
+                <div className="bg-indigo-50/60 border border-indigo-100 p-3 rounded-2xl space-y-1.5 text-xs text-indigo-900">
+                  <span className="text-[10px] font-black uppercase text-indigo-700 font-mono block">Rastreio de Movimentação</span>
+                  {selectedItemForDetail.takenBy && (
+                    <div>Responsável: <strong className="text-indigo-950">{selectedItemForDetail.takenBy}</strong></div>
+                  )}
+                  {selectedItemForDetail.movementDate && (
+                    <div>Data da Saída: <span className="font-mono">{selectedItemForDetail.movementDate}</span></div>
+                  )}
+                  {selectedItemForDetail.expectedReturnDate && (
+                    <div>Previsão de Retorno: <span className="font-mono">{selectedItemForDetail.expectedReturnDate}</span></div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                {(() => {
+                  const currentStorage = storages.find(s => s.items?.some(i => i.id === selectedItemForDetail.id)) || (selectedStorageId ? storages.find(s => s.id === selectedStorageId) : null);
+                  if (!currentStorage) return null;
+                  return (
+                    <>
+                      <button
+                        onClick={() => {
+                          const itemToEdit = selectedItemForDetail;
+                          setSelectedItemForDetail(null);
+                          handleOpenItemModal(currentStorage, itemToEdit);
+                        }}
+                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border border-slate-200 active:bg-slate-300"
+                      >
+                        <Edit className="w-3.5 h-3.5 text-slate-600" />
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => {
+                          const idToDelete = selectedItemForDetail.id;
+                          setSelectedItemForDetail(null);
+                          handleDeleteItem(currentStorage, idToDelete);
+                        }}
+                        className="px-3.5 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border border-red-200/80 active:bg-red-200"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                        Excluir
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+              <button
+                onClick={() => setSelectedItemForDetail(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition"
+              >
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}
