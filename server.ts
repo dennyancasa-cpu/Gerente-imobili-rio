@@ -182,7 +182,12 @@ const createOAuthClient = (req?: any, defaultTokens?: any) => {
   return client;
 };
 
-const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
+const SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/tasks',
+  'https://www.googleapis.com/auth/tasks.readonly',
+];
 
 // API Routes
 
@@ -695,6 +700,120 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
       connected: false, 
       error: error.message || 'Erro ao testar conexão com o Drive' 
     });
+  }
+});
+
+// Google Tasks Proxy API Endpoints
+app.get('/api/tasks/lists', async (req, res) => {
+  let tokens = (req.session as any).tokens;
+  const headerTokens = req.headers['x-drive-tokens'];
+  if (!tokens && headerTokens) {
+    try { tokens = JSON.parse(headerTokens as string); } catch (e) {}
+  }
+  if (!tokens) return res.status(401).json({ error: 'Google Account not connected' });
+
+  try {
+    const client = createOAuthClient(req, tokens);
+    const tasksApi = google.tasks({ version: 'v1', auth: client });
+    const response = await tasksApi.tasklists.list();
+    res.json(response.data);
+  } catch (err: any) {
+    console.error('Error listing task lists:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to list task lists' });
+  }
+});
+
+app.get('/api/tasks/lists/:listId/tasks', async (req, res) => {
+  let tokens = (req.session as any).tokens;
+  const headerTokens = req.headers['x-drive-tokens'];
+  if (!tokens && headerTokens) {
+    try { tokens = JSON.parse(headerTokens as string); } catch (e) {}
+  }
+  if (!tokens) return res.status(401).json({ error: 'Google Account not connected' });
+
+  try {
+    const client = createOAuthClient(req, tokens);
+    const tasksApi = google.tasks({ version: 'v1', auth: client });
+    const response = await tasksApi.tasks.list({
+      tasklist: req.params.listId || '@default',
+      showCompleted: true,
+      showHidden: true,
+    });
+    res.json(response.data);
+  } catch (err: any) {
+    console.error('Error listing tasks:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to list tasks' });
+  }
+});
+
+app.post('/api/tasks/lists/:listId/tasks', async (req, res) => {
+  let tokens = (req.session as any).tokens;
+  const headerTokens = req.headers['x-drive-tokens'];
+  if (!tokens && headerTokens) {
+    try { tokens = JSON.parse(headerTokens as string); } catch (e) {}
+  }
+  if (!tokens) return res.status(401).json({ error: 'Google Account not connected' });
+
+  try {
+    const client = createOAuthClient(req, tokens);
+    const tasksApi = google.tasks({ version: 'v1', auth: client });
+    const { title, notes, due } = req.body;
+    const taskBody: any = { title, notes };
+    if (due) taskBody.due = new Date(due).toISOString();
+
+    const response = await tasksApi.tasks.insert({
+      tasklist: req.params.listId || '@default',
+      requestBody: taskBody,
+    });
+    res.json(response.data);
+  } catch (err: any) {
+    console.error('Error creating task:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to create task' });
+  }
+});
+
+app.patch('/api/tasks/lists/:listId/tasks/:taskId', async (req, res) => {
+  let tokens = (req.session as any).tokens;
+  const headerTokens = req.headers['x-drive-tokens'];
+  if (!tokens && headerTokens) {
+    try { tokens = JSON.parse(headerTokens as string); } catch (e) {}
+  }
+  if (!tokens) return res.status(401).json({ error: 'Google Account not connected' });
+
+  try {
+    const client = createOAuthClient(req, tokens);
+    const tasksApi = google.tasks({ version: 'v1', auth: client });
+    const response = await tasksApi.tasks.patch({
+      tasklist: req.params.listId || '@default',
+      task: req.params.taskId,
+      requestBody: req.body,
+    });
+    res.json(response.data);
+  } catch (err: any) {
+    console.error('Error updating task:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to update task' });
+  }
+});
+
+app.delete('/api/tasks/lists/:listId/tasks/:taskId', async (req, res) => {
+  let tokens = (req.session as any).tokens;
+  const headerTokens = req.headers['x-drive-tokens'];
+  if (!tokens && headerTokens) {
+    try { tokens = JSON.parse(headerTokens as string); } catch (e) {}
+  }
+  if (!tokens) return res.status(401).json({ error: 'Google Account not connected' });
+
+  try {
+    const client = createOAuthClient(req, tokens);
+    const tasksApi = google.tasks({ version: 'v1', auth: client });
+    await tasksApi.tasks.delete({
+      tasklist: req.params.listId || '@default',
+      task: req.params.taskId,
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Error deleting task:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to delete task' });
   }
 });
 

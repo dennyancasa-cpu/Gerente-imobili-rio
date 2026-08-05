@@ -164,6 +164,8 @@ export const Auth: React.FC<AuthProps> = ({ onTenantLogin }) => {
       const provider = new GoogleAuthProvider();
       provider.addScope('https://www.googleapis.com/auth/drive.file');
       provider.addScope('https://www.googleapis.com/auth/calendar');
+      provider.addScope('https://www.googleapis.com/auth/tasks');
+      provider.addScope('https://www.googleapis.com/auth/tasks.readonly');
       const result = await signInWithPopup(auth, provider);
       
       const credential = GoogleAuthProvider.credentialFromResult(result);

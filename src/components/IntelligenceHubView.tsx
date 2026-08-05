@@ -786,7 +786,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
       <div className="mb-8 pl-2">
         <h1 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight mb-2 flex items-center gap-3">
           <Wand2 className="w-8 h-8 text-indigo-600" />
-          Hub Estratégico & Inteligência Artificial
+          Hub Jurídico IA
         </h1>
         <p className="text-slate-500 text-lg max-w-2xl font-medium">
           Diferenciais do aplicativo: Acesso ao Consultor Jurídico IA, leituras automatizadas de contratos antigos e importações rápidas.

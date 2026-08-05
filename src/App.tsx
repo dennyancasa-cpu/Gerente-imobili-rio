@@ -150,6 +150,7 @@ import {
   Heart,
   Warehouse,
   Car, BarChart2,
+  CheckSquare,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Toaster, toast } from "sonner";
@@ -183,7 +184,9 @@ import { ImportDataView } from "./components/ImportDataView";
 import { FinancialIAView } from "./components/FinancialIAView";
 import { FinancialOverviewView } from "./components/FinancialOverviewView";
 import { CalendarSync } from "./components/CalendarSync";
+import { GoogleTasksView } from "./components/GoogleTasksView";
 import { LegalDocsView } from "./components/LegalDocsView";
+import { PermissionsOnboardingModal } from "./components/PermissionsOnboardingModal";
 import {
   BarChart,
   Bar,
@@ -10972,6 +10975,16 @@ const AlertsView = ({
         </div>
         <div className="flex gap-2">
           <button
+            onClick={() => handleNavigate("google_tasks")}
+            className="p-2.5 rounded-xl transition-all border shrink-0 flex items-center justify-center gap-2 outline-none bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm hover:shadow-md active:scale-95 border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 font-bold"
+            title="Abrir Google Tasks"
+          >
+            <CheckSquare className="w-5 h-5 text-white" />
+            <span className="text-sm font-bold tracking-tight hidden sm:block text-white">
+              Google Tasks
+            </span>
+          </button>
+          <button
             onClick={() => setIsCreateAlertModalOpen(true)}
             className="p-2.5 rounded-xl transition-all border shrink-0 flex items-center justify-center gap-2 outline-none bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm hover:shadow-md active:scale-95 border-indigo-600 focus:ring-2 focus:ring-indigo-500/20 font-bold"
             title="Criar Alerta Personalizado"
@@ -11845,6 +11858,36 @@ const SettingsView = ({
   );
   const [generatedPin, setGeneratedPin] = useState<string>("");
   const [enteredPin, setEnteredPin] = useState("");
+  const [showAllPermissions, setShowAllPermissions] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'default';
+  });
+
+  const handleRequestNotificationsInSettings = async () => {
+    if (typeof window === 'undefined') return;
+    if (!('Notification' in window)) {
+      toast.error('Este navegador não suporta notificações push nativas.');
+      return;
+    }
+    try {
+      let perm = Notification.permission;
+      if (perm === 'default') {
+        perm = await Notification.requestPermission();
+      }
+      setNotificationPermission(perm);
+      if (perm === 'granted') {
+        toast.success('Notificações de vencimento ativadas com sucesso!');
+      } else {
+        toast.error('Notificações bloqueadas nas configurações do navegador.');
+      }
+    } catch (e) {
+      console.error(e);
+      toast.error('Não foi possível alterar a permissão de notificação.');
+    }
+  };
 
   const handleSendPin = () => {
     if (deleteAccountInput !== "EXCLUIR" || !user) return;
@@ -12228,233 +12271,281 @@ const SettingsView = ({
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Card className="p-6 border border-emerald-200 bg-emerald-50/50 flex flex-col items-start text-left relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
-              <Download className="w-24 h-24 text-emerald-500" />
-            </div>
-            <h3 className="text-base font-black mb-2 flex items-center gap-2 text-emerald-900 z-10 uppercase tracking-tight">
-              <Download className="w-5 h-5 text-emerald-600" /> Aplicativo
-              Nativo (PWA)
-            </h3>
-            <p className="text-sm text-emerald-800/80 mb-6 flex-1 w-full text-left z-10 leading-relaxed font-medium">
-              Transforme este sistema em um aplicativo real no seu celular ou
-              computador. Rápido, seguro e sem ocupar espaço.
-            </p>
+        {/* Central de Permissões, PWA e Sincronização do Sistema (Unificada & Organizada) */}
+        {(() => {
+          const isNotificationGranted = notificationPermission === 'granted';
+          const hasPendingDrive = !isDriveConnected;
+          const hasPendingNotifications = !isNotificationGranted;
+          const hasPendingPwa = isInstallable && typeof window !== 'undefined' && !window.matchMedia('(display-mode: standalone)').matches;
+          const pendingCount = (hasPendingDrive ? 1 : 0) + (hasPendingNotifications ? 1 : 0) + (hasPendingPwa ? 1 : 0);
 
-            {isInstallable ? (
-              <div className="w-full space-y-4 z-10">
-                <Button
-                  onClick={handleInstallClick}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black h-14 shadow-xl shadow-emerald-200 transition-all duration-300 rounded-2xl text-lg animate-pulse border-b-4 border-emerald-800"
-                >
-                  <Download className="w-6 h-6 mr-3" /> INSTALAR AGORA
-                </Button>
-                <div className="p-3 bg-emerald-100/50 rounded-xl border border-emerald-200 flex items-center justify-center gap-2">
-                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
-                  <p className="text-[10px] text-emerald-800 font-black uppercase tracking-widest">
-                    Sinal de Instalação Liberado
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-6 w-full z-10">
-                <div className="bg-white/90 backdrop-blur-md p-5 rounded-2xl border border-emerald-100 shadow-sm space-y-4">
-                  <div className="flex items-center justify-between border-b border-emerald-50 pb-3">
-                    <h4 className="text-xs font-black text-emerald-900 uppercase tracking-widest flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 text-emerald-500" />{" "}
-                      Compatibilidade
-                    </h4>
-                    {window.isSecureContext ? (
-                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[9px] font-black uppercase">
-                        Seguro
-                      </span>
-                    ) : (
-                      <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[9px] font-black uppercase">
-                        Inseguro
-                      </span>
-                    )}
+          return (
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden p-6 sm:p-8 space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-100">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-600 to-slate-900 text-white flex items-center justify-center shadow-md shadow-indigo-200 shrink-0">
+                    <ShieldCheck className="w-6 h-6" />
                   </div>
-
-                  <ul className="text-[11px] text-slate-600 space-y-3 font-medium">
-                    <li className="flex gap-3">
-                      <div className="w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center text-[10px] font-black shrink-0">
-                        1
-                      </div>
-                      <span>
-                        <strong>Abrir em Nova Guia:</strong> Se estiver no
-                        editor, saia do Iframe para instalar.
-                      </span>
-                    </li>
-                    <li className="flex gap-3">
-                      <div className="w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center text-[10px] font-black shrink-0">
-                        2
-                      </div>
-                      <span>
-                        <strong>Menu Lateral:</strong> Clique nos{" "}
-                        <strong>3 pontos</strong> do Chrome e em{" "}
-                        <strong>"Instalar aplicativo"</strong>.
-                      </span>
-                    </li>
-                    <li className="flex gap-3">
-                      <div className="w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center text-[10px] font-black shrink-0">
-                        3
-                      </div>
-                      <span>
-                        <strong>iPhone (iOS):</strong> Use o botão{" "}
-                        <strong>Compartilhar</strong> {">"}{" "}
-                        <strong>Adicionar à Tela de Início</strong>.
-                      </span>
-                    </li>
-                  </ul>
-
-                  {!isInstallable &&
-                    !window.matchMedia("(display-mode: standalone)")
-                      .matches && (
-                      <div className="pt-2">
-                        <p className="text-[10px] text-slate-400 font-bold leading-tight italic">
-                          Nota: Se as opções acima não aparecerem, seu navegador
-                          pode não suportar IA-PWA nativo no momento.
-                        </p>
-                      </div>
-                    )}
-                </div>
-
-                {!window.matchMedia("(display-mode: standalone)").matches && (
-                  <div className="space-y-3">
-                    <Button
-                      variant="outline"
-                      onClick={openInNewTab}
-                      className="w-full border-2 border-indigo-200 text-indigo-700 bg-white hover:bg-indigo-50 font-black h-12 transition-all duration-300 shadow-sm rounded-xl"
-                    >
-                      <ExternalLink className="w-4 h-4 mr-2" /> ABRIR EM NOVA
-                      ABA (ESSENCIAL)
-                    </Button>
-
-                    <Button
-                      variant="outline"
-                      disabled={isBotRunning}
-                      onClick={startInstallBot}
-                      className="w-full border-2 border-emerald-200 text-emerald-700 bg-white hover:bg-emerald-50 font-black h-12 transition-all duration-300 shadow-sm rounded-xl"
-                    >
-                      {isBotRunning ? (
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
-                          REVERSANDO KERNEL...
-                        </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl font-black text-slate-900 tracking-tight">
+                        Central de Permissões, PWA & Sincronização
+                      </h2>
+                      {pendingCount > 0 ? (
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1 animate-pulse">
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> {pendingCount} Pendência(s)
+                        </span>
                       ) : (
-                        <div className="flex items-center gap-2">
-                          <Zap className="w-4 h-4 fill-emerald-500" /> FORÇAR
-                          REPARO DE INSTALAÇÃO
-                        </div>
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Tudo Configurado
+                        </span>
                       )}
-                    </Button>
-
-                    <p className="text-[9px] text-slate-400 text-center uppercase font-bold tracking-tighter">
-                      O robô irá limpar caches travados e forçar o navegador a
-                      liberar o download.
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Gerencie em um só lugar as conexões de nuvem, aplicativo nativo, agenda e alertas push do sistema.
                     </p>
                   </div>
-                )}
+                </div>
+              </div>
 
-                {botLogs.length > 0 && (
-                  <div className="w-full bg-slate-900 rounded-2xl p-4 max-h-48 overflow-y-auto font-mono text-[10px] text-emerald-400 space-y-2 shadow-2xl border border-slate-700 relative group">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                        <span className="text-[9px] font-bold text-slate-500 uppercase">
-                          Console do Robô
-                        </span>
-                      </div>
-                      <button
-                        onClick={copyLogsToClipboard}
-                        className="text-[9px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-600 transition-colors"
-                      >
-                        COPIAR LOGS
-                      </button>
+              {/* SÓ APARECE PENDÊNCIAS SE HOUVER ALGUMA PARA FAZER */}
+              {pendingCount > 0 ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-amber-50/80 border border-amber-200/80 rounded-2xl flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="text-xs text-amber-900 leading-relaxed">
+                      <strong>Ações de Autorização Necessárias ({pendingCount}):</strong> O sistema detectou pendências para funcionamento total das automações. Clique nos botões abaixo para autorizar cada item:
                     </div>
-                    {botLogs.map((log, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          "flex gap-2",
-                          log.includes("❌")
-                            ? "text-red-400"
-                            : log.includes("⚠️")
-                              ? "text-amber-400"
-                              : "text-emerald-400",
-                        )}
-                      >
-                        <span className="opacity-40">{">"}</span>
-                        <span className="select-text">{log}</span>
-                      </div>
-                    ))}
                   </div>
-                )}
-              </div>
-            )}
-          </Card>
 
-          <Card className="p-6 border border-slate-200 flex flex-col items-start text-left">
-            <h3 className="text-base font-bold mb-2 flex items-center gap-2 text-slate-900">
-              <Cloud className="w-5 h-5 text-emerald-500" /> Sincronização
-              Google Drive
-            </h3>
-            <p className="text-sm text-slate-500 mb-2 flex-1 w-full text-left">
-              A sincronização com o Google Drive agora acontece automaticamente
-              durante o login.
-            </p>
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  "w-2.5 h-2.5 rounded-full",
-                  isDriveConnected
-                    ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse"
-                    : "bg-slate-300",
-                )}
-              />
-              <p className="text-xs font-bold text-slate-700">
-                {isDriveConnected
-                  ? "Status: Conectado. Comprovantes e recibos são salvos automaticamente."
-                  : "Status: Desconectado. Clique no botão abaixo para conectar seu Drive."}
-              </p>
-            </div>
-            {!isDriveConnected && (
-              <div className="mt-2 text-[10px] text-amber-700 bg-amber-50 p-2 rounded-lg w-full text-left border border-amber-200">
-                <strong>Desconectando com frequência?</strong> Se o seu acesso
-                for revogado sozinho após 7 dias, é porque sua "Tela de
-                Consentimento OAuth" no Google Cloud Console está no status
-                "Testando". Altere para "Em Produção" e adicione seus usuários
-                de teste para que a conexão não expire mais.
+                  <div className="grid grid-cols-1 gap-4">
+                    {/* 1. Pendente Google Drive / Calendar / Tasks */}
+                    {hasPendingDrive && (
+                      <div className="p-5 rounded-2xl border border-indigo-200 bg-indigo-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="flex items-start gap-3.5">
+                          <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0 font-bold">
+                            <Cloud className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-sm text-slate-900">Sincronização Google Drive, Agenda & Tasks</h3>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-200">
+                                Falta Conectar
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                              Conecte sua conta do Google para enviar comprovantes de recibo para o Drive e sincronizar vencimentos no Google Calendar e Google Tasks.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          onClick={onConnectDrive}
+                          className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs h-10 px-5 rounded-xl shadow-md shadow-indigo-100 shrink-0 self-end sm:self-center"
+                        >
+                          <Cloud className="w-4 h-4 mr-2" /> Conectar Google
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* 2. Pendente Notificações Push */}
+                    {hasPendingNotifications && (
+                      <div className="p-5 rounded-2xl border border-amber-200 bg-amber-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="flex items-start gap-3.5">
+                          <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center shrink-0 font-bold">
+                            <Bell className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-sm text-slate-900">Notificações Push & Alertas de Vencimentos</h3>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-200">
+                                Falta Ativar
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                              Receba alertas no navegador e no celular quando houver pagamentos em atraso, vencimentos do dia ou novos chamados.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          onClick={handleRequestNotificationsInSettings}
+                          className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs h-10 px-5 rounded-xl shadow-md shadow-amber-100 shrink-0 self-end sm:self-center"
+                        >
+                          <Bell className="w-4 h-4 mr-2" /> Ativar Notificações
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* 3. Pendente PWA Nativo */}
+                    {hasPendingPwa && (
+                      <div className="p-5 rounded-2xl border border-emerald-200 bg-emerald-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="flex items-start gap-3.5">
+                          <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0 font-bold">
+                            <Smartphone className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-sm text-slate-900">Instalação de Aplicativo Nativo (PWA)</h3>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                Disponível
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                              Instale o app direto na tela de início do seu celular ou computador para acesso instantâneo e suporte a uso offline.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          onClick={handleInstallClick}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-10 px-5 rounded-xl shadow-md shadow-emerald-100 shrink-0 self-end sm:self-center"
+                        >
+                          <Download className="w-4 h-4 mr-2" /> Instalar App
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                /* QUANDO TUDO ESTIVER AUTORIZADO */
+                <div className="p-6 bg-emerald-50/80 border border-emerald-200/90 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-md shadow-emerald-200">
+                      <CheckCircle2 className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-slate-900 text-base">Tudo Configurado e Sincronizado!</h3>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Não há autorizações pendentes no momento. Seu Google Drive, Google Agenda, Notificações Push e App Nativo PWA estão ativos.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* EXPANSÃO/TOGGLE PARA GERENCIAR DETALHES AVANÇADOS */}
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => setShowAllPermissions(!showAllPermissions)}
+                  className="w-full py-2.5 px-4 bg-slate-50 hover:bg-slate-100 rounded-2xl border border-slate-200/80 text-xs font-bold text-slate-700 flex items-center justify-between transition-colors"
+                >
+                  <span className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                    {showAllPermissions ? "Ocultar Detalhes e Gerenciamento Avançado" : "Ver / Gerenciar Todas as Conexões e Permissões"}
+                  </span>
+                  <ChevronDown className={cn("w-4 h-4 text-slate-500 transition-transform", showAllPermissions && "rotate-180")} />
+                </button>
+
+                <AnimatePresence>
+                  {showAllPermissions && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden space-y-4 pt-4"
+                    >
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* Item 1: Drive Details */}
+                        <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/60 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                              <Cloud className="w-4 h-4 text-indigo-600" /> Sincronização Google Drive
+                            </span>
+                            {isDriveConnected ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">Conectado</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700">Desconectado</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-600 leading-relaxed">
+                            {isDriveConnected 
+                              ? "Comprovantes de pagamento, recibos e laudos de vistoria são enviados para sua pasta no Google Drive."
+                              : "O Google Drive está desconectado. Conecte para salvar arquivos e integrar com Google Tasks."}
+                          </p>
+                          {driveError && (
+                            <p className="text-[10px] text-red-500 bg-red-50 p-2 rounded-lg border border-red-100 font-medium">
+                              {driveError}
+                            </p>
+                          )}
+                          <div>
+                            {isDriveConnected ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={onDisconnectDrive}
+                                className="text-xs font-bold text-red-600 hover:bg-red-50 border-red-200 h-8"
+                              >
+                                <CloudOff className="w-3.5 h-3.5 mr-1.5" /> Desconectar Drive
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={onConnectDrive}
+                                className="text-xs font-bold text-indigo-600 hover:bg-indigo-50 border-indigo-200 h-8"
+                              >
+                                <Cloud className="w-3.5 h-3.5 mr-1.5" /> Conectar Drive
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Item 2: PWA Details */}
+                        <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/60 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                              <Smartphone className="w-4 h-4 text-emerald-600" /> Modo App Nativo (PWA)
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">Ativo</span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 leading-relaxed">
+                            Permite a instalação como aplicativo desktop/mobile e habilita funcionalidades offline e suporte nativo.
+                          </p>
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {typeof window !== 'undefined' && !window.matchMedia('(display-mode: standalone)').matches && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={openInNewTab}
+                                className="text-[11px] font-bold h-8 border-indigo-200 text-indigo-700"
+                              >
+                                <ExternalLink className="w-3 h-3 mr-1" /> Abrir Fora do Iframe
+                              </Button>
+                            )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isBotRunning}
+                              onClick={startInstallBot}
+                              className="text-[11px] font-bold h-8 border-emerald-200 text-emerald-700"
+                            >
+                              <Zap className="w-3 h-3 mr-1" /> Diagnostics PWA Bot
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Logs do robô PWA se houver */}
+                      {botLogs.length > 0 && (
+                        <div className="w-full bg-slate-900 rounded-2xl p-4 max-h-48 overflow-y-auto font-mono text-[10px] text-emerald-400 space-y-2 border border-slate-700">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase">Console de Diagnóstico PWA</span>
+                            <button onClick={copyLogsToClipboard} className="text-[9px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-600">
+                              COPIAR LOGS
+                            </button>
+                          </div>
+                          {botLogs.map((log, i) => (
+                            <div key={i} className={`flex gap-2 ${log.includes("❌") ? "text-red-400" : log.includes("⚠️") ? "text-amber-400" : "text-emerald-400"}`}>
+                              <span>&gt;</span><span>{log}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
-            )}
-            {driveError && (
-              <p className="text-[10px] text-red-500 mt-2 font-medium bg-red-50 p-2 rounded-lg w-full text-left border border-red-100">
-                {driveError}
-              </p>
-            )}
-            {!isDriveConnected && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onConnectDrive}
-                className="mt-4 gap-2 w-full sm:w-auto"
-              >
-                <Cloud className="w-4 h-4" /> Conectar Google Drive
-              </Button>
-            )}
-            {isDriveConnected && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onDisconnectDrive}
-                className="mt-4 gap-2 w-full sm:w-auto text-red-600 hover:bg-red-50 border-red-200 hover:border-red-300"
-              >
-                <CloudOff className="w-4 h-4" /> Desconectar Drive
-              </Button>
-            )}
-          </Card>
-        </div>
+            </div>
+          );
+        })()}
 
         <div className="border border-slate-200 rounded-2xl bg-white overflow-hidden shadow-sm">
           <button
@@ -14245,6 +14336,7 @@ export default function App() {
     | "alerts"
     | "import"
     | "storages"
+    | "google_tasks"
   >("dashboard");
   const [initialContractTemplate, setInitialContractTemplate] = useState<
     string | null
@@ -14733,8 +14825,23 @@ export default function App() {
   const [selectedTenantForDetail, setSelectedTenantForDetail] =
     useState<Tenant | null>(null);
 
+  const [isPermissionsModalOpen, setIsPermissionsModalOpen] = useState(false);
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   const [driveError, setDriveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (user) {
+      try {
+        const isSetupCompleted = localStorage.getItem("app_permissions_setup_completed_v1") === "true";
+        if (!isSetupCompleted) {
+          const timer = setTimeout(() => {
+            setIsPermissionsModalOpen(true);
+          }, 1200);
+          return () => clearTimeout(timer);
+        }
+      } catch (e) {}
+    }
+  }, [user]);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
   const [syncLogs, setSyncLogs] = useState<
     {
@@ -15801,7 +15908,7 @@ export default function App() {
       { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
       {
         id: "intelligence_hub",
-        label: "Hub Estratégico & Jurídico",
+        label: "Hub Jurídico IA",
         icon: Sparkles,
       },
       {
@@ -18351,6 +18458,15 @@ export default function App() {
         );
       case "help":
         return <HelpView />;
+      case "google_tasks":
+        return (
+          <GoogleTasksView
+            payments={payments}
+            properties={properties}
+            tenants={tenants}
+            tickets={tickets}
+          />
+        );
       default:
         return (() => {
           const alertsItem = sidebarItems.find((i) => i.id === "alerts") as any;
@@ -20972,6 +21088,15 @@ export default function App() {
           </div>
         )}
       </Modal>
+      <PermissionsOnboardingModal
+        isOpen={isPermissionsModalOpen}
+        onClose={() => setIsPermissionsModalOpen(false)}
+        isDriveConnected={isDriveConnected}
+        user={user}
+        isInstallable={isInstallable}
+        onInstallPWA={handleInstallClick}
+        onDriveStatusChanged={checkDriveStatus}
+      />
       <SecurityCheckModal
         isOpen={isSecurityModalOpen}
         onClose={() => setIsSecurityModalOpen(false)}
