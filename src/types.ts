@@ -67,30 +67,67 @@ export interface Property {
   name: string;
   address: string;
   status: PropertyStatus;
-  rentValue: number; // Keeping for backward compatibility temporarily
-  paymentDay?: number; // Keeping for backward compatibility temporarily
+  rentValue: number;
+  paymentDay?: number;
   currentTenantId?: string;
   ownerId: string;
   marketValue?: number;
+  condoFee?: number;
+  iptuValue?: number;
   pixKey?: string;
   chargeLateFees?: boolean;
   lateFeePenalty?: number;
   lateFeeDaily?: number;
   lateFeeType?: "percentage" | "fixed";
-  documents?: PropertyDocument[];
-  createdAt?: any;
-  updatedAt?: any;
-  renovationJustification?: string;
-  renovationEstimatedTime?: string;
-  renovationDescription?: string;
-  renovationImages?: PropertyInspectionImage[];
-  inspections?: PropertyInspection[];
+  
+  // Location fields
+  cep?: string;
+  street?: string;
+  number?: string;
+  complement?: string;
+  neighborhood?: string;
+  city?: string;
+  state?: string;
+
+  // Physical characteristics
+  propertyType?: string;
+  usableArea?: number;
+  totalArea?: number;
+  bedrooms?: number;
+  suites?: number;
+  bathrooms?: number;
+  parkingSpaces?: number;
+  kitchenSize?: string;
+  hasLivingRoom?: boolean;
+  livingRoomSize?: string;
+  laundryType?: "interna" | "externa" | "none";
+  hasClotheslineArea?: boolean;
+  description?: string;
+
+  // Amenities
+  isFurnished?: boolean;
   allowPets?: boolean;
   allowSmoking?: boolean;
   maxResidents?: number;
-  parkingSpaces?: number;
+  condoAmenities?: string[];
+
+  // Control & Metadata
+  isActive?: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+
+  // Documents & Renovation
+  documents?: PropertyDocument[];
+  renovationJustification?: string;
+  renovationEstimatedTime?: string;
+  renovationEndDate?: string;
+  renovationDescription?: string;
+  renovationImages?: PropertyInspectionImage[];
+  inspections?: PropertyInspection[];
   rules?: string;
   alerts?: string;
+  secondOwner?: SecondOwner;
+  hasSecondOwner?: boolean;
 }
 
 export interface StagingRecord {
@@ -162,6 +199,32 @@ export interface Tenant {
   firstRentDueDate?: string;
   startDate?: string;
   endDate?: string;
+  secondOwner?: SecondOwner;
+  hasSecondOwner?: boolean;
+  specialClauses?: string[];
+}
+
+export interface SecondOwner {
+  name: string;
+  cpfCnpj?: string;
+  rg?: string;
+  qualification?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  pixKey?: string;
+  sharePercentage?: number;
+}
+
+export interface LandlordProfile {
+  name: string;
+  cpfCnpj: string;
+  rg?: string;
+  qualification?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  pixKey?: string;
 }
 
 export interface Contract {
@@ -190,6 +253,20 @@ export interface Contract {
   aiContractText?: string;
   status: "active" | "ended" | "broken" | "archived";
   ownerId: string;
+  landlordName?: string;
+  landlordCpf?: string;
+  landlordRg?: string;
+  landlordQualification?: string;
+  landlordAddress?: string;
+  landlordPhone?: string;
+  landlordEmail?: string;
+  secondOwner?: SecondOwner;
+  hasSecondOwner?: boolean;
+  specialClauses?: string[];
+  historyStatus?: 'all_paid' | 'has_pending' | 'unconfirmed';
+  priorMonthsCount?: number;
+  priorMonthsTotalPaid?: number;
+  priorMonthsTotalPending?: number;
   createdAt?: any;
   updatedAt?: any;
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Bot, Sparkles, TrendingUp, AlertTriangle, FileText, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateFinancialAudit } from '../services/geminiService';
@@ -13,7 +13,7 @@ interface FinancialIAViewProps {
   agreements: Agreement[];
 }
 
-export const FinancialIAView: React.FC<FinancialIAViewProps> = ({
+export const FinancialIAView: React.FC<FinancialIAViewProps> = React.memo(({
   properties,
   tenants,
   payments,
@@ -23,7 +23,7 @@ export const FinancialIAView: React.FC<FinancialIAViewProps> = ({
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<string | null>(null);
 
-  const handleGenerateAudit = async () => {
+  const handleGenerateAudit = useCallback(async () => {
     setLoading(true);
     try {
       const data = {
@@ -41,7 +41,7 @@ export const FinancialIAView: React.FC<FinancialIAViewProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [properties, tenants, payments, expenses, agreements]);
 
   return (
     <div className="space-y-6">
@@ -106,4 +106,5 @@ export const FinancialIAView: React.FC<FinancialIAViewProps> = ({
       </AnimatePresence>
     </div>
   );
-};
+});
+FinancialIAView.displayName = "FinancialIAView";

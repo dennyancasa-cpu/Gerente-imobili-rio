@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import { Property, Payment, Expense, Agreement, StorageSpace, Tenant } from "../types";
 import { parseISO, format, startOfMonth, endOfMonth, isWithinInterval, getYear } from "date-fns";
 import { DollarSign, TrendingDown, TrendingUp, Home, FileText, X, Download } from "lucide-react";
@@ -13,11 +13,12 @@ import {
   Legend,
 } from "recharts";
 
-const Card = ({ children, className = "" }: { children: React.ReactNode, className?: string }) => (
+const Card = React.memo(({ children, className = "" }: { children: React.ReactNode, className?: string }) => (
   <div className={`bg-white border border-slate-200 rounded-xl shadow-sm ${className}`}>
     {children}
   </div>
-);
+));
+Card.displayName = "Card";
 
 interface FinancialOverviewViewProps {
   properties: Property[];
@@ -28,7 +29,7 @@ interface FinancialOverviewViewProps {
   tenants?: Tenant[];
 }
 
-export const FinancialOverviewView = ({
+export const FinancialOverviewView = React.memo(({
   properties,
   payments,
   expenses,
@@ -36,9 +37,9 @@ export const FinancialOverviewView = ({
   storages = [],
   tenants = [],
 }: FinancialOverviewViewProps) => {
-  const [selectedMonth, setSelectedMonth] = useState(format(new Date(), "yyyy-MM"));
+  const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
   const [isIRPFModalOpen, setIsIRPFModalOpen] = useState(false);
-  const [irpfYear, setIrpfYear] = useState(getYear(new Date()).toString());
+  const [irpfYear, setIrpfYear] = useState(() => getYear(new Date()).toString());
 
   const data = useMemo(() => {
     const start = startOfMonth(parseISO(`${selectedMonth}-01`));
@@ -83,7 +84,8 @@ export const FinancialOverviewView = ({
       const totalExpense = propertyExpenses.reduce((sum, e) => sum + e.amount, 0);
 
       const marketValue = property.marketValue || 0;
-      const netMonthlyIncome = property.rentValue || 0; // Using theoretical rent value for potential yield
+      const activeTenant = tenants.find((t) => t.propertyId === property.id && t.status === "allocated");
+      const netMonthlyIncome = activeTenant?.rentValue || property.rentValue || 0;
       const capRate = marketValue > 0 ? ((netMonthlyIncome * 12) / marketValue) * 100 : 0;
       const yieldRate = marketValue > 0 ? (netMonthlyIncome / marketValue) * 100 : 0;
 
@@ -97,20 +99,30 @@ export const FinancialOverviewView = ({
         yieldRate
       };
     }).sort((a, b) => b.saldo - a.saldo);
-  }, [properties, payments, expenses, storages, selectedMonth]);
+  }, [properties, payments, expenses, storages, tenants, selectedMonth]);
 
-  const totalRevenue = data.reduce((sum, d) => sum + d.receitas, 0);
-  const totalExpense = data.reduce((sum, d) => sum + d.despesas, 0);
-  const totalBalance = totalRevenue - totalExpense;
+  const { totalRevenue, totalExpense, totalBalance } = useMemo(() => {
+    const rev = data.reduce((sum, d) => sum + d.receitas, 0);
+    const exp = data.reduce((sum, d) => sum + d.despesas, 0);
+    return {
+      totalRevenue: rev,
+      totalExpense: exp,
+      totalBalance: rev - exp,
+    };
+  }, [data]);
 
   // Gerar últimos 12 meses para o select
-  const months = Array.from({ length: 12 }).map((_, i) => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - i);
-    return format(d, "yyyy-MM");
-  });
+  const months = useMemo(() => {
+    return Array.from({ length: 12 }).map((_, i) => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      return format(d, "yyyy-MM");
+    });
+  }, []);
 
-  const availableYears = Array.from({ length: 5 }).map((_, i) => (getYear(new Date()) - i).toString());
+  const availableYears = useMemo(() => {
+    return Array.from({ length: 5 }).map((_, i) => (getYear(new Date()) - i).toString());
+  }, []);
 
   const irpfData = useMemo(() => {
     if (!isIRPFModalOpen) return [];
@@ -144,9 +156,9 @@ export const FinancialOverviewView = ({
     }).filter(d => d.receitas > 0 || d.despesasDedutiveis > 0);
   }, [isIRPFModalOpen, irpfYear, tenants, payments, expenses]);
 
-  const handlePrintIRPF = () => {
+  const handlePrintIRPF = useCallback(() => {
     window.print();
-  };
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -363,4 +375,5 @@ export const FinancialOverviewView = ({
       )}
     </div>
   );
-};
+});
+FinancialOverviewView.displayName = "FinancialOverviewView";

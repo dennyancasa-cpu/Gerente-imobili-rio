@@ -421,7 +421,7 @@ app.get(['/api/auth/google/diagnostics', '/api/auth/google/diagnostics/'], (req,
 app.post('/api/drive/upload', async (req, res) => {
   let tokens = (req.session as any).tokens;
   const headerTokens = req.headers['x-drive-tokens'];
-  const { fileName, fileData, mimeType, folderName, uid } = req.body;
+  const { fileName, fileData, mimeType, folderName, uid, overwrite, fileId: requestedFileId, isBackup } = req.body;
 
   // Use header tokens if session is flaky
   if (!tokens && headerTokens) {
@@ -433,8 +433,6 @@ app.post('/api/drive/upload', async (req, res) => {
       console.error('[Upload] Error parsing header tokens');
     }
   }
-
-
 
   if (!tokens) {
     return res.status(401).json({ error: 'Google Drive not connected' });
@@ -492,11 +490,22 @@ app.post('/api/drive/upload', async (req, res) => {
       }
     }
 
-    // 3. Upload the file to the target folder
-    const fileMetadata = {
-      name: fileName,
-      parents: [targetFolderId],
-    };
+    // 3. Check if file should be overwritten (replacing old backup)
+    let existingFileId = requestedFileId;
+    if (!existingFileId && (overwrite || isBackup)) {
+      try {
+        const sanitizedName = fileName.replace(/'/g, "\\'");
+        const existingSearch = await drive.files.list({
+          q: `name = '${sanitizedName}' and '${targetFolderId}' in parents and trashed = false`,
+          fields: 'files(id)',
+        });
+        if (existingSearch.data.files && existingSearch.data.files.length > 0) {
+          existingFileId = existingSearch.data.files[0].id!;
+        }
+      } catch (searchErr) {
+        console.warn('[Drive Upload] Error searching for existing file to overwrite:', searchErr);
+      }
+    }
 
     // Convert base64 to stream or buffer
     const buffer = Buffer.from(fileData.split(',')[1], 'base64');
@@ -505,11 +514,26 @@ app.post('/api/drive/upload', async (req, res) => {
       body: Readable.from(buffer),
     };
 
-    const file = await drive.files.create({
-      requestBody: fileMetadata,
-      media: media,
-      fields: 'id, webViewLink, webContentLink, thumbnailLink',
-    });
+    let file: any;
+    if (existingFileId) {
+      console.log(`[Drive Upload] Overwriting/Replacing existing file ID: ${existingFileId} (${fileName})`);
+      file = await drive.files.update({
+        fileId: existingFileId,
+        media: media,
+        fields: 'id, webViewLink, webContentLink, thumbnailLink',
+      });
+    } else {
+      console.log(`[Drive Upload] Creating new file: ${fileName}`);
+      const fileMetadata = {
+        name: fileName,
+        parents: [targetFolderId],
+      };
+      file = await drive.files.create({
+        requestBody: fileMetadata,
+        media: media,
+        fields: 'id, webViewLink, webContentLink, thumbnailLink',
+      });
+    }
 
     // 3. Make the file public (optional, but needed if we want to view it without auth)
     // This allows the thumbnail to be viewed in the app without auth issues.

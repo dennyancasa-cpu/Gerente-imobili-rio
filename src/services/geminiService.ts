@@ -29,7 +29,7 @@ export const getDriveAgentResponse = async (diagnostics: any, userMessage?: stri
   try {
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: userMessage || "Diagnosticar conexão drive."
     });
     return response.text || "Sem resposta.";
@@ -59,7 +59,7 @@ Extraia as seguintes informações e retorne APENAS um JSON válido, sem mais ne
 }`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
+    model: "gemini-2.5-flash",
     contents: [
       { text: prompt },
       {
@@ -83,7 +83,200 @@ Extraia as seguintes informações e retorne APENAS um JSON válido, sem mais ne
   return null;
 };
 
+export const generateStandardResidenceDeclaration = (tenantData: any, propertyData?: any) => {
+  // Extract Landlord info
+  const savedLandlord = typeof localStorage !== 'undefined' ? localStorage.getItem("imob_landlord_profile") : null;
+  let lp: any = {};
+  if (savedLandlord) {
+    try { lp = JSON.parse(savedLandlord) || {}; } catch(e){}
+  }
+
+  const landlordName = tenantData?.landlordName || lp.name || 'Nome do(a) Locador(a) / Proprietário(a)';
+  const landlordCpf = tenantData?.landlordCpf || lp.cpfCnpj || '';
+  const landlordRg = tenantData?.landlordRg || lp.rg || '';
+  const landlordQual = tenantData?.landlordQualification || lp.qualification || 'Brasileiro(a), Proprietário(a)';
+  const landlordAddress = tenantData?.landlordAddress || lp.address || '';
+  const landlordPhone = tenantData?.landlordPhone || lp.phone || '';
+  const landlordEmail = tenantData?.landlordEmail || lp.email || '';
+
+  // Extract Tenant info
+  const tenantName = tenantData?.name || tenantData?.tenantName || 'Nome do(a) Inquilino(a) Titular';
+  const tenantCpf = tenantData?.cpf || tenantData?.tenantCpf || '';
+  const tenantPhone = tenantData?.contact || tenantData?.phone || tenantData?.tenantPhone || '';
+
+  // Extract Property info
+  const propertyName = propertyData?.name || tenantData?.propertyName || 'Imóvel Residencial';
+  const rawAddress = propertyData?.address || tenantData?.propertyAddress || '';
+  const propertyAddress = rawAddress || 'Endereço do Imóvel';
+  
+  // Extract CEP
+  const cepMatch = rawAddress ? (rawAddress.match(/CEP[:\s]*([0-9]{5}-?[0-9]{3})/i) || rawAddress.match(/([0-9]{5}-?[0-9]{3})/)) : null;
+  const propertyCep = propertyData?.cep || (cepMatch ? cepMatch[1] : (tenantData?.cep || ''));
+
+  // Extract Contract dates
+  const startDate = tenantData?.startDate || 'Data de Assinatura';
+  const durationText = tenantData?.leaseDurationMonths ? `${tenantData.leaseDurationMonths} meses` : '12 meses (Residencial)';
+
+  // Additional Residents
+  let residentsHtml = '';
+  if (tenantData?.additionalResidents && Array.isArray(tenantData.additionalResidents) && tenantData.additionalResidents.length > 0) {
+    const listItems = tenantData.additionalResidents.map((r: any) => 
+      `<p style="margin: 4px 0;">• <strong>${r.name || 'Morador'}</strong>${r.relation ? ` (${r.relation})` : ''}${r.cpf ? ` - CPF: ${r.cpf}` : ''}${r.age ? ` - Idade: ${r.age} anos` : ''}</p>`
+    ).join('');
+    residentsHtml = `
+      <h3 style="font-size: 11pt; font-weight: bold; text-transform: uppercase; margin-top: 16px; margin-bottom: 8px; color: #0f172a;">
+        1.3. DOS DEMAIS MORADORES E OCUPANTES AUTORIZADOS:
+      </h3>
+      <div style="margin-left: 12px; margin-bottom: 16px;">
+        ${listItems}
+      </div>
+    `;
+  } else if (tenantData?.additionalOccupantsText) {
+    residentsHtml = `
+      <h3 style="font-size: 11pt; font-weight: bold; text-transform: uppercase; margin-top: 16px; margin-bottom: 8px; color: #0f172a;">
+        1.3. DOS DEMAIS MORADORES E OCUPANTES AUTORIZADOS:
+      </h3>
+      <div style="margin-left: 12px; margin-bottom: 16px;">
+        <p style="margin: 4px 0;">${tenantData.additionalOccupantsText}</p>
+      </div>
+    `;
+  }
+
+  // Format today's date in Portuguese
+  const today = new Date();
+  const day = today.getDate();
+  const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+  const monthStr = monthNames[today.getMonth()];
+  const year = today.getFullYear();
+
+  // City from landlord or property address
+  let city = 'São Paulo - SP';
+  if (propertyAddress && propertyAddress !== 'Endereço do Imóvel') {
+    if (propertyAddress.toLowerCase().includes('embu das artes')) {
+      city = 'Embu das Artes - SP';
+    } else if (propertyAddress.toLowerCase().includes('são paulo') || propertyAddress.toLowerCase().includes('sao paulo')) {
+      city = 'São Paulo - SP';
+    } else if (propertyAddress.includes('-')) {
+      const parts = propertyAddress.split('-');
+      const lastPart = parts[parts.length - 1].trim();
+      if (lastPart.length >= 2 && lastPart.length <= 30) {
+        city = lastPart;
+      }
+    }
+  } else if (landlordAddress) {
+    if (landlordAddress.toLowerCase().includes('embu das artes')) {
+      city = 'Embu das Artes - SP';
+    } else if (landlordAddress.toLowerCase().includes('são paulo') || landlordAddress.toLowerCase().includes('sao paulo')) {
+      city = 'São Paulo - SP';
+    }
+  }
+
+  return `
+<div style="font-family: 'Times New Roman', Times, Georgia, serif; color: #0f172a; line-height: 1.6; font-size: 11pt;" id="residence-declaration-standard">
+
+  <div style="text-align: center; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 2px solid #0f172a;">
+    <h1 style="font-size: 14pt; font-weight: bold; text-transform: uppercase; margin: 0 0 6px 0; letter-spacing: 0.5px; text-align: center; color: #0f172a;">
+      DECLARAÇÃO FORMAL DE RESIDÊNCIA E VÍNCULO LOCATÍCIO (USO OFICIAL)
+    </h1>
+  </div>
+
+  <p style="text-align: justify; text-indent: 2em; margin-bottom: 20px; line-height: 1.6;">
+    Pelo presente instrumento particular, para todos os fins de direito e sob as penas da lei, em especial as dispostas no <strong>Artigo 299 do Código Penal Brasileiro (Falsidade Ideológica)</strong>, o(a) <strong>LOCADOR(A)/PROPRIETÁRIO(A)</strong> abaixo qualificado(a) declara, de forma expressa e irrevogável, que o(a) <strong>LOCATÁRIO(A)/INQUILINO(A) TITULAR</strong> e demais ocupantes igualmente qualificados residem de forma habitual e permanente no imóvel adiante descrito, estabelecendo nele seu domicílio civil.
+  </p>
+
+  <h2 style="font-size: 12pt; font-weight: bold; text-transform: uppercase; margin-top: 24px; margin-bottom: 12px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; color: #0f172a;">
+    1. DAS PARTES DECLARANTES
+  </h2>
+
+  <h3 style="font-size: 11pt; font-weight: bold; text-transform: uppercase; margin-top: 16px; margin-bottom: 8px; color: #0f172a;">
+    1.1. DO(A) LOCADOR(A) / PROPRIETÁRIO(A) DECLARANTE:
+  </h3>
+  <div style="margin-left: 12px; margin-bottom: 16px;">
+    <p style="margin: 4px 0;"><strong>Nome/Razão Social:</strong> ${landlordName}</p>
+    ${landlordCpf ? `<p style="margin: 4px 0;"><strong>CPF/CNPJ:</strong> ${landlordCpf}</p>` : ''}
+    ${landlordRg ? `<p style="margin: 4px 0;"><strong>RG:</strong> ${landlordRg}</p>` : ''}
+    <p style="margin: 4px 0;"><strong>Nacionalidade e Qualificação:</strong> ${landlordQual}</p>
+    ${landlordAddress ? `<p style="margin: 4px 0;"><strong>Endereço Residencial/Comercial:</strong> ${landlordAddress}</p>` : ''}
+    ${landlordPhone ? `<p style="margin: 4px 0;"><strong>Telefone:</strong> ${landlordPhone}</p>` : ''}
+    ${landlordEmail ? `<p style="margin: 4px 0;"><strong>E-mail:</strong> ${landlordEmail}</p>` : ''}
+  </div>
+
+  <h3 style="font-size: 11pt; font-weight: bold; text-transform: uppercase; margin-top: 16px; margin-bottom: 8px; color: #0f172a;">
+    1.2. DO(A) LOCATÁRIO(A) / INQUILINO(A) TITULAR:
+  </h3>
+  <div style="margin-left: 12px; margin-bottom: 16px;">
+    <p style="margin: 4px 0;"><strong>Nome Completo:</strong> ${tenantName}</p>
+    ${tenantCpf ? `<p style="margin: 4px 0;"><strong>CPF:</strong> ${tenantCpf}</p>` : ''}
+    ${tenantPhone ? `<p style="margin: 4px 0;"><strong>Contato/Telefone:</strong> ${tenantPhone}</p>` : ''}
+  </div>
+
+  ${residentsHtml}
+
+  <h2 style="font-size: 12pt; font-weight: bold; text-transform: uppercase; margin-top: 24px; margin-bottom: 12px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; color: #0f172a;">
+    2. DO IMÓVEL E VÍNCULO LOCATÍCIO
+  </h2>
+
+  <h3 style="font-size: 11pt; font-weight: bold; text-transform: uppercase; margin-top: 16px; margin-bottom: 8px; color: #0f172a;">
+    2.1. DO IMÓVEL OBJETO DA LOCAÇÃO:
+  </h3>
+  <div style="margin-left: 12px; margin-bottom: 16px;">
+    <p style="margin: 4px 0;"><strong>Identificação/Nome:</strong> ${propertyName}</p>
+    <p style="margin: 4px 0;"><strong>Endereço Completo:</strong> ${propertyAddress}</p>
+    ${propertyCep ? `<p style="margin: 4px 0;"><strong>CEP:</strong> ${propertyCep}</p>` : ''}
+    <p style="margin: 4px 0;"><strong>Finalidade:</strong> Exclusivamente residencial.</p>
+  </div>
+
+  <h3 style="font-size: 11pt; font-weight: bold; text-transform: uppercase; margin-top: 16px; margin-bottom: 8px; color: #0f172a;">
+    2.2. DO VÍNCULO LOCATÍCIO:
+  </h3>
+  <p style="text-align: justify; margin-left: 12px; margin-bottom: 12px; line-height: 1.6;">
+    O(A) LOCADOR(A) declara que existe um contrato de locação formalmente celebrado com o(a) LOCATÁRIO(A) <strong>${tenantName}</strong> para o imóvel acima especificado. Este contrato encontra-se ativo e regular, com as seguintes condições:
+  </p>
+  <div style="margin-left: 24px; margin-bottom: 20px;">
+    <p style="margin: 4px 0;">• <strong>Data de Início da Locação:</strong> ${startDate}</p>
+    <p style="margin: 4px 0;">• <strong>Duração / Vigência:</strong> ${durationText}</p>
+    <p style="margin: 4px 0;">• <strong>Situação Contratual:</strong> Ativo, regular e em pleno vigor legal.</p>
+  </div>
+
+  <h2 style="font-size: 12pt; font-weight: bold; text-transform: uppercase; margin-top: 24px; margin-bottom: 12px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; color: #0f172a;">
+    3. DA FINALIDADE E VALIDADE JURÍDICA
+  </h2>
+  <p style="text-align: justify; text-indent: 2em; margin-bottom: 16px; line-height: 1.6;">
+    A presente declaração é expedida a pedido do(a) interessado(a), com plena validade probatória para comprovação de endereço e residência habitual perante órgãos públicos federais, estaduais e municipais, concessionárias de serviços públicos (água, energia elétrica, gás), instituições de ensino, entidades bancárias, órgãos de trânsito (DETRAN/Poupatempo) e repartições de saúde/SUS.
+  </p>
+  <p style="text-align: justify; text-indent: 2em; margin-bottom: 24px; line-height: 1.6;">
+    Por ser a expressão fiel da verdade, e cientes das responsabilidades civis e criminais advindas de declarações falsas, firma-se a presente declaração para que produza os seus jurídicos e legais efeitos.
+  </p>
+
+  <div style="margin-top: 32px; margin-bottom: 40px; text-align: right;">
+    <p style="margin: 0; font-weight: 500;">${city}, ${day} de ${monthStr} de ${year}.</p>
+  </div>
+
+  <div style="margin-top: 60px; display: grid; grid-template-columns: 1fr 1fr; gap: 32px; text-align: center; page-break-inside: avoid;" class="signature-block">
+    <div style="border-top: 1px solid #475569; padding-top: 8px;">
+      <p style="font-weight: bold; margin: 0; font-size: 10pt; text-transform: uppercase; color: #0f172a;">${landlordName}</p>
+      <p style="font-size: 9pt; color: #475569; margin: 2px 0 0 0;">LOCADOR(A) / PROPRIETÁRIO(A)</p>
+      ${landlordCpf ? `<p style="font-size: 8.5pt; color: #64748b; margin: 2px 0 0 0;">CPF/CNPJ: ${landlordCpf}</p>` : ''}
+    </div>
+    <div style="border-top: 1px solid #475569; padding-top: 8px;">
+      <p style="font-weight: bold; margin: 0; font-size: 10pt; text-transform: uppercase; color: #0f172a;">${tenantName}</p>
+      <p style="font-size: 9pt; color: #475569; margin: 2px 0 0 0;">LOCATÁRIO(A) / INQUILINO(A) TITULAR</p>
+      ${tenantCpf ? `<p style="font-size: 8.5pt; color: #64748b; margin: 2px 0 0 0;">CPF: ${tenantCpf}</p>` : ''}
+    </div>
+  </div>
+
+</div>
+`.trim();
+};
+
 export const generateLeaseContract = async (tenantData: any, propertyData?: any, documentType: string = 'Contrato de Locação') => {
+  const docLower = (documentType || '').toLowerCase();
+  
+  // Directly use standard template for Residence Declaration to guarantee strict wording, laws, sections and structure
+  if (docLower.includes('declaração de residência') || docLower.includes('declaracao de residencia') || docLower.includes('residencia') || docLower.includes('residência')) {
+    return generateStandardResidenceDeclaration(tenantData, propertyData);
+  }
+
   const apiKey = process.env.MY_GEMINI_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "" || apiKey === "MY_GEMINI_API_KEY") {
     throw new Error("⚠️ Configuração Necessária. Configure sua GEMINI_API_KEY.");
@@ -97,6 +290,10 @@ export const generateLeaseContract = async (tenantData: any, propertyData?: any,
     additionalOccupantsInfo = tenantData.additionalResidents.map((r: any) => 
       `- ${r.name || '[Nome pendente]'} (${r.relation || 'Outro'}${r.cpf ? `, CPF: ${r.cpf}` : ''}${r.age ? `, Idade: ${r.age}` : ''})`
     ).join('\n');
+  } else if (tenantData?.additionalOccupantsText && typeof tenantData.additionalOccupantsText === 'string' && tenantData.additionalOccupantsText.trim()) {
+    additionalOccupantsInfo = tenantData.additionalOccupantsText.trim();
+  } else if (tenantData?.additionalResidentsText && typeof tenantData.additionalResidentsText === 'string' && tenantData.additionalResidentsText.trim()) {
+    additionalOccupantsInfo = tenantData.additionalResidentsText.trim();
   }
 
   // Format Caução / Garantia (Deposit info)
@@ -126,63 +323,189 @@ export const generateLeaseContract = async (tenantData: any, propertyData?: any,
   const tenantObs = tenantData?.tenantObservations || tenantData?.observations || 'Nenhuma observação de perfil de inquilino informada.';
   const contractObs = tenantData?.observations && tenantData?.observations !== tenantData?.tenantObservations ? tenantData.observations : '';
 
+  // Format Landlord / Proprietario info
+  const savedLandlord = typeof localStorage !== 'undefined' ? localStorage.getItem("imob_landlord_profile") : null;
+  let landlordDetails = "";
+  if (tenantData?.landlordName) {
+    landlordDetails = `LOCADOR / PROPRIETÁRIO (LOCADOR 1):
+  - Nome/Razão Social: ${tenantData.landlordName}
+  - CPF/CNPJ: ${tenantData.landlordCpf || '[Pendente]'}
+  - RG: ${tenantData.landlordRg || '[Pendente]'}
+  - Qualificação: ${tenantData.landlordQualification || 'brasileiro(a), proprietário(a)'}
+  - Endereço Completo: ${tenantData.landlordAddress || '[Pendente]'}
+  - Telefone: ${tenantData.landlordPhone || ''}
+  - Email: ${tenantData.landlordEmail || ''}`;
+  } else if (savedLandlord) {
+    try {
+      const lp = JSON.parse(savedLandlord);
+      if (lp.name) {
+        landlordDetails = `LOCADOR / PROPRIETÁRIO (LOCADOR 1):
+  - Nome/Razão Social: ${lp.name}
+  - CPF/CNPJ: ${lp.cpfCnpj || '[Pendente]'}
+  - RG: ${lp.rg || '[Pendente]'}
+  - Qualificação: ${lp.qualification || 'brasileiro(a), proprietário(a)'}
+  - Endereço Completo: ${lp.address || '[Pendente]'}
+  - Telefone: ${lp.phone || ''}
+  - Email: ${lp.email || ''}`;
+      }
+    } catch(e) {}
+  }
+
+  const secondOwnerObj = tenantData?.secondOwner || propertyData?.secondOwner;
+  if (secondOwnerObj && secondOwnerObj.name) {
+    landlordDetails += `\n\nSEGUNDO PROPRIETÁRIO / COPROPRIETÁRIO (LOCADOR 2):
+  - Nome/Razão Social: ${secondOwnerObj.name}
+  - CPF/CNPJ: ${secondOwnerObj.cpfCnpj || '[Pendente]'}
+  - RG: ${secondOwnerObj.rg || '[Pendente]'}
+  - Qualificação: ${secondOwnerObj.qualification || 'brasileiro(a), coproprietário(a)'}
+  - Endereço Completo: ${secondOwnerObj.address || 'Mesmo do Locador 1'}
+  - Telefone/Contato: ${secondOwnerObj.phone || ''}
+  - Email: ${secondOwnerObj.email || ''}
+  - Chave PIX / Participação: ${secondOwnerObj.pixKey ? `PIX: ${secondOwnerObj.pixKey}` : ''} ${secondOwnerObj.sharePercentage ? `(${secondOwnerObj.sharePercentage}% de participação)` : ''}`;
+  }
+
+  const specialClausesList = tenantData?.specialClauses || propertyData?.specialClauses;
+  let specialClausesText = "";
+  if (specialClausesList && Array.isArray(specialClausesList) && specialClausesList.length > 0) {
+    specialClausesText = `\n\nCLÁUSULAS ESPECIAIS E PARTICULARES OBRIGATÓRIAS A INCLUIR NO DOCUMENTO:\n` +
+      specialClausesList.map((c: string, i: number) => `   - Cláusula Especial ${i + 1}: ${c}`).join('\n');
+  }
+
+  let specificDocInstructions = '';
+  if (documentType.toLowerCase().includes('declaração de residência') || documentType.toLowerCase().includes('declaracao de residencia')) {
+    specificDocInstructions = `
+    ESTRUTURA ESPECÍFICA PARA DECLARAÇÃO FORMAL DE RESIDÊNCIA E VÍNCULO LOCATÍCIO:
+    - Título Solene: DECLARAÇÃO FORMAL DE RESIDÊNCIA E VÍNCULO LOCATÍCIO (USO OFICIAL)
+    - BASE LEGAL OBRIGATÓRIA A CITAR DETALHADAMENTE NO TEXTO:
+      * Lei Federal nº 8.245/1991 (Lei do Inquilinato - Regulamenta as locações de imóveis urbanos);
+      * Lei Federal nº 10.406/2002 (Código Civil Brasileiro - Arts. 70 a 78 sobre Domicílio e Residência Habitual);
+      * Artigo 299 do Código Penal Brasileiro (Falsidade Ideológica - Declaração prestada sob as penas da lei);
+      * Validade e eficácia jurídica plena em todo o Estado de São Paulo e território nacional.
+    - OBRIGATÓRIO - ROL COMPLETO DE MORADORES E HABITANTES DO IMÓVEL:
+      * Declarar nominalmente o Inquilino Titular (Locatário principal) com Nome Completo, CPF e RG.
+      * INCLUIR UMA SEÇÃO EXPLICITA E DESTACADA LISTANDO TODOS OS DEMAIS MORADORES, DEPENDENTES, CÔNJUGE E CO-HABITANTES AUTORIZADOS DO IMÓVEL (com Nomes, Parentesco/Grau de Vínculo, CPF e/ou Idades informados). Se houver moradores na lista "Ocupantes Secundários Autorizados", TODOS DEVEM SER CITADOS NOMINALMENTE NA DECLARAÇÃO.
+      * Atestar categoricamente sob as penas da lei que o Inquilino Titular E TODOS os demais moradores acima qualificados residem, cohabitam e mantêm domicílio habitual permanente no referido imóvel.
+    - INDICAÇÃO DO IMÓVEL E CONTRATO:
+      * Endereço Completo do Imóvel (Logradouro, Número, Complemento, Bairro, CEP, Cidade/UF).
+      * Vigência e vigência do Contrato de Locação (Data de início e confirmação de contrato ativo e regular).
+    - FINALIDADE E ACEITAÇÃO AMPLA:
+      * Atestado com valor probatório formal para comprovação de residência perante órgãos públicos federais, estaduais (Estado de São Paulo), prefeituras, repartições de trânsito (DETRAN/Poupatempo), instituições de ensino (escolas e universidades), postos de saúde/SUS, bancos, concessionárias de água/luz/gás (Sabesp, Enel, Comgás) e entidades privadas.
+    - FECHAMENTO E ASSINATURAS:
+      * Local e Data atualizados.
+      * Campos distintos para assinatura do LOCADOR/PROPRIETÁRIO (com CPF/CNPJ) e do LOCATÁRIO/INQUILINO TITULAR (com CPF).
+    `;
+  } else if (documentType.toLowerCase().includes('recibo de aluguel')) {
+    specificDocInstructions = `
+    ESTRUTURA ESPECÍFICA PARA RECIBO DE ALUGUEL:
+    - Fundamentação no Art. 22, inciso VI da Lei Federal nº 8.245/1991 (Dever do locador de fornecer recibo discriminado).
+    - Descriminação clara do valor do aluguel, mês de referência, condomínio, IPTU e outros encargos quitados.
+    - Declaração de quitação da respectiva parcela mensal.
+    `;
+  } else if (documentType.toLowerCase().includes('recibo caução') || documentType.toLowerCase().includes('recibo caucao')) {
+    specificDocInstructions = `
+    ESTRUTURA ESPECÍFICA PARA RECIBO DE CAUÇÃO:
+    - Fundamentação no Art. 38, § 2º da Lei Federal nº 8.245/1991 (Garantia por Caução em dinheiro).
+    - Declaração do recebimento da quantia dada em caução pelo locatário.
+    - Menção expressa sobre o depósito em caderneta de poupança vinculada e devolução ao término do contrato com rendimentos do período.
+    `;
+  } else if (documentType.toLowerCase().includes('vistoria')) {
+    specificDocInstructions = `
+    ESTRUTURA ESPECÍFICA PARA TERMO DE VISTORIA DO IMÓVEL:
+    - Fundamentação no Art. 22, V e Art. 23, III da Lei Federal nº 8.245/1991.
+    - Descrição detalhada do estado de conservação de pinturas, instalações elétricas, hidráulicas, pisos, vidros e chaves entregues.
+    `;
+  } else if (documentType.toLowerCase().includes('renovação') || documentType.toLowerCase().includes('renovacao')) {
+    specificDocInstructions = `
+    ESTRUTURA ESPECÍFICA PARA TERMO DE RENOVAÇÃO DE ALUGUEL:
+    - Fundamentação na Lei Federal nº 8.245/1991 (Art. 18 e Art. 47) e Código Civil.
+    - Aditivo prorrogando a vigência contratual, estipulando o novo valor reajustado e mantendo as demais cláusulas ativas.
+    `;
+  } else if (documentType.toLowerCase().includes('reajuste')) {
+    specificDocInstructions = `
+    ESTRUTURA ESPECÍFICA PARA NOTIFICAÇÃO DE REAJUSTE DE ALUGUEL:
+    - Fundamentação no Art. 18 da Lei Federal nº 8.245/1991.
+    - Comunicação formal informando o índice acumulado (IPCA/IGP-M) e o novo valor do aluguel a vigorar a partir do próximo vencimento.
+    `;
+  } else if (documentType.toLowerCase().includes('desocupação') || documentType.toLowerCase().includes('desocupacao')) {
+    specificDocInstructions = `
+    ESTRUTURA ESPECÍFICA PARA AVISO DE DESOCUPAÇÃO / DEVOLUÇÃO DO IMÓVEL:
+    - Fundamentação nos Arts. 6º, 46 ou 57 da Lei Federal nº 8.245/1991.
+    - Notificação formal concedendo/comunicando o prazo de 30 dias para entrega do imóvel livre de pessoas e bens e agendamento da vistoria final.
+    `;
+  }
+
   const prompt = `
-  Você é um advogado especialista em direito imobiliário no Brasil (Lei do Inquilinato nº 8.245/1991).
-  Crie um(a) ${documentType} claro(a), moderno(a) e conciso(a) extremamente seguro e juridicamente válido contendo as seguintes informações detalhadas das partes e do negócio:
+  Você é um jurista e advogado especialista sênior em Direito Imobiliário brasileiro (Lei do Inquilinato nº 8.245/1991 e Código Civil nº 10.406/2002).
+  Crie um(a) ${documentType} completo(a), extremamente seguro(a), moderno(a), detalhado(a) e juridicamente irrefutável contendo todas as cláusulas essenciais e específicas:
   
-  INQUILINO/PARTE:
+  ${specificDocInstructions}
+
+  LOCADOR / PROPRIETÁRIO:
+  ${landlordDetails || '- Dados do Locador a preencher conforme perfil do usuário'}
+
+  INQUILINO / LOCATÁRIO / PARTE:
   - Nome: ${tenantData?.name || '[Pendente]'}
   - CPF: ${tenantData?.cpf || '[Pendente]'}
-  - Contato: ${tenantData?.contact || '[Pendente]'}
+  - Contato/Telefone: ${tenantData?.contact || '[Pendente]'}
   - Estado Civil / Cônjuge: ${spouseText}
-  - Filhos/Dependentes: ${childrenText}
-  - Animais de estimação informados pelo inquilino: ${petsText}
-  - Informações de veículos: ${vehicleText}
+  - Filhos / Dependentes: ${childrenText}
+  - Animais de estimação do Inquilino: ${petsText}
+  - Veículos / Garagem: ${vehicleText}
   - Hábito de fumar: ${smokerText}
-  - Quantidade total de ocupantes: ${tenantData?.residentCount || 1} morador(es) no total.
-  - Outros moradores autorizados a residir (Ocupantes secundários):
+  - Quantidade total de moradores: ${tenantData?.residentCount || 1} morador(es).
+  - Ocupantes Secundários Autorizados:
   ${additionalOccupantsInfo}
-  - Observações do Perfil do Inquilino: ${tenantObs}
+  - Observações do Perfil: ${tenantObs}
   
-  IMÓVEL:
-  - Nome: ${propertyData?.name || '[Pendente]'}
-  - Endereço: ${propertyData?.address || '[Pendente]'}
-  - Valor do Aluguel: R$ ${tenantData?.rentValue || propertyData?.rentValue || '[Pendente]'}
-  - Dia de Vencimento: ${tenantData?.paymentDay || propertyData?.paymentDay || '[Pendente]'}
-  - Juros e Multa por atraso: ${tenantData?.chargeLateFees || propertyData?.chargeLateFees ? `Multa fixa de R$ ${tenantData?.lateFeePenalty || propertyData?.lateFeePenalty || 10} e Mora diária de ${tenantData?.lateFeeDaily || propertyData?.lateFeeDaily || 0.033}% sobre o aluguel` : 'Não especificado no imóvel.'}
+  IMÓVEL / LOCADOR / OBJETO:
+  - Identificação/Nome: ${propertyData?.name || '[Pendente]'}
+  - Endereço Completo: ${propertyData?.address || '[Pendente]'}
+  - Valor do Aluguel Mensal: R$ ${tenantData?.rentValue || propertyData?.rentValue || '[Pendente]'}
+  - Dia de Vencimento: Todo dia ${tenantData?.paymentDay || propertyData?.paymentDay || '[Pendente]'} de cada mês
+  - Cláusula de Penalidades por Atraso: ${tenantData?.chargeLateFees || propertyData?.chargeLateFees ? `Multa moratória de ${tenantData?.lateFeePenalty || propertyData?.lateFeePenalty || 10}% sobre o valor devido e Juros de mora de ${tenantData?.lateFeeDaily || propertyData?.lateFeeDaily || 0.033}% ao dia` : 'Multa padrão de 10% e juros moratórios de 1% ao mês (Art. 406 CC).'}
   - Regras e Restrições do Imóvel: ${rulesText}
-  - Alertas/Observações de Estado sobre o Imóvel: ${alertsText}
-  - Animais de estimação permitidos no imóvel (Regra): ${allowPetsText}
-  - Fumo permitido no imóvel (Regra): ${allowSmokingText}
-  - Limite máximo de moradores (Regra): ${maxResidentsText}
+  - Observações de Estado e Conservação: ${alertsText}
+  - Permissão para Animais: ${allowPetsText}
+  - Permissão para Fumo: ${allowSmokingText}
+  - Limite de Moradores: ${maxResidentsText}
   
-  TERMOS DE CONTRATO / FORMULÁRIO:
-  - Data de Início do Aluguel: ${tenantData?.startDate || 'Data de assinatura'}
-  - Data de Término do Aluguel: ${tenantData?.endDate || 'Prazo conforme legislação (Ex: 12 ou 30 meses)'}
-  - Duração do Aluguel: ${tenantData?.leaseDurationMonths ? `${tenantData.leaseDurationMonths} meses` : 'Não especificado'}
-  - Observações Extras customizadas para o contrato: ${contractObs}
+  PRAZOS E REAJUSTES:
+  - Data de Início: ${tenantData?.startDate || 'Data da assinatura'}
+  - Data de Término: ${tenantData?.endDate || 'A definir'}
+  - Duração do Contrato: ${tenantData?.leaseDurationMonths ? `${tenantData.leaseDurationMonths} meses` : '12 meses'}
+  - Reajuste Anual: Índice acumulado IPCA ou IGP-M da FGV conforme Art. 18 da Lei 8.245/91
+  - Observações Customizadas: ${contractObs}
   
-  GARANTIA INICIAL / CAUÇÃO:
-  - Detalhe de Garantia: ${guaranteeInfo}
+  GARANTIA LOCATÍCIA:
+  - Detalhe da Garantia: ${guaranteeInfo}
+  ${specialClausesText}
   
-  DIRETRIZES IMPORTANTES PARA A CRIAÇÃO DE CLÁUSULAS:
-  1. Use as regras de animais, fumo, veículos/garagem e limite de residentes para criar cláusulas específicas em "Destinação do Imóvel" ou "Obrigações do Locatário".
-  2. Adicione explicitamente o nome dos outros moradores autorizados como ocupantes permitidos para habitar o imóvel.
-  3. No caso de haver caução, crie uma cláusula detalhando a entrega da caução, seu reajuste e as regras para sua devolução.
-  4. Para CADA CLÁUSULA do contrato, adicione um pequeno texto citando a base jurídica correspondente na Lei do Inquilinato (ex: Segundo o Art 22 da Lei...).
-  5. Você DEVE formatar a saída em **HTML rico**, usando a tag <mark> para os destaques. 
-     - Para informações COPIADAS dos dados acima (Nome, CPF, Valor do aluguel, etc), envolva em <mark style="background-color: #fef08a; padding: 2px 4px; border-radius: 4px;"> (Marca texto amarelo).
-     - Para novos pontos importantes que você (IA) criou (regras adaptadas, obrigações extras), ou citações da base jurídica, envolva em <mark style="background-color: #bbf7d0; padding: 2px 4px; border-radius: 4px;"> (Marca texto verde).
-     
-  Crie APENAS O CÓDIGO HTML DO DOCUMENTO (usando tags como <h1>, <h2>, <p>, <strong> e <mark>), pronto para ser renderizado. NÃO envolva em markdown \`\`\`html, retorne os elementos diretamente. Não responda com introduções como "Aqui está o documento".
+  CLÁUSULAS E REQUISITOS JURÍDICOS OBRIGATÓRIOS:
+  1. Adequação total da linguagem e artigos ao tipo do documento (${documentType}).
+  2. Citação expressa das fundamentações legais federais pertinentes (Lei nº 8.245/1991, Código Civil Lei 10.406/2002).
+  3. Formatação impecável para impressão/PDF de comprovante oficial.
+  
+  ESTILIZAÇÃO E FORMATO DO DOCUMENTO (HTML FORMAL A4):
+  - Retorne APENAS CÓDIGO HTML limpo e elegante (usando tags semânticas como <h1>, <h2>, <h3>, <p>, <ul>, <li>, <strong>, <table>, <tr>, <td>).
+  - NUNCA use a tag <mark>, NUNCA adicione estilos de background-color (fundo amarelo/verde), e NUNCA adicione blocos coloridos. O documento deve ser 100% LIMPO E PROFISSIONAL para impressão em papel timbrado/A4.
+  - Para títulos, utilize h1 e h2 centralizados e em caixa alta.
+  - Para seções de cláusulas e itens, utilize numeração clara e negrito no início dos parágrafos.
+  - Para linhas de assinatura no final do documento, crie um bloco flexível ou tabela com borda superior para as assinaturas do LOCADOR, LOCATÁRIO e TESTEMUNHAS.
+  - Não use blocos de código markdown \`\`\`html. Retorne a estrutura HTML diretamente.
   `;
   
   const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
+    model: "gemini-2.5-flash",
     contents: prompt
   });
 
-  return response.text?.replace(/```html/g, '').replace(/```/g, '').trim() || '';
+  const rawHtml = response.text?.replace(/```html/g, '').replace(/```/g, '').trim() || '';
+
+  // Remove any remaining <mark> tags or background-color inline styles to ensure pristine legal formatting
+  return rawHtml
+    .replace(/<mark[^>]*>/gi, '')
+    .replace(/<\/mark>/gi, '')
+    .replace(/style="[^"]*background-color:[^"]*"/gi, '');
 };
 
 export const getLegalConsultantResponse = async (userMessage: string, history: {role: 'user' | 'assistant' | 'system', content: string}[] = []) => {
@@ -242,7 +565,7 @@ export const getLegalConsultantResponse = async (userMessage: string, history: {
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: finalSequence,
       config: {
         systemInstruction,
@@ -336,7 +659,7 @@ export const getManagerAgentResponse = async (context: {
     const apiTools: any[] = [{ googleSearch: {} }];
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: finalSequence,
       config: {
         systemInstruction,
@@ -374,7 +697,7 @@ Gere um relatório textual (2 a 4 parágrafos) em Português-BR para ir no topo 
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
         temperature: 0.3
@@ -417,10 +740,10 @@ ${JSON.stringify({
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
-        temperature: 0.3
+        temperature: 0.2
       }
     });
     return response.text;
@@ -438,50 +761,93 @@ export const parseContractFromText = async (text: string, base64Image?: string, 
   
   const ai = new GoogleGenAI({ apiKey });
   
-  const prompt = `Analise o seguinte documento (pode ser um contrato de aluguel em formato texto, foto, PDF ou dados colados de uma planilha/tabela de controle de aluguel).
-Se for uma planilha com vários inquilinos, extraia o PRIMEIRO ou PRINCIPAL registro válido que você encontrar.
-1. Extraia o máximo possível das seguintes informações em formato JSON rigoroso:
+  const prompt = `Você é um especialista em direito imobiliário e auditoria contratual.
+Analise minunciosamente o documento fornecido (pode ser um contrato de aluguel em formato texto, foto, PDF ou dados colados de uma planilha).
+Extraia com alta precisão e profundidade todas as informações estruturadas em formato JSON estrito:
+
 {
   "property": {
-    "name": "<nome descritivo curto, ex: Casa Centro, Apto 202>",
-    "address": "<endereço completo do imóvel>",
-    "rentValue": <valor numérico do aluguel (float), ex: 1500.00>,
-    "paymentDay": <dia do mês do vencimento (int)>,
-    "rules": "<extraia as regras adicionais do imóvel, como restrições, horários silêncio, lixo, etc, ou vazio>"
+    "name": "<nome descritivo curto do imóvel, ex: Casa Centro, Apto 202 Bloco B>",
+    "address": "<endereço completo do imóvel com rua, número, bairro, cidade e estado>",
+    "cep": "<CEP do imóvel no formato 00000-000, se houver>",
+    "rentValue": <valor numérico float do aluguel, ex: 1800.00>,
+    "paymentDay": <dia do mês de vencimento int, ex: 5>,
+    "rules": "<extraia todas as regras e restrições do imóvel, como horários de silêncio, proibições, uso exclusivo residencial/comercial, etc.>",
+    "alerts": "<observações de estado do imóvel, conservação, vistoria ou infraestrutura mencionada>",
+    "allowPets": <boolean ou null se não especificado>,
+    "allowSmoking": <boolean ou null se não especificado>,
+    "maxResidents": <int ou null se não especificado>,
+    "chargeLateFees": <boolean, true se houver cláusula de multa por atraso>,
+    "lateFeePenalty": <float da porcentagem de multa por atraso, ex: 10>,
+    "lateFeeDaily": <float dos juros diários por atraso %, ex: 0.033>
   },
   "tenant": {
-    "name": "<nome completo do inquilino>",
-    "cpf": "<cpf apenas números ou formatado>",
-    "contact": "<telefone de contato>",
-    "spouse": "<nome completo do cônjuge/companheiro, ou vazio>",
-    "children": "<quantidade e/ou nome/idade dos filhos, ou vazio>",
-    "pets": "<quantidade, espécie ou porte dos animais, ou vazio>",
-    "vehicles": "<informações sobre vaga de garagem ou veículos informados, se houver, ou vazio>",
-    "observations": "<texto reunindo informações implícitas ou explícitas como: outras regras, etc.>"
+    "name": "<nome completo do inquilino/locatário principal>",
+    "cpf": "<CPF do inquilino, apenas números ou formatado>",
+    "contact": "<telefone/WhatsApp de contato>",
+    "spouse": "<nome e CPF do cônjuge/companheiro ou copartícipe, se houver>",
+    "children": "<detalhes de filhos e dependentes mencionados>",
+    "pets": "<detalhes dos animais de estimação do inquilino>",
+    "vehicles": "<detalhes dos veículos e vagas de garagem informadas>",
+    "isSmoker": <boolean, true se mencionado que o inquilino fuma>,
+    "residentCount": <int com a quantidade total de moradores no imóvel>,
+    "additionalResidents": [
+      {
+        "name": "<nome do ocupante secundário>",
+        "relation": "<grau de parentesco ou relação>",
+        "cpf": "<CPF se houver>",
+        "age": "<idade se houver>"
+      }
+    ],
+    "observations": "<resumo completo do perfil, notas especiais, fiadores, hábitos ou observações extraídas do documento>"
   },
   "contract": {
-    "startDate": "<data de início do contrato no formato YYYY-MM-DD, ou vazio>",
-    "endDate": "<data de fim do contrato no formato YYYY-MM-DD, ou vazio>"
+    "startDate": "<data de início da locação no formato YYYY-MM-DD>",
+    "endDate": "<data de término da locação no formato YYYY-MM-DD>",
+    "leaseDurationMonths": <int da duração em meses, ex: 12 ou 30>,
+    "readjustmentIndex": "<índice de reajuste anual mencionado: 'IPCA', 'IGPM' ou 'Outro'>",
+    "rescissionFine": "<detalhes da cláusula de multa por rescisão antecipada>",
+    "guaranteeType": "<tipo de garantia: 'caucao', 'fiador', 'seguro_fianca' ou 'sem_garantia'>",
+    "fiadorInfo": "<dados do fiador se houver (nome, CPF, endereço)>"
   },
   "deposit": {
-    "hasDeposit": <boolean, true se houver caução/garantia>,
-    "depositValue": <valor numérico total do caução (float), ex: 3000.00>,
-    "depositInstallments": <número de vezes que o caução foi/será parcelado (int), ex: 3. Se for à vista, coloque 1>,
-    "depositDueDate": "<data combinada para pagamento do caução, formato YYYY-MM-DD. Se não houver, deixe vazio>"
+    "hasDeposit": <boolean, true se houver qualquer caução/depósito/garantia em dinheiro mencionada no contrato>,
+    "depositValue": <valor numérico float total da caução em R$, ex: 3600.00>,
+    "depositInstallments": <int de parcelas da caução (ex: 1 se for à vista, 2, 3, 4, 6, etc.)>,
+    "depositDueDate": "<data combinada para pagamento da caução no formato YYYY-MM-DD ou vazio>",
+    "depositIsPaid": <boolean, true se o contrato indicar que a caução já foi paga/entregue no ato ou na assinatura>
   },
+  "secondOwner": {
+    "hasSecondOwner": <boolean, true se houver segundo proprietário, locador 2, coproprietário ou cônjuge do proprietário/locador no contrato>,
+    "name": "<nome completo do segundo proprietário/coproprietário>",
+    "cpfCnpj": "<CPF ou CNPJ do segundo proprietário>",
+    "phone": "<telefone/contato>",
+    "email": "<email>",
+    "pixKey": "<chave PIX do segundo proprietário se houver>",
+    "sharePercentage": <porcentagem de participação, ex: 50>
+  },
+  "specialClauses": [
+    "<extraia cláusulas específicas e personalizadas encontradas no contrato, ex: 'Permitida benfeitoria com desconto no aluguel', 'Devolução com pintura nova em tinta látex branca', 'Uso proibido para sublocação ou Airbnb'>"
+  ],
+  "extractedClauses": [
+    {
+      "title": "<título da cláusula, ex: Cláusula de Rescisão e Multa>",
+      "summary": "<resumo explicativo do que a cláusula determina>",
+      "legalBasis": "<base legal correspondente na Lei 8.245/91 ou Código Civil, ex: Artigo 4º da Lei do Inquilinato>"
+    }
+  ],
   "feedback": {
-    "missingInfo": ["<lista de string apontando informações vitais faltantes no contrato>"],
-    "improvements": ["<lista de strings com dicas de como melhorar e corrigir erros no contrato baseadas na Lei do Inquilinato>"]
+    "missingInfo": ["<lista de pontos vitais faltantes ou ambíguos no contrato>"],
+    "improvements": ["<recomendações jurídicas para mitigar riscos para o locador conforme a Lei do Inquilinato>"]
   }
 }
 
-2. Regras:
-- Retorne APENAS o JSON válido, sem " \`\`\`json " e sem mais nenhum texto.
-- Se não achar algum dado, deixe como string vazia "", ou 0 para números, ou false para booleanos.
-- No 'feedback', aja como um consultor jurídico imobiliário e aponte brechas ou falhas técnicas.
-- 'observations' deve consolidar tudo de importante e peculiar que achar sobre os moradores ou a locação.
+REGRAS RÍGIDAS DE SAÍDA:
+- Retorne APENAS o JSON válido acima, sem formatação markdown extra fora do JSON.
+- Se algum dado numérico não for encontrado, coloque 0. Se texto não for encontrado, coloque string vazia "". Se boolean não for encontrado, coloque false.
+- A lista 'extractedClauses' deve conter de 3 a 7 das cláusulas mais importantes extraídas do contrato (Objeto/Destinação, Valor/Atraso, Rescisão/Multa, Caução/Garantia, Conservação/Vistoria, Reajuste).
 
-Texto extraído ou provido:
+Texto/Documento analisado:
 ${text}
 `;
 
@@ -498,7 +864,7 @@ ${text}
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
+    model: "gemini-2.5-flash",
     contents: contents
   });
 
@@ -543,7 +909,7 @@ Inquilinos cadastrados: ${tenantsJson}
 `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
+    model: "gemini-2.5-flash",
     contents: prompt
   });
 
@@ -615,7 +981,7 @@ ${text}
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
+    model: "gemini-2.5-flash",
     contents: contents
   });
 

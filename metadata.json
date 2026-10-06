@@ -1,6 +1,8 @@
 {
   "name": "Gerente imobiliário",
-  "description": "Controle total de imóveis e recebimentos v6.6.0",
+  "description": "Controle total de imóveis e recebimentos v6.7.0",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

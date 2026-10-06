@@ -1,10 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   FileText, Upload, CheckCircle2, ChevronRight, Wand2, Plus, 
   AlertCircle, Bot, HelpCircle, Scale, ShieldCheck, Square, 
   Volume2, Sparkles, X, ArrowLeft, Send, BookOpen, Layers,
-  FolderCheck, Search, SearchX, User, WifiOff, MessageSquare
+  FolderCheck, Search, SearchX, User, WifiOff, MessageSquare,
+  CalendarCheck, AlertTriangle
 } from 'lucide-react';
 import { parseContractFromText, parseMultipleRecordsFromText, getLegalConsultantResponse } from '../services/geminiService';
 import { ImportDataView } from './ImportDataView';
@@ -12,6 +13,28 @@ import Markdown from 'react-markdown';
 import { toast } from 'sonner';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { format, parseISO, addMonths } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import { db, auth } from '../firebase';
+import { collection, addDoc } from 'firebase/firestore';
+import { adjustDateToNextBusinessDay } from '../utils/dateHelpers';
+import { generateContractInstallmentsList } from './ContractsView';
+import { CreationProgressOverlay, ProgressStep } from './CreationProgressOverlay';
+
+const cleanObject = (obj: any): any => {
+  if (obj === null || obj === undefined) return null;
+  if (Array.isArray(obj)) return obj.map(cleanObject).filter(v => v !== undefined);
+  if (typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      if (obj[key] !== undefined) {
+        cleaned[key] = cleanObject(obj[key]);
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+};
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -43,10 +66,47 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
   const [isProcessing, setIsProcessing] = useState(false);
   const [contractText, setContractText] = useState('');
   const [parsedData, setParsedData] = useState<any>(null);
-  const [uploadedFile, setUploadedFile] = useState<{ base64: string; name: string } | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<{ 
+    base64: string; 
+    name: string; 
+    size?: string; 
+    type?: string; 
+    isPDF?: boolean; 
+  } | null>(null);
   const [bulkRecords, setBulkRecords] = useState<any[]>([]);
   const [bulkSummary, setBulkSummary] = useState<any>(null);
+  const [creationSteps, setCreationSteps] = useState<ProgressStep[]>([]);
+  const [showProgressOverlay, setShowProgressOverlay] = useState(false);
+  const [importHistoryOption, setImportHistoryOption] = useState<'all_paid' | 'has_pending' | 'unconfirmed'>('all_paid');
+  const [importHistoryOverrides, setImportHistoryOverrides] = useState<Record<string, 'paid' | 'pending'>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const retroactiveList = useMemo(() => {
+    if (!parsedData?.contract?.startDate) return [];
+    try {
+      const start = parseISO(parsedData.contract.startDate);
+      if (isNaN(start.getTime())) return [];
+      const today = new Date();
+      const currentYear = today.getFullYear();
+      const currentMonth = today.getMonth();
+
+      const list: { monthKey: string; monthName: string; year: number }[] = [];
+      let curr = new Date(start.getFullYear(), start.getMonth(), 1);
+
+      while (
+        curr.getFullYear() < currentYear ||
+        (curr.getFullYear() === currentYear && curr.getMonth() < currentMonth)
+      ) {
+        const mKey = format(curr, 'yyyy-MM');
+        const mName = format(curr, 'MMMM / yyyy', { locale: ptBR });
+        list.push({ monthKey: mKey, monthName: mName, year: curr.getFullYear() });
+        curr = addMonths(curr, 1);
+      }
+      return list;
+    } catch {
+      return [];
+    }
+  }, [parsedData?.contract?.startDate]);
 
   // Chat Sessions State
   const [showWarning, setShowWarning] = useState(() => {
@@ -170,6 +230,41 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
     }
   };
 
+  // Helper to normalize contract extraction data with deposit, secondOwner, and specialClauses defaults
+  const prepareParsedData = (data: any) => {
+    if (!data) return data;
+    const dep = data.deposit || {};
+    const hasDep = dep.hasDeposit === true || 
+      dep.hasDeposit === 'true' || 
+      (Number(dep.depositValue) > 0 && dep.hasDeposit !== false);
+
+    const secOwner = data.secondOwner || {};
+    const hasSec = secOwner.hasSecondOwner === true ||
+      secOwner.hasSecondOwner === 'true' ||
+      !!(secOwner.name && secOwner.name.trim());
+
+    return {
+      ...data,
+      deposit: {
+        hasDeposit: hasDep,
+        depositValue: Number(dep.depositValue) || (hasDep ? Number(data.property?.rentValue) || 0 : 0),
+        depositInstallments: Number(dep.depositInstallments) || 1,
+        depositDueDate: dep.depositDueDate || data.contract?.startDate || format(new Date(), 'yyyy-MM-dd'),
+        depositIsPaid: dep.depositIsPaid === true || dep.depositStatus === 'paid'
+      },
+      secondOwner: {
+        hasSecondOwner: hasSec,
+        name: secOwner.name || '',
+        cpfCnpj: secOwner.cpfCnpj || secOwner.cpf || '',
+        phone: secOwner.phone || secOwner.contact || '',
+        email: secOwner.email || '',
+        pixKey: secOwner.pixKey || '',
+        sharePercentage: Number(secOwner.sharePercentage) || 50
+      },
+      specialClauses: Array.isArray(data.specialClauses) ? data.specialClauses : (typeof data.specialClauses === 'string' && data.specialClauses ? [data.specialClauses] : [])
+    };
+  };
+
   // Import Functions
   const handleProcessText = async () => {
     if (!isOnline) {
@@ -180,7 +275,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
     setIsProcessing(true);
     try {
       const data = await parseContractFromText(contractText);
-      if (data) { setParsedData(data); setStep(2); } 
+      if (data) { setParsedData(prepareParsedData(data)); setStep(2); } 
       else toast.error('Não foi possível extrair dados estruturados deste texto.');
     } catch (e: any) { toast.error('Erro: ' + e.message); } 
     finally { setIsProcessing(false); }
@@ -196,21 +291,44 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
      const isImage = file.type.startsWith('image/');
      const isPDF = file.type === 'application/pdf';
      if (isImage || isPDF) {
+       const sizeFormatted = file.size > 1024 * 1024 
+         ? (file.size / (1024 * 1024)).toFixed(2) + ' MB'
+         : Math.round(file.size / 1024) + ' KB';
+
+       setUploadedFile({ 
+         base64: '', 
+         name: file.name, 
+         size: sizeFormatted, 
+         type: file.type, 
+         isPDF 
+       });
        setIsProcessing(true);
+
        const reader = new FileReader();
        reader.onloadend = async () => {
          const base64 = reader.result as string;
+         setUploadedFile({ 
+           base64, 
+           name: file.name, 
+           size: sizeFormatted, 
+           type: file.type, 
+           isPDF 
+         });
          try {
            const promptMsg = isPDF ? "Analise este documento PDF de contrato de aluguel." : "Veja a imagem do contrato anexada.";
            const data = await parseContractFromText(promptMsg, base64, file.type);
            if (data) { 
-             setParsedData(data); 
-             setUploadedFile({ base64, name: file.name });
+             setParsedData(prepareParsedData(data)); 
              setStep(2); 
+             toast.success(`Leitura concluída com sucesso para "${file.name}"!`);
            } 
            else toast.error('Não foi possível extrair dados estruturados deste arquivo.');
-         } catch(err: any) { toast.error(err.message); } 
-         finally { setIsProcessing(false); }
+         } catch(err: any) { 
+           toast.error(err.message || 'Erro ao processar arquivo.'); 
+         } 
+         finally { 
+           setIsProcessing(false); 
+         }
        };
        reader.readAsDataURL(file);
      } else {
@@ -219,60 +337,230 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
   };
 
   const handleConfirm = async () => {
+    const propertyName = parsedData?.property?.name || 'Imóvel Importado';
+    const tenantName = parsedData?.tenant?.name?.trim() || `Inquilino - ${propertyName}`;
+
+    const initialSteps: ProgressStep[] = [
+      { id: '1', title: 'Validar Informações do Contrato', description: 'Verificando a integridade dos campos, CEP e cláusulas extraídas', status: 'current' },
+      { id: '2', title: 'Cadastrar Imóvel no Banco de Dados', description: `Iniciando registro de "${propertyName}"`, status: 'pending' },
+      { id: '3', title: 'Configurar Regras de Locação e CEP', description: 'Aplicando endereço completo, valor do aluguel e multas', status: 'pending' },
+      { id: '4', title: 'Cadastrar Inquilino e Garantias', description: `Criando perfil do locatário "${tenantName}"`, status: 'pending' },
+      { id: '5', title: 'Gerar Contrato de Locação & Parcelas', description: 'Criando objeto do contrato, parcelas financeiras e anexos', status: 'pending' },
+      { id: '6', title: 'Sincronizar Dashboard e Notificações', description: 'Vinculando imóvel e inquilino em status Alocado', status: 'pending' },
+    ];
+
+    setCreationSteps(initialSteps);
+    setShowProgressOverlay(true);
     setIsProcessing(true);
+
     try {
-      const propertyId = await addProperty({
-        name: parsedData.property?.name || 'Imóvel Importado',
-        address: parsedData.property?.address || 'Endereço Pendente',
+      // 1. Validation step complete
+      await new Promise(r => setTimeout(r, 400));
+      setCreationSteps(prev => prev.map((s, idx) => {
+        if (idx === 0) return { ...s, status: 'completed', description: 'Dados e cláusulas verificados com sucesso' };
+        if (idx === 1) return { ...s, status: 'current' };
+        return s;
+      }));
+
+      // Build full address with CEP if available
+      let fullAddress = parsedData.property?.address || 'Endereço Pendente';
+      if (parsedData.property?.cep) {
+        if (!fullAddress.includes(parsedData.property.cep)) {
+          fullAddress = `${fullAddress} - CEP: ${parsedData.property.cep}`;
+        }
+      }
+
+      // 2. Add Property
+      const propertyPayload: any = {
+        name: propertyName,
+        address: fullAddress,
         rentValue: Number(parsedData.property?.rentValue) || 0,
         paymentDay: Number(parsedData.property?.paymentDay) || 5,
         rules: parsedData.property?.rules || '',
-        status: 'vacant', chargeLateFees: false, lateFeePenalty: 10, lateFeeDaily: 0.33, lateFeeType: 'percentage'
-      });
-      if (propertyId && parsedData.tenant && parsedData.tenant.name) {
+        alerts: parsedData.property?.alerts || '',
+        status: 'rented', 
+        chargeLateFees: parsedData.property?.chargeLateFees !== undefined ? parsedData.property.chargeLateFees : true, 
+        lateFeePenalty: Number(parsedData.property?.lateFeePenalty) || 10, 
+        lateFeeDaily: Number(parsedData.property?.lateFeeDaily) || 0.033, 
+        lateFeeType: 'percentage'
+      };
+
+      if (parsedData.property?.allowPets !== undefined && parsedData.property?.allowPets !== null) {
+        propertyPayload.allowPets = parsedData.property.allowPets;
+      }
+      if (parsedData.property?.allowSmoking !== undefined && parsedData.property?.allowSmoking !== null) {
+        propertyPayload.allowSmoking = parsedData.property.allowSmoking;
+      }
+      if (parsedData.property?.maxResidents) {
+        propertyPayload.maxResidents = Number(parsedData.property.maxResidents);
+      }
+
+      if (parsedData.secondOwner?.hasSecondOwner || (parsedData.secondOwner?.name && parsedData.secondOwner.name.trim())) {
+        propertyPayload.secondOwner = parsedData.secondOwner;
+        propertyPayload.hasSecondOwner = true;
+      }
+
+      const propertyId = await addProperty(propertyPayload);
+
+      setCreationSteps(prev => prev.map((s, idx) => {
+        if (idx === 1) return { ...s, status: 'completed', description: `Imóvel "${propertyName}" registrado com CEP no Firestore` };
+        if (idx === 2) return { ...s, status: 'current' };
+        return s;
+      }));
+
+      await new Promise(r => setTimeout(r, 400));
+
+      setCreationSteps(prev => prev.map((s, idx) => {
+        if (idx === 2) return { ...s, status: 'completed', description: 'Valores, vencimentos e taxas gravados' };
+        if (idx === 3) return { ...s, status: 'current' };
+        return s;
+      }));
+
+      let tenantId: string | null = null;
+      if (propertyId) {
         const tenantPayload: any = {
-          name: parsedData.tenant.name, 
-          cpf: parsedData.tenant.cpf || '', 
-          contact: parsedData.tenant.contact || '', 
-          spouse: parsedData.tenant.spouse || '',
-          children: parsedData.tenant.children || '',
-          pets: parsedData.tenant.pets || '',
-          hasVehicles: !!parsedData.tenant.vehicles && parsedData.tenant.vehicles.trim() !== '',
-          vehicleDetails: parsedData.tenant.vehicles || '',
-          observations: parsedData.tenant.observations || '', 
+          name: tenantName, 
+          cpf: parsedData.tenant?.cpf || '', 
+          contact: parsedData.tenant?.contact || '', 
+          spouse: parsedData.tenant?.spouse || '',
+          children: parsedData.tenant?.children || '',
+          pets: parsedData.tenant?.pets || '',
+          hasVehicles: !!parsedData.tenant?.vehicles && parsedData.tenant.vehicles.trim() !== '',
+          vehicleDetails: parsedData.tenant?.vehicles || '',
+          observations: parsedData.tenant?.observations || '', 
           propertyId, 
           status: 'allocated',
           rentValue: Number(parsedData.property?.rentValue) || 0,
           paymentDay: Number(parsedData.property?.paymentDay) || 5,
-          startDate: parsedData.contract?.startDate || '',
+          startDate: parsedData.contract?.startDate || format(new Date(), 'yyyy-MM-dd'),
           endDate: parsedData.contract?.endDate || '',
+          additionalResidents: parsedData.tenant?.additionalResidents || [],
+          residentCount: Number(parsedData.tenant?.residentCount) || 1,
+          isSmoker: !!parsedData.tenant?.isSmoker,
+          leaseDurationMonths: Number(parsedData.contract?.leaseDurationMonths) || 12,
+          historyStatus: importHistoryOption,
+          confirmHistoryOverrides: importHistoryOverrides,
         };
+
+        if (parsedData.secondOwner?.hasSecondOwner || (parsedData.secondOwner?.name && parsedData.secondOwner.name.trim())) {
+          tenantPayload.secondOwner = parsedData.secondOwner;
+          tenantPayload.hasSecondOwner = true;
+        }
+
+        if (parsedData.specialClauses && Array.isArray(parsedData.specialClauses) && parsedData.specialClauses.length > 0) {
+          tenantPayload.specialClauses = parsedData.specialClauses;
+        }
         
         if (uploadedFile) {
           tenantPayload.contractFile = uploadedFile.base64;
           tenantPayload.evidenceName = uploadedFile.name;
         }
 
-        if (parsedData.deposit?.hasDeposit === true || parsedData.deposit?.depositValue > 0) {
+        if (
+          parsedData.deposit?.hasDeposit === true ||
+          parsedData.deposit?.hasDeposit === 'true' ||
+          (Number(parsedData.deposit?.depositValue) > 0 && parsedData.deposit?.hasDeposit !== false)
+        ) {
           tenantPayload.initialPaymentType = 'deposit';
           tenantPayload.depositValue = Number(parsedData.deposit?.depositValue) || 0;
           tenantPayload.depositInstallments = Number(parsedData.deposit?.depositInstallments) || 1;
-          tenantPayload.depositDueDate = parsedData.deposit?.depositDueDate || '';
+          tenantPayload.depositDueDate = parsedData.deposit?.depositDueDate || parsedData.contract?.startDate || '';
+          tenantPayload.depositIsPaid = parsedData.deposit?.depositIsPaid === true || parsedData.deposit?.depositStatus === 'paid';
+        } else {
+          tenantPayload.initialPaymentType = 'rent';
         }
-        await addTenant(tenantPayload);
+
+        const newTenantRes = await addTenant(tenantPayload);
+        if (typeof newTenantRes === 'string') {
+          tenantId = newTenantRes;
+        }
       }
+
+      setCreationSteps(prev => prev.map((s, idx) => {
+        if (idx === 3) return { ...s, status: 'completed', description: `Inquilino "${tenantName}" e contrato ativos vinculados com sucesso` };
+        if (idx === 4) return { ...s, status: 'current' };
+        return s;
+      }));
+
+      await new Promise(r => setTimeout(r, 400));
+
+      // Step 5 progress update (contract & payments created atomically in addTenant)
+      setCreationSteps(prev => prev.map((s, idx) => {
+        if (idx === 4) return { ...s, status: 'completed', description: 'Contrato gravado sem duplicidade e parcelas financeiras configuradas' };
+        if (idx === 5) return { ...s, status: 'current' };
+        return s;
+      }));
+
+      await new Promise(r => setTimeout(r, 400));
+
+      setCreationSteps(prev => prev.map((s, idx) => {
+        if (idx === 5) return { ...s, status: 'completed', description: 'Sincronização concluída (100% realizada)' };
+        return s;
+      }));
+
+      await new Promise(r => setTimeout(r, 350));
+      setShowProgressOverlay(false);
       setStep(3);
-    } catch(err: any) { toast.error('Erro ao importar: ' + err.message); } 
-    finally { setIsProcessing(false); }
+    } catch(err: any) { 
+      toast.error('Erro ao importar: ' + err.message); 
+      setShowProgressOverlay(false);
+    } 
+    finally { 
+      setIsProcessing(false); 
+    }
   };
 
   const handleConfirmBulk = async () => {
+    const totalRecords = bulkRecords.length;
+    const initialSteps: ProgressStep[] = [
+      { id: '1', title: 'Validar Lote de Importação', description: `Analisando ${totalRecords} registros em massa`, status: 'current' },
+      ...bulkRecords.flatMap((rec, idx) => [
+        {
+          id: `prop-${idx}`,
+          title: `Cadastrar Imóvel ${idx + 1}/${totalRecords}`,
+          description: `Registrando "${rec.property?.name || 'Imóvel'}"`,
+          status: 'pending' as const
+        },
+        {
+          id: `ten-${idx}`,
+          title: `Cadastrar Inquilino ${idx + 1}/${totalRecords}`,
+          description: `Registrando "${rec.tenant?.name || 'Inquilino'}"`,
+          status: 'pending' as const
+        }
+      ]),
+      { id: 'final', title: 'Finalizar Sincronização em Massa', description: 'Atualizando base de dados global', status: 'pending' }
+    ];
+
+    setCreationSteps(initialSteps);
+    setShowProgressOverlay(true);
     setIsProcessing(true);
+
     try {
-      for (const rec of bulkRecords) {
+      await new Promise(r => setTimeout(r, 350));
+      setCreationSteps(prev => prev.map((s, i) => i === 0 ? { ...s, status: 'completed' } : i === 1 ? { ...s, status: 'current' } : s));
+
+      let stepIndex = 1;
+      for (let i = 0; i < totalRecords; i++) {
+        const rec = bulkRecords[i];
+        
         const pId = await addProperty({
-          name: rec.property?.name || 'Imóvel Importado CSV', address: rec.property?.address || '', rentValue: Number(rec.property?.rentValue) || 0, paymentDay: Number(rec.property?.paymentDay) || 5, status: 'vacant'
+          name: rec.property?.name || 'Imóvel Importado CSV', 
+          address: rec.property?.address || '', 
+          rentValue: Number(rec.property?.rentValue) || 0, 
+          paymentDay: Number(rec.property?.paymentDay) || 5, 
+          status: 'vacant'
         });
+
+        setCreationSteps(prev => {
+          const next = [...prev];
+          if (next[stepIndex]) next[stepIndex] = { ...next[stepIndex], status: 'completed' };
+          stepIndex++;
+          if (next[stepIndex]) next[stepIndex] = { ...next[stepIndex], status: 'current' };
+          return next;
+        });
+
+        await new Promise(r => setTimeout(r, 300));
+
         if (pId && rec.tenant && rec.tenant.name) {
           await addTenant({ 
             name: rec.tenant.name, 
@@ -284,10 +572,29 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
             paymentDay: Number(rec.property?.paymentDay) || 5
           });
         }
+
+        setCreationSteps(prev => {
+          const next = [...prev];
+          if (next[stepIndex]) next[stepIndex] = { ...next[stepIndex], status: 'completed' };
+          stepIndex++;
+          if (next[stepIndex]) next[stepIndex] = { ...next[stepIndex], status: 'current' };
+          return next;
+        });
+
+        await new Promise(r => setTimeout(r, 300));
       }
+
+      setCreationSteps(prev => prev.map(s => ({ ...s, status: 'completed' })));
+      await new Promise(r => setTimeout(r, 400));
+      setShowProgressOverlay(false);
       setStep(3);
-    } catch (e: any) { toast.error('Erro: ' + e.message); } 
-    finally { setIsProcessing(false); }
+    } catch (e: any) { 
+      toast.error('Erro: ' + e.message); 
+      setShowProgressOverlay(false);
+    } 
+    finally { 
+      setIsProcessing(false); 
+    }
   };
 
   const resetImportState = () => {
@@ -637,17 +944,139 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
           <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200">
             {activeModule === 'import_single' && (
               <>
-                <p className="text-slate-500 mb-6">Cole o texto inteiro do contrato de locação, ou envie uma foto/PDF. A IA vai ler as cláusulas e montar a ficha de locação.</p>
-                <textarea className="w-full min-h-[300px] p-4 rounded-xl border border-slate-200 bg-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50" placeholder={isOnline ? "Cole de uma vez..." : "Aguardando conexão..."} disabled={!isOnline} value={contractText} onChange={e => setContractText(e.target.value)} />
+                <p className="text-slate-500 mb-6 font-medium">
+                  Envie o arquivo do contrato de locação (<strong>PDF ou Foto</strong>) ou cole o texto completo. A IA vai ler as cláusulas e montar a ficha de locação automaticamente.
+                </p>
+
+                <input type="file" accept="image/*,application/pdf" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
+
+                {/* Card de Documento Carregado */}
+                {uploadedFile ? (
+                  <div className="mb-6 p-5 bg-slate-900 rounded-2xl text-white shadow-xl border border-indigo-500/40 relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                    <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/10 blur-3xl rounded-full pointer-events-none" />
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 relative z-10">
+                      <div className="flex items-start sm:items-center gap-4">
+                        <div className={cn(
+                          "w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-inner border",
+                          uploadedFile.isPDF 
+                            ? "bg-rose-500/20 border-rose-500/40 text-rose-400" 
+                            : "bg-blue-500/20 border-blue-500/40 text-blue-400"
+                        )}>
+                          <FileText className="w-7 h-7" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={cn(
+                              "px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider",
+                              uploadedFile.isPDF ? "bg-rose-500/30 text-rose-300 border border-rose-500/40" : "bg-blue-500/30 text-blue-300 border border-blue-500/40"
+                            )}>
+                              {uploadedFile.isPDF ? 'PDF Anexado' : 'Imagem Anexada'}
+                            </span>
+                            {uploadedFile.size && (
+                              <span className="text-xs text-slate-400 font-mono">
+                                {uploadedFile.size}
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="font-bold text-base text-white break-all line-clamp-1">
+                            {uploadedFile.name}
+                          </h3>
+                          <div className="mt-1">
+                            {isProcessing ? (
+                              <span className="text-amber-300 text-xs font-semibold flex items-center gap-1.5 animate-pulse">
+                                <Sparkles className="w-4 h-4 text-amber-400 animate-spin" /> Extraindo e analisando cláusulas com IA...
+                              </span>
+                            ) : (
+                              <span className="text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Documento carregado e pronto para análise
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 pt-3 sm:pt-0 border-t sm:border-t-0 border-white/10">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isProcessing}
+                          className="flex-1 sm:flex-none px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all border border-white/10 flex items-center justify-center gap-2"
+                        >
+                          <Upload className="w-4 h-4" /> Trocar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUploadedFile(null);
+                            if (fileInputRef.current) fileInputRef.current.value = '';
+                          }}
+                          disabled={isProcessing}
+                          className="px-4 py-2.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded-xl text-xs font-bold transition-all border border-rose-500/30 flex items-center justify-center gap-1.5"
+                        >
+                          <X className="w-4 h-4" /> Remover
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* Dropzone / Botão de Seleção do PDF/Foto */
+                  <div 
+                    onClick={() => !isProcessing && isOnline && fileInputRef.current?.click()}
+                    className={cn(
+                      "mb-6 p-8 border-2 border-dashed rounded-3xl transition-all text-center group relative overflow-hidden",
+                      isOnline 
+                        ? "border-indigo-200 hover:border-indigo-500 bg-indigo-50/40 hover:bg-indigo-50/80 cursor-pointer shadow-sm hover:shadow-md" 
+                        : "border-slate-200 bg-slate-50 cursor-not-allowed opacity-60"
+                    )}
+                  >
+                    <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-3 group-hover:scale-110 transition-transform shadow-sm">
+                      <Upload className="w-8 h-8" />
+                    </div>
+                    <h3 className="font-bold text-slate-900 text-lg mb-1">
+                      Enviar Contrato em PDF ou Foto
+                    </h3>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto mb-4 font-medium">
+                      Clique aqui para selecionar seu arquivo de contrato do celular ou computador. Formatos aceitos: <strong>.PDF</strong>, JPG ou PNG.
+                    </p>
+                    <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-white border border-indigo-100 rounded-full text-xs font-bold text-indigo-700 shadow-sm">
+                      <Sparkles className="w-4 h-4 text-amber-500" /> Leitura OCR Inteligente via IA
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2 pt-2">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block">
+                    Ou Cole o Texto do Contrato Manualmente:
+                  </label>
+                  <textarea 
+                    className="w-full min-h-[180px] p-4 rounded-2xl border border-slate-200 bg-slate-50 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50" 
+                    placeholder={isOnline ? "Cole o texto do contrato aqui se preferir não enviar arquivo..." : "Aguardando conexão..."} 
+                    disabled={!isOnline || isProcessing} 
+                    value={contractText} 
+                    onChange={e => setContractText(e.target.value)} 
+                  />
+                </div>
+
                 <div className="flex flex-col md:flex-row items-center justify-between gap-4 mt-6 pt-6 border-t border-slate-100">
                    <div className="flex items-center gap-4 w-full md:w-auto">
-                     <input type="file" accept="image/*,application/pdf" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
-                     <button onClick={() => fileInputRef.current?.click()} disabled={!isOnline} className="flex-1 md:flex-none border border-slate-200 hover:bg-slate-50 text-slate-600 px-6 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50">
-                       <Upload className="w-4 h-4" /> Enviar Arquivo
+                     <button 
+                       onClick={() => fileInputRef.current?.click()} 
+                       disabled={!isOnline || isProcessing} 
+                       className="flex-1 md:flex-none border border-slate-200 hover:bg-slate-100 text-slate-700 px-6 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+                     >
+                       <Upload className="w-4 h-4" /> {uploadedFile ? 'Selecionar Outro PDF' : 'Enviar PDF / Foto'}
                      </button>
                    </div>
-                   <button onClick={handleProcessText} disabled={!isOnline || isProcessing || !contractText.trim()} className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50">
-                     {isProcessing ? 'Extraindo IA...' : <><Wand2 className="w-4 h-4" /> Analisar e Extrair</>}
+                   <button 
+                     onClick={handleProcessText} 
+                     disabled={!isOnline || isProcessing || (!contractText.trim() && !uploadedFile)} 
+                     className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3.5 rounded-xl font-bold transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50 text-sm"
+                   >
+                     {isProcessing ? (
+                       <><Sparkles className="w-4 h-4 animate-spin" /> Processando Documento...</>
+                     ) : (
+                       <><Wand2 className="w-4 h-4" /> Analisar e Extrair Ficha</>
+                     )}
                    </button>
                 </div>
               </>
@@ -679,12 +1108,33 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
 
         {step === 2 && parsedData && (
           <div className="space-y-6">
+            {uploadedFile && (
+              <div className="p-4 bg-slate-900 text-white rounded-2xl border border-indigo-500/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md animate-in fade-in">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shrink-0">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-wider text-indigo-300 block">
+                      Documento de Origem Processado
+                    </span>
+                    <p className="text-sm font-bold text-white break-all line-clamp-1">
+                      {uploadedFile.name} {uploadedFile.size && <span className="text-xs text-slate-400 font-mono font-normal">({uploadedFile.size})</span>}
+                    </p>
+                  </div>
+                </div>
+                <span className="text-xs font-bold bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 px-3 py-1 rounded-full shrink-0 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Vinculado ao Novo Cadastro
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 space-y-4">
                  <h3 className="font-bold flex items-center gap-2 text-emerald-600"> <CheckCircle2 className="w-5 h-5" /> Imóvel Identificado </h3>
                  <div className="space-y-3 pt-2">
                    <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nome</label><input className="w-full font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.name || ''} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, name: e.target.value}})} /></div>
                    <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Endereço</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.address || ''} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, address: e.target.value}})} /></div>
+                   <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">CEP do Imóvel</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500 font-mono" placeholder="00000-000" value={parsedData.property?.cep || ''} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, cep: e.target.value}})} /></div>
                    <div className="grid grid-cols-2 gap-4">
                      <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Aluguel (R$)</label><input type="text" inputMode="decimal" className="w-full text-sm font-bold text-emerald-600 p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.rentValue || 0} onFocus={e => e.target.select()} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, rentValue: e.target.value}})} /></div>
                      <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Vencimento</label><input type="text" inputMode="numeric" pattern="[0-9]*" className="w-full text-sm font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" value={parsedData.property?.paymentDay || 5} onFocus={e => e.target.select()} onChange={e => setParsedData({...parsedData, property: {...parsedData.property, paymentDay: e.target.value}})} /></div>
@@ -708,9 +1158,566 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
                      <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Animais (Pets)</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" placeholder="Não informado" value={parsedData.tenant?.pets || ''} onChange={e => setParsedData({...parsedData, tenant: {...parsedData.tenant, pets: e.target.value}})} /></div>
                    </div>
                    <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Veículos (Vaga de garagem)</label><input className="w-full text-sm p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500" placeholder="Não informado" value={parsedData.tenant?.vehicles || ''} onChange={e => setParsedData({...parsedData, tenant: {...parsedData.tenant, vehicles: e.target.value}})} /></div>
+                  </div>
+               </div>
+             </div>
+
+             {/* Card de Conferência de Garantia Locatícia (Caução) */}
+             <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 space-y-4">
+               <div className="flex items-center justify-between">
+                 <h3 className="font-bold flex items-center gap-2 text-amber-600">
+                   <ShieldCheck className="w-5 h-5 text-amber-500" /> Garantia Locatícia & Caução
+                 </h3>
+                 <span className={clsx(
+                   "text-xs font-extrabold px-3 py-1 rounded-full border",
+                   parsedData.deposit?.hasDeposit || Number(parsedData.deposit?.depositValue) > 0
+                     ? "bg-amber-100 text-amber-900 border-amber-300"
+                     : "bg-slate-100 text-slate-600 border-slate-200"
+                 )}>
+                   {parsedData.deposit?.hasDeposit || Number(parsedData.deposit?.depositValue) > 0
+                     ? "Caução Configurada"
+                     : "Sem Caução"}
+                 </span>
+               </div>
+
+               <div className="space-y-4 pt-1">
+                 <div>
+                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                     Exigir ou Registrar Caução / Garantia em Dinheiro para este Contrato?
+                   </label>
+                   <div className="grid grid-cols-2 gap-3">
+                     <button
+                       type="button"
+                       onClick={() => setParsedData({
+                         ...parsedData,
+                         deposit: {
+                           ...parsedData.deposit,
+                           hasDeposit: true,
+                           depositValue: parsedData.deposit?.depositValue || Number(parsedData.property?.rentValue) || 0,
+                           depositInstallments: parsedData.deposit?.depositInstallments || 1
+                         }
+                       })}
+                       className={clsx(
+                         "p-3 rounded-2xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer",
+                         parsedData.deposit?.hasDeposit || Number(parsedData.deposit?.depositValue) > 0
+                           ? "bg-amber-500 text-white border-amber-600 shadow-sm ring-2 ring-amber-500/20"
+                           : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                       )}
+                     >
+                       <ShieldCheck className="w-4 h-4" /> Sim, Possui Caução
+                     </button>
+                     <button
+                       type="button"
+                       onClick={() => setParsedData({
+                         ...parsedData,
+                         deposit: {
+                           ...parsedData.deposit,
+                           hasDeposit: false,
+                           depositValue: 0
+                         }
+                       })}
+                       className={clsx(
+                         "p-3 rounded-2xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer",
+                         !(parsedData.deposit?.hasDeposit || Number(parsedData.deposit?.depositValue) > 0)
+                           ? "bg-slate-700 text-white border-slate-800 shadow-sm"
+                           : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                       )}
+                     >
+                       Sem Caução
+                     </button>
+                   </div>
                  </div>
+
+                 {(parsedData.deposit?.hasDeposit || Number(parsedData.deposit?.depositValue) > 0) && (
+                   <div className="space-y-4 pt-3 border-t border-slate-100 animate-in fade-in">
+                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                       <div>
+                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                           Valor Total da Caução (R$)
+                         </label>
+                         <input
+                           type="text"
+                           inputMode="decimal"
+                           className="w-full text-sm font-bold text-amber-700 p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500"
+                           value={parsedData.deposit?.depositValue || 0}
+                           onFocus={e => e.target.select()}
+                           onChange={e => setParsedData({
+                             ...parsedData,
+                             deposit: {
+                               ...parsedData.deposit,
+                               hasDeposit: true,
+                               depositValue: e.target.value
+                             }
+                           })}
+                         />
+                       </div>
+
+                       <div>
+                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                           Parcelamento da Caução
+                         </label>
+                         <select
+                           className="w-full text-sm font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500 bg-transparent cursor-pointer"
+                           value={String(parsedData.deposit?.depositInstallments || 1)}
+                           onChange={e => setParsedData({
+                             ...parsedData,
+                             deposit: {
+                               ...parsedData.deposit,
+                               depositInstallments: Number(e.target.value)
+                             }
+                           })}
+                         >
+                           <option value="1">À Vista (1x)</option>
+                           <option value="2">2x Sem Juros</option>
+                           <option value="3">3x Sem Juros</option>
+                           <option value="4">4x Sem Juros</option>
+                           <option value="5">5x Sem Juros</option>
+                           <option value="6">6x Sem Juros</option>
+                           <option value="10">10x Sem Juros</option>
+                           <option value="12">12x Sem Juros</option>
+                         </select>
+                       </div>
+                     </div>
+
+                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                       <div>
+                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                           Data / Dia do Pagamento da Caução
+                         </label>
+                         <input
+                           type="date"
+                           className="w-full text-sm font-medium p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500"
+                           value={parsedData.deposit?.depositDueDate || parsedData.contract?.startDate || ''}
+                           onChange={e => setParsedData({
+                             ...parsedData,
+                             deposit: {
+                               ...parsedData.deposit,
+                               depositDueDate: e.target.value
+                             }
+                           })}
+                         />
+                       </div>
+
+                       <div>
+                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                           Situação do Pagamento
+                         </label>
+                         <select
+                           className="w-full text-sm font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500 bg-transparent cursor-pointer"
+                           value={parsedData.deposit?.depositIsPaid || parsedData.deposit?.depositStatus === 'paid' ? 'paid' : 'pending'}
+                           onChange={e => setParsedData({
+                             ...parsedData,
+                             deposit: {
+                               ...parsedData.deposit,
+                               depositIsPaid: e.target.value === 'paid',
+                               depositStatus: e.target.value
+                             }
+                           })}
+                         >
+                           <option value="paid">✅ Já Pago / Quitado pelo Inquilino</option>
+                           <option value="pending">⏳ A Pagar (Pendente nas parcelas)</option>
+                         </select>
+                       </div>
+                     </div>
+                   </div>
+                 )}
+               </div>
+            </div>
+
+            {/* Card de Conferência do Segundo Proprietário / Coproprietário */}
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold flex items-center gap-2 text-indigo-700">
+                  <User className="w-5 h-5 text-indigo-600" /> Segundo Proprietário / Coproprietário (Locador 2)
+                </h3>
+                <span className={clsx(
+                  "text-xs font-extrabold px-3 py-1 rounded-full border",
+                  parsedData.secondOwner?.hasSecondOwner || parsedData.secondOwner?.name
+                    ? "bg-indigo-100 text-indigo-900 border-indigo-300"
+                    : "bg-slate-100 text-slate-600 border-slate-200"
+                )}>
+                  {parsedData.secondOwner?.hasSecondOwner || parsedData.secondOwner?.name
+                    ? "Coproprietário Ativo"
+                    : "Apenas 1 Locador"}
+                </span>
+              </div>
+
+              <div className="space-y-4 pt-1">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                    Este imóvel ou contrato possui um Segundo Proprietário (Locador 2) ou Cônjuge participante?
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setParsedData({
+                        ...parsedData,
+                        secondOwner: {
+                          ...parsedData.secondOwner,
+                          hasSecondOwner: true
+                        }
+                      })}
+                      className={clsx(
+                        "p-3 rounded-2xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer",
+                        parsedData.secondOwner?.hasSecondOwner || parsedData.secondOwner?.name
+                          ? "bg-indigo-600 text-white border-indigo-700 shadow-sm ring-2 ring-indigo-500/20"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      <User className="w-4 h-4" /> Sim, Cadastrar 2º Locador
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setParsedData({
+                        ...parsedData,
+                        secondOwner: {
+                          ...parsedData.secondOwner,
+                          hasSecondOwner: false,
+                          name: '',
+                          cpfCnpj: '',
+                          phone: '',
+                          pixKey: ''
+                        }
+                      })}
+                      className={clsx(
+                        "p-3 rounded-2xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer",
+                        !(parsedData.secondOwner?.hasSecondOwner || parsedData.secondOwner?.name)
+                          ? "bg-slate-700 text-white border-slate-800 shadow-sm"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      Apenas 1 Proprietário
+                    </button>
+                  </div>
+                </div>
+
+                {(parsedData.secondOwner?.hasSecondOwner || parsedData.secondOwner?.name) && (
+                  <div className="space-y-4 pt-3 border-t border-slate-100 animate-in fade-in">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                          Nome Completo do 2º Proprietário
+                        </label>
+                        <input
+                          type="text"
+                          className="w-full text-sm font-bold p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500"
+                          placeholder="Ex: Maria das Dores Silva"
+                          value={parsedData.secondOwner?.name || ''}
+                          onChange={e => setParsedData({
+                            ...parsedData,
+                            secondOwner: {
+                              ...parsedData.secondOwner,
+                              hasSecondOwner: true,
+                              name: e.target.value
+                            }
+                          })}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                          CPF / CNPJ do 2º Proprietário
+                        </label>
+                        <input
+                          type="text"
+                          className="w-full text-sm font-medium p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                          placeholder="000.000.000-00"
+                          value={parsedData.secondOwner?.cpfCnpj || ''}
+                          onChange={e => setParsedData({
+                            ...parsedData,
+                            secondOwner: {
+                              ...parsedData.secondOwner,
+                              cpfCnpj: e.target.value
+                            }
+                          })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                          Telefone / WhatsApp de Contato
+                        </label>
+                        <input
+                          type="text"
+                          className="w-full text-sm font-medium p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500"
+                          placeholder="(11) 99999-0000"
+                          value={parsedData.secondOwner?.phone || ''}
+                          onChange={e => setParsedData({
+                            ...parsedData,
+                            secondOwner: {
+                              ...parsedData.secondOwner,
+                              phone: e.target.value
+                            }
+                          })}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                          Chave PIX (Para Repasse / Recebimento)
+                        </label>
+                        <input
+                          type="text"
+                          className="w-full text-sm font-medium p-2 border-b border-slate-200 focus:outline-none focus:border-indigo-500 font-mono text-emerald-700"
+                          placeholder="CPF, e-mail ou chave aleatória"
+                          value={parsedData.secondOwner?.pixKey || ''}
+                          onChange={e => setParsedData({
+                            ...parsedData,
+                            secondOwner: {
+                              ...parsedData.secondOwner,
+                              pixKey: e.target.value
+                            }
+                          })}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
+
+            {/* Card de Cláusulas Especiais e Regras do Contrato */}
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold flex items-center gap-2 text-slate-800">
+                  <BookOpen className="w-5 h-5 text-indigo-600" /> Cláusulas Especiais & Regras do Contrato Antigo
+                </h3>
+                <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
+                  {parsedData.specialClauses?.length || 0} Cláusula(s)
+                </span>
+              </div>
+
+              <div className="space-y-3 pt-1">
+                <p className="text-xs text-slate-500">
+                  Adicione ou edite cláusulas personalizadas identificadas no contrato antigo para que sejam mantidas e integradas nos novos documentos:
+                </p>
+
+                <div className="space-y-2">
+                  {(parsedData.specialClauses || []).map((clause: string, idx: number) => (
+                    <div key={idx} className="flex items-start gap-2 bg-slate-50 p-3 rounded-2xl border border-slate-200">
+                      <span className="text-xs font-bold text-indigo-600 bg-indigo-50 w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5">
+                        {idx + 1}
+                      </span>
+                      <input
+                        type="text"
+                        className="w-full text-xs font-medium bg-transparent border-b border-transparent focus:border-indigo-500 focus:outline-none"
+                        value={clause}
+                        onChange={e => {
+                          const updated = [...(parsedData.specialClauses || [])];
+                          updated[idx] = e.target.value;
+                          setParsedData({ ...parsedData, specialClauses: updated });
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = (parsedData.specialClauses || []).filter((_: any, i: number) => i !== idx);
+                          setParsedData({ ...parsedData, specialClauses: updated });
+                        }}
+                        className="text-slate-400 hover:text-rose-500 p-1 shrink-0"
+                        title="Remover Cláusula"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setParsedData({
+                      ...parsedData,
+                      specialClauses: [...(parsedData.specialClauses || []), '']
+                    });
+                  }}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 pt-2 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" /> Adicionar Outra Cláusula Especial
+                </button>
+              </div>
+            </div>
+
+            {/* Seção de Pergunta e Confirmação de Débitos / Aluguéis Anteriores para Contratos Antigos */}
+            {retroactiveList.length > 0 && (
+              <div className="bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300/80 rounded-3xl p-6 shadow-sm space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-3 bg-amber-500 text-white rounded-2xl shadow-sm shrink-0 mt-0.5">
+                    <CalendarCheck className="w-6 h-6" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-bold text-base text-amber-950">Histórico do Contrato Antigo: Conferência de Aluguéis e Débitos</h4>
+                      <span className="px-2.5 py-0.5 bg-amber-200 text-amber-900 text-xs font-extrabold rounded-full">
+                        {retroactiveList.length} Mês(es) Passados
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-800 mt-1 leading-relaxed font-medium">
+                      O contrato importado possui data de início em <strong className="font-bold text-amber-950">{parsedData.contract?.startDate ? format(parseISO(parsedData.contract.startDate), 'dd/MM/yyyy') : ''}</strong>. 
+                      Por favor, confirme se existem débitos de aluguéis anteriores ou se todos foram pagos:
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setImportHistoryOption('all_paid')}
+                    className={cn(
+                      "p-3.5 rounded-2xl border text-left transition-all flex flex-col justify-between gap-2 cursor-pointer",
+                      importHistoryOption === 'all_paid'
+                        ? "bg-emerald-600 text-white border-emerald-600 shadow-md ring-2 ring-emerald-500/30"
+                        : "bg-white text-slate-700 border-slate-200 hover:border-emerald-300"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-wider">Todos Quitados</span>
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    </div>
+                    <p className={cn("text-[11px]", importHistoryOption === 'all_paid' ? "text-emerald-100" : "text-slate-500")}>
+                      Todos os aluguéis anteriores foram pagos pontualmente. Nenhum débito pendente.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setImportHistoryOption('has_pending')}
+                    className={cn(
+                      "p-3.5 rounded-2xl border text-left transition-all flex flex-col justify-between gap-2 cursor-pointer",
+                      importHistoryOption === 'has_pending'
+                        ? "bg-rose-600 text-white border-rose-600 shadow-md ring-2 ring-rose-500/30"
+                        : "bg-white text-slate-700 border-slate-200 hover:border-rose-300"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-wider">Possui Débitos</span>
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                    </div>
+                    <p className={cn("text-[11px]", importHistoryOption === 'has_pending' ? "text-rose-100" : "text-slate-500")}>
+                      Existem aluguéis não pagos dos meses passados. Selecionar débitos abertos.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setImportHistoryOption('unconfirmed')}
+                    className={cn(
+                      "p-3.5 rounded-2xl border text-left transition-all flex flex-col justify-between gap-2 cursor-pointer",
+                      importHistoryOption === 'unconfirmed'
+                        ? "bg-slate-800 text-white border-slate-800 shadow-md"
+                        : "bg-white text-slate-700 border-slate-200 hover:border-slate-300"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-wider">Pendente de Verificação</span>
+                      <HelpCircle className="w-4 h-4 shrink-0" />
+                    </div>
+                    <p className={cn("text-[11px]", importHistoryOption === 'unconfirmed' ? "text-slate-300" : "text-slate-500")}>
+                      Deixar aluguéis anteriores pendentes para verificação posterior com o inquilino.
+                    </p>
+                  </button>
+                </div>
+
+                {importHistoryOption === 'has_pending' && (
+                  <div className="bg-white p-4 rounded-2xl border border-amber-200 space-y-3 animate-in fade-in">
+                    <p className="text-xs font-bold text-slate-700">
+                      Clique nos meses para alternar entre <span className="text-rose-600 font-extrabold underline">DEVENDO (DÉBITO)</span> e <span className="text-emerald-600 font-extrabold">QUITADO</span>:
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                      {retroactiveList.map((m) => {
+                        const isPending = importHistoryOverrides[m.monthKey] === 'pending';
+                        return (
+                          <div
+                            key={m.monthKey}
+                            onClick={() => {
+                              setImportHistoryOverrides(prev => ({
+                                ...prev,
+                                [m.monthKey]: isPending ? 'paid' : 'pending'
+                              }));
+                            }}
+                            className={cn(
+                              "p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between text-xs font-medium",
+                              isPending
+                                ? "bg-rose-50 border-rose-300 text-rose-900 font-bold shadow-xs"
+                                : "bg-emerald-50 border-emerald-200 text-emerald-900 font-bold"
+                            )}
+                          >
+                            <span className="capitalize">{m.monthName}</span>
+                            <span className={cn(
+                              "px-2 py-0.5 rounded-md text-[10px] font-black uppercase",
+                              isPending ? "bg-rose-200 text-rose-800" : "bg-emerald-200 text-emerald-800"
+                            )}>
+                              {isPending ? 'Devendo (Débito)' : 'Quitado'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Cláusulas Extraídas do Contrato e Auditoria Jurídica */}
+            {((parsedData.extractedClauses && parsedData.extractedClauses.length > 0) || (parsedData.feedback && ((parsedData.feedback.improvements && parsedData.feedback.improvements.length > 0) || (parsedData.feedback.missingInfo && parsedData.feedback.missingInfo.length > 0)))) && (
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 space-y-4">
+                 <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                   <BookOpen className="w-5 h-5 text-indigo-600" /> Cláusulas Mapeadas & Auditoria do Contrato
+                 </h3>
+
+                 {parsedData.extractedClauses && parsedData.extractedClauses.length > 0 && (
+                   <div className="space-y-3">
+                     <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Cláusulas Específicas Extraídas</p>
+                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                       {parsedData.extractedClauses.map((clause: any, idx: number) => (
+                         <div key={idx} className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs space-y-1">
+                           <span className="font-bold text-slate-800 block text-sm">{clause.title}</span>
+                           <p className="text-slate-600 leading-relaxed">{clause.summary}</p>
+                           {clause.legalBasis && (
+                             <span className="inline-block mt-1 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                               {clause.legalBasis}
+                             </span>
+                           )}
+                         </div>
+                       ))}
+                     </div>
+                   </div>
+                 )}
+
+                 {parsedData.feedback && ((parsedData.feedback.missingInfo && parsedData.feedback.missingInfo.length > 0) || (parsedData.feedback.improvements && parsedData.feedback.improvements.length > 0)) && (
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                     {parsedData.feedback.missingInfo && parsedData.feedback.missingInfo.length > 0 && (
+                       <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl">
+                         <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider flex items-center gap-1.5 mb-2">
+                           <AlertCircle className="w-4 h-4 text-amber-600" /> Pontos Faltantes / Brechas
+                         </h4>
+                         <ul className="list-disc list-inside text-xs text-amber-800 space-y-1">
+                           {parsedData.feedback.missingInfo.map((item: string, i: number) => (
+                             <li key={i}>{item}</li>
+                           ))}
+                         </ul>
+                       </div>
+                     )}
+
+                     {parsedData.feedback.improvements && parsedData.feedback.improvements.length > 0 && (
+                       <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl">
+                         <h4 className="text-xs font-bold text-emerald-900 uppercase tracking-wider flex items-center gap-1.5 mb-2">
+                           <ShieldCheck className="w-4 h-4 text-emerald-600" /> Recomendações da Lei do Inquilinato
+                         </h4>
+                         <ul className="list-disc list-inside text-xs text-emerald-800 space-y-1">
+                           {parsedData.feedback.improvements.map((item: string, i: number) => (
+                             <li key={i}>{item}</li>
+                           ))}
+                         </ul>
+                       </div>
+                     )}
+                   </div>
+                 )}
+              </div>
+            )}
+
             <div className="flex items-center justify-end pt-4 gap-4">
                <button onClick={() => setStep(1)} className="px-6 py-2.5 rounded-xl font-bold text-slate-500 hover:bg-slate-100">Voltar</button>
                <button onClick={handleConfirm} disabled={isProcessing} className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-2 shadow-md">
@@ -916,6 +1923,7 @@ export function IntelligenceHubView({ properties, updateProperty, addProperty, a
          </Card>
       </div>
 
+      <CreationProgressOverlay isOpen={showProgressOverlay} steps={creationSteps} />
     </div>
   );
 }

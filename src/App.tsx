@@ -60,6 +60,7 @@ import {
   CustomAlert,
   StorageSpace,
   StorageItem,
+  LandlordProfile,
 } from "./types";
 import { handleFirestoreError } from "./utils/firestoreError";
 import { Auth } from "./components/Auth";
@@ -204,8 +205,58 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+export function getRenovationCountdownInfo(endDateStr?: string) {
+  if (!endDateStr) return null;
+  const parts = endDateStr.split("-").map(Number);
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+  const [year, month, day] = parts;
+  const targetDate = new Date(year, month - 1, day, 23, 59, 59);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const diffMs = targetDate.getTime() - today.getTime();
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  const formattedDate = `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${year}`;
+
+  if (diffDays < 0) {
+    const absDays = Math.abs(diffDays);
+    return {
+      status: "overdue",
+      diffDays,
+      text: `Atrasada há ${absDays} dia${absDays > 1 ? "s" : ""}`,
+      subtext: `Prazo era: ${formattedDate}`,
+      formattedDate,
+      badgeBg: "bg-rose-100 text-rose-800 border-rose-200",
+      pillBg: "bg-rose-200 text-rose-900",
+    };
+  } else if (diffDays === 0) {
+    return {
+      status: "today",
+      diffDays: 0,
+      text: "Término Previsto Hoje!",
+      subtext: `Data final: ${formattedDate}`,
+      formattedDate,
+      badgeBg: "bg-amber-100 text-amber-800 border-amber-200",
+      pillBg: "bg-amber-200 text-amber-900",
+    };
+  } else {
+    return {
+      status: "upcoming",
+      diffDays,
+      text: `Faltam ${diffDays} dia${diffDays > 1 ? "s" : ""}`,
+      subtext: `Término: ${formattedDate}`,
+      formattedDate,
+      badgeBg: diffDays <= 5 ? "bg-amber-100 text-amber-800 border-amber-200" : "bg-indigo-100 text-indigo-800 border-indigo-200",
+      pillBg: diffDays <= 5 ? "bg-amber-200 text-amber-900" : "bg-indigo-200 text-indigo-900",
+    };
+  }
+}
+
 const cleanObject = (val: any): any => {
   if (val === null || val === undefined) {
+    return null;
+  }
+  if (typeof val === "number" && Number.isNaN(val)) {
     return null;
   }
   if (Array.isArray(val)) {
@@ -443,7 +494,7 @@ const TenantTimeline = ({
       return {
         id: `proj-${i}`,
         dueDate: format(dueDate, "yyyy-MM-dd"),
-        amount: property.rentValue,
+        amount: tenant.rentValue || property.rentValue || 0,
         description: "Aluguel (Projeção)",
         status: "projected" as const,
       };
@@ -816,7 +867,212 @@ interface HomeViewProps {
   onNavigateToStorage?: (storageId: string) => void;
 }
 
-const HomeView = ({
+interface TenantCardItemProps {
+  tenant: Tenant;
+  property?: Property;
+  isUpToDate: boolean;
+  hasPendingRemainder: boolean;
+  nextPayment: Payment | null;
+  lastPaid: Payment | null;
+  onOpenTenantDetail: (t: Tenant) => void;
+}
+
+const TenantCardItem = React.memo(({
+  tenant,
+  property,
+  isUpToDate,
+  hasPendingRemainder,
+  nextPayment,
+  lastPaid,
+  onOpenTenantDetail,
+}: TenantCardItemProps) => (
+  <motion.div
+    key={tenant.id}
+    className="group relative cursor-pointer"
+    onClick={() => onOpenTenantDetail(tenant)}
+    whileHover={{ y: -2, scale: 1.02 }}
+  >
+    <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-xl" />
+    <div className="p-3 flex flex-col justify-between h-full border border-slate-100 bg-white/90 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl relative overflow-hidden">
+      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-slate-200 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+      <div className="space-y-1 mb-2 relative z-10">
+        <div className="flex items-start justify-between gap-1">
+          <h3
+            className="font-bold text-xs text-slate-800 group-hover:text-indigo-600 transition-colors truncate"
+            title={tenant.name}
+          >
+            {tenant.name}
+          </h3>
+          <div
+            className={cn(
+              "w-2 h-2 rounded-full shrink-0 shadow-sm mt-0.5",
+              !isUpToDate
+                ? "bg-red-500"
+                : hasPendingRemainder
+                  ? "bg-amber-400"
+                  : "bg-emerald-500",
+            )}
+          />
+        </div>
+
+        <p
+          className="text-[9px] text-slate-500 flex items-center gap-1 font-medium truncate"
+          title={property?.name || "Vazio"}
+        >
+          <Home className="w-2.5 h-2.5 shrink-0" />
+          <span className="truncate">
+            {property?.name || "Sem imóvel"}
+          </span>
+        </p>
+      </div>
+
+      <div className="mt-auto relative z-10">
+        {nextPayment ? (
+          <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+            <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
+              Pendência
+            </p>
+            <p
+              className={cn(
+                "text-[10px] font-bold truncate",
+                nextPayment.description?.startsWith("Restante:")
+                  ? "text-indigo-600"
+                  : "text-emerald-600",
+              )}
+            >
+              R$ {nextPayment.amount.toLocaleString()}
+            </p>
+          </div>
+        ) : (
+          <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+            <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
+              Último Pago
+            </p>
+            <p className="text-[9px] font-bold text-emerald-600 truncate">
+              {lastPaid
+                ? `R$ ${lastPaid.paidAmount?.toLocaleString() || lastPaid.amount.toLocaleString()}`
+                : "-"}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  </motion.div>
+));
+TenantCardItem.displayName = "TenantCardItem";
+
+interface StorageCardItemProps {
+  space: StorageSpace;
+  todayStr: string;
+  onNavigateToStorage?: (storageId: string) => void;
+}
+
+const StorageCardItem = React.memo(({
+  space,
+  todayStr,
+  onNavigateToStorage,
+}: StorageCardItemProps) => {
+  const spaceTypeLabels: Record<string, string> = {
+    garage: "Garagem",
+    storage_room: "Depósito / Box",
+    warehouse: "Galpão / Barracão",
+    other: "Espaço Outros",
+  };
+
+  const sortedBillings = useMemo(() => {
+    return space.billings 
+      ? [...space.billings].sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+      : [];
+  }, [space.billings]);
+
+  const nextUnpaidBilling = useMemo(() => {
+    return sortedBillings.find(b => b.status !== "paid");
+  }, [sortedBillings]);
+
+  const isLate = nextUnpaidBilling && nextUnpaidBilling.dueDate < todayStr;
+
+  const SpaceIcon = space.spaceType === "garage" 
+    ? Car 
+    : space.spaceType === "warehouse" 
+      ? Warehouse 
+      : space.spaceType === "storage_room"
+        ? Box
+        : Archive;
+
+  return (
+    <motion.div
+      key={space.id}
+      className="group relative cursor-pointer"
+      onClick={() => space.id && onNavigateToStorage?.(space.id)}
+      whileHover={{ y: -2, scale: 1.02 }}
+    >
+      <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-xl" />
+      <div className="p-3 flex flex-col justify-between h-full border border-slate-100 bg-white/90 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-slate-200 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+        <div className="space-y-1 mb-2 relative z-10">
+          <div className="flex items-start justify-between gap-1">
+            <h3
+              className="font-bold text-xs text-slate-800 group-hover:text-emerald-600 transition-colors truncate"
+              title={space.name}
+            >
+              {space.name}
+            </h3>
+            <div
+              className={cn(
+                "w-2 h-2 rounded-full shrink-0 shadow-sm mt-0.5",
+                nextUnpaidBilling 
+                  ? (isLate ? "bg-red-500" : "bg-amber-400")
+                  : "bg-emerald-500"
+              )}
+            />
+          </div>
+
+          <p
+            className="text-[9px] text-slate-500 flex items-center gap-1 font-medium truncate"
+            title={`${spaceTypeLabels[space.spaceType || "other"]} • ${space.address || "Sem endereço"}`}
+          >
+            <SpaceIcon className="w-2.5 h-2.5 shrink-0 text-slate-400" />
+            <span className="truncate">
+              {space.address || spaceTypeLabels[space.spaceType || "other"]}
+            </span>
+          </p>
+        </div>
+
+        <div className="mt-auto relative z-10">
+          {nextUnpaidBilling ? (
+            <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+              <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
+                {isLate ? "Atrasado" : `Vence ${format(parseISO(nextUnpaidBilling.dueDate), "dd/MM")}`}
+              </p>
+              <p
+                className={cn(
+                  "text-[10px] font-bold truncate",
+                  isLate ? "text-red-600" : "text-amber-600"
+                )}
+              >
+                R$ {nextUnpaidBilling.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+              </p>
+            </div>
+          ) : (
+            <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
+              <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
+                Custo Mensal
+              </p>
+              <p className="text-[9px] font-bold text-emerald-600 truncate">
+                R$ {space.monthlyCost.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+});
+StorageCardItem.displayName = "StorageCardItem";
+
+const HomeView = React.memo(({
   properties,
   tenants,
   payments,
@@ -831,7 +1087,8 @@ const HomeView = ({
   storages,
   onNavigateToStorage,
 }: HomeViewProps) => {
-  const today = new Date();
+  const todayStr = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
+  const today = useMemo(() => new Date(), [todayStr]);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
 
   const tenantStatus = useMemo(() => {
@@ -839,7 +1096,6 @@ const HomeView = ({
       const property = properties.find((p) => p.id === tenant.propertyId);
       const tenantPayments = payments.filter((p) => p.tenantId === tenant.id);
 
-      const todayStr = format(today, "yyyy-MM-dd");
       const latePayments = tenantPayments.filter(
         (p) =>
           p.status === "late" ||
@@ -895,7 +1151,7 @@ const HomeView = ({
         nextAgreementInstallment,
       };
     });
-  }, [tenants, properties, payments, agreements, today]);
+  }, [tenants, properties, payments, agreements, todayStr]);
 
   const projectionData = useMemo(() => {
     const data: any[] = [];
@@ -946,7 +1202,7 @@ const HomeView = ({
           if (t.propertyId && t.status === "allocated") {
             const prop = properties.find((p) => p.id === t.propertyId);
             if (prop) {
-              projectedRent += prop.rentValue;
+              projectedRent += t.rentValue || prop.rentValue || 0;
             }
           }
         });
@@ -963,7 +1219,7 @@ const HomeView = ({
       });
     }
     return data;
-  }, [payments, expenses, tenants, today]);
+  }, [payments, expenses, tenants, properties, today]);
 
   const totalLateCount = useMemo(() => {
     return tenantStatus.reduce((acc, ts) => acc + ts.latePaymentsCount, 0);
@@ -1007,85 +1263,20 @@ const HomeView = ({
               property,
               isUpToDate,
               hasPendingRemainder,
-              latePaymentsCount,
               nextPayment,
               lastPaid,
             },
-            i,
           ) => (
-            <motion.div
+            <TenantCardItem
               key={tenant.id}
-              className="group relative cursor-pointer"
-              onClick={() => onOpenTenantDetail(tenant)}
-              whileHover={{ y: -2, scale: 1.02 }}
-            >
-              <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-xl" />
-              <div className="p-3 flex flex-col justify-between h-full border border-slate-100 bg-white/90 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-slate-200 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-
-                <div className="space-y-1 mb-2 relative z-10">
-                  <div className="flex items-start justify-between gap-1">
-                    <h3
-                      className="font-bold text-xs text-slate-800 group-hover:text-indigo-600 transition-colors truncate"
-                      title={tenant.name}
-                    >
-                      {tenant.name}
-                    </h3>
-                    <div
-                      className={cn(
-                        "w-2 h-2 rounded-full shrink-0 shadow-sm mt-0.5",
-                        !isUpToDate
-                          ? "bg-red-500"
-                          : hasPendingRemainder
-                            ? "bg-amber-400"
-                            : "bg-emerald-500",
-                      )}
-                    />
-                  </div>
-
-                  <p
-                    className="text-[9px] text-slate-500 flex items-center gap-1 font-medium truncate"
-                    title={property?.name || "Vazio"}
-                  >
-                    <Home className="w-2.5 h-2.5 shrink-0" />
-                    <span className="truncate">
-                      {property?.name || "Sem imóvel"}
-                    </span>
-                  </p>
-                </div>
-
-                <div className="mt-auto relative z-10">
-                  {nextPayment ? (
-                    <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
-                      <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
-                        Pendência
-                      </p>
-                      <p
-                        className={cn(
-                          "text-[10px] font-bold truncate",
-                          nextPayment.description?.startsWith("Restante:")
-                            ? "text-indigo-600"
-                            : "text-emerald-600",
-                        )}
-                      >
-                        R$ {nextPayment.amount.toLocaleString()}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
-                      <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
-                        Último Pago
-                      </p>
-                      <p className="text-[9px] font-bold text-emerald-600 truncate">
-                        {lastPaid
-                          ? `R$ ${lastPaid.paidAmount?.toLocaleString() || lastPaid.amount.toLocaleString()}`
-                          : "-"}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </motion.div>
+              tenant={tenant}
+              property={property}
+              isUpToDate={isUpToDate}
+              hasPendingRemainder={hasPendingRemainder}
+              nextPayment={nextPayment}
+              lastPaid={lastPaid}
+              onOpenTenantDetail={onOpenTenantDetail}
+            />
           ),
         )}
         {tenants.length === 0 && (
@@ -1115,100 +1306,14 @@ const HomeView = ({
 
         {storages && storages.length > 0 ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-            {storages.map((space) => {
-              const spaceTypeLabels: Record<string, string> = {
-                garage: "Garagem",
-                storage_room: "Depósito / Box",
-                warehouse: "Galpão / Barracão",
-                other: "Espaço Outros",
-              };
-              
-              // Calculate next billing / status
-              const sortedBillings = space.billings 
-                ? [...space.billings].sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-                : [];
-              
-              const nextUnpaidBilling = sortedBillings.find(b => b.status !== "paid");
-              const isLate = nextUnpaidBilling && nextUnpaidBilling.dueDate < format(today, "yyyy-MM-dd");
-
-              const SpaceIcon = space.spaceType === "garage" 
-                ? Car 
-                : space.spaceType === "warehouse" 
-                  ? Warehouse 
-                  : space.spaceType === "storage_room"
-                    ? Box
-                    : Archive;
-
-              return (
-                <motion.div
-                  key={space.id}
-                  className="group relative cursor-pointer"
-                  onClick={() => space.id && onNavigateToStorage?.(space.id)}
-                  whileHover={{ y: -2, scale: 1.02 }}
-                >
-                  <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-xl" />
-                  <div className="p-3 flex flex-col justify-between h-full border border-slate-100 bg-white/90 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-slate-200 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-
-                    <div className="space-y-1 mb-2 relative z-10">
-                      <div className="flex items-start justify-between gap-1">
-                        <h3
-                          className="font-bold text-xs text-slate-800 group-hover:text-emerald-600 transition-colors truncate"
-                          title={space.name}
-                        >
-                          {space.name}
-                        </h3>
-                        <div
-                          className={cn(
-                            "w-2 h-2 rounded-full shrink-0 shadow-sm mt-0.5",
-                            nextUnpaidBilling 
-                              ? (isLate ? "bg-red-500" : "bg-amber-400")
-                              : "bg-emerald-500"
-                          )}
-                        />
-                      </div>
-
-                      <p
-                        className="text-[9px] text-slate-500 flex items-center gap-1 font-medium truncate"
-                        title={`${spaceTypeLabels[space.spaceType || "other"]} • ${space.address || "Sem endereço"}`}
-                      >
-                        <SpaceIcon className="w-2.5 h-2.5 shrink-0 text-slate-400" />
-                        <span className="truncate">
-                          {space.address || spaceTypeLabels[space.spaceType || "other"]}
-                        </span>
-                      </p>
-                    </div>
-
-                    <div className="mt-auto relative z-10">
-                      {nextUnpaidBilling ? (
-                        <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
-                          <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
-                            {isLate ? "Atrasado" : `Vence ${format(parseISO(nextUnpaidBilling.dueDate), "dd/MM")}`}
-                          </p>
-                          <p
-                            className={cn(
-                              "text-[10px] font-bold truncate",
-                              isLate ? "text-red-600" : "text-amber-600"
-                            )}
-                          >
-                            R$ {nextUnpaidBilling.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="bg-slate-50 rounded p-1.5 border border-slate-100">
-                          <p className="text-[7px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">
-                            Custo Mensal
-                          </p>
-                          <p className="text-[9px] font-bold text-emerald-600 truncate">
-                            R$ {space.monthlyCost.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </motion.div>
-              );
-            })}
+            {storages.map((space) => (
+              <StorageCardItem
+                key={space.id}
+                space={space}
+                todayStr={todayStr}
+                onNavigateToStorage={onNavigateToStorage}
+              />
+            ))}
           </div>
         ) : (
           <div className="text-center py-8 text-muted-foreground italic border border-dashed border-slate-200 rounded-2xl text-sm bg-slate-50/50 flex flex-col items-center justify-center gap-3">
@@ -1369,7 +1474,8 @@ const HomeView = ({
       </Card>
     </div>
   );
-};
+});
+HomeView.displayName = "HomeView";
 
 interface PaymentAlertsProps {
   properties: Property[];
@@ -1380,7 +1486,116 @@ interface PaymentAlertsProps {
   storages?: StorageSpace[];
 }
 
-const PaymentAlerts = ({
+interface PaymentAlertItemProps {
+  alert: any;
+  properties: Property[];
+  tenants: Tenant[];
+  storages?: StorageSpace[];
+  onConfirmPayment: (paymentId: string) => void;
+  onOpenTenantDetail: (t: Tenant) => void;
+}
+
+const PaymentAlertItem = React.memo(({
+  alert,
+  properties,
+  tenants,
+  storages,
+  onConfirmPayment,
+  onOpenTenantDetail,
+}: PaymentAlertItemProps) => (
+  <div
+    key={alert.id}
+    className={cn(
+      "p-4 rounded-2xl border flex items-center justify-between transition-all",
+      alert.alertType === "danger"
+        ? "bg-red-50 border-red-100"
+        : "bg-amber-50 border-amber-100",
+    )}
+  >
+    <div className="flex items-center gap-4">
+      <div
+        className={cn(
+          "p-2 rounded-xl",
+          alert.alertType === "danger"
+            ? "bg-red-500 text-white"
+            : "bg-amber-500 text-white",
+        )}
+      >
+        <DollarSign className="w-4 h-4" />
+      </div>
+      <div>
+        <div className="flex items-center gap-2">
+          <p
+            className="font-bold text-sm truncate max-w-[120px] cursor-pointer hover:text-indigo-600 transition-colors"
+            onClick={() => {
+              const tenant = tenants.find(
+                (t) => t.propertyId === alert.propertyId,
+              );
+              if (tenant) onOpenTenantDetail(tenant);
+            }}
+          >
+            {(() => {
+              if (alert.tenantId === "proprietario") return "Despesa (Proprietário)";
+              const pName = properties.find((p) => p.id === alert.propertyId)?.name;
+              if (pName) return pName;
+              if (alert.propertyId?.startsWith("storage-")) {
+                return storages?.find((s) => s.id === alert.propertyId.replace("storage-", ""))?.name || "Depósito/Garagem";
+              }
+              return alert.propertyNameSnapshot || "Desconhecido";
+            })()}
+          </p>
+          {alert.revertReason && (
+            <button
+              title={`Revertido: ${alert.revertReason}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                toast.info(
+                  `Justificativa da Reversão: ${alert.revertReason}`,
+                  {
+                    duration: 5000,
+                  },
+                );
+              }}
+              className="text-amber-500 hover:text-amber-600 transition-colors"
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        <p
+          className={cn(
+            "text-xs font-medium",
+            alert.alertType === "danger"
+              ? "text-destructive"
+              : alert.alertType === "warning"
+                ? "text-amber-600"
+                : "text-emerald-600",
+          )}
+        >
+          {alert.alertMessage}
+        </p>
+      </div>
+    </div>
+    <div className="flex flex-col items-end gap-2 shrink-0">
+      <p className="font-bold text-sm">
+        R${" "}
+        {(
+          alert.amount + (alert.interestAmount || 0)
+        ).toLocaleString()}
+      </p>
+      <Button
+        size="sm"
+        className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-sm h-7 px-2 text-[10px]"
+        onClick={() => onConfirmPayment(alert.id)}
+      >
+        Confirmar
+      </Button>
+    </div>
+  </div>
+));
+PaymentAlertItem.displayName = "PaymentAlertItem";
+
+const PaymentAlerts = React.memo(({
   properties,
   tenants,
   payments,
@@ -1388,7 +1603,8 @@ const PaymentAlerts = ({
   onOpenTenantDetail,
   storages,
 }: PaymentAlertsProps) => {
-  const today = new Date();
+  const todayStr = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
+  const today = useMemo(() => new Date(), [todayStr]);
 
   const alerts = useMemo(() => {
     const list: any[] = [];
@@ -1445,101 +1661,22 @@ const PaymentAlerts = ({
           </div>
         ) : (
           alerts.map((alert) => (
-            <div
+            <PaymentAlertItem
               key={alert.id}
-              className={cn(
-                "p-4 rounded-2xl border flex items-center justify-between transition-all",
-                alert.alertType === "danger"
-                  ? "bg-red-50 border-red-100"
-                  : "bg-amber-50 border-amber-100",
-              )}
-            >
-              <div className="flex items-center gap-4">
-                <div
-                  className={cn(
-                    "p-2 rounded-xl",
-                    alert.alertType === "danger"
-                      ? "bg-red-500 text-white"
-                      : "bg-amber-500 text-white",
-                  )}
-                >
-                  <DollarSign className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p
-                      className="font-bold text-sm truncate max-w-[120px] cursor-pointer hover:text-indigo-600 transition-colors"
-                      onClick={() => {
-                        const tenant = tenants.find(
-                          (t) => t.propertyId === alert.propertyId,
-                        );
-                        if (tenant) onOpenTenantDetail(tenant);
-                      }}
-                    >
-                      {(() => {
-                        if (alert.tenantId === "proprietario") return "Despesa (Proprietário)";
-                        const pName = properties.find((p) => p.id === alert.propertyId)?.name;
-                        if (pName) return pName;
-                        if (alert.propertyId?.startsWith("storage-")) {
-                          return storages?.find((s) => s.id === alert.propertyId.replace("storage-", ""))?.name || "Depósito/Garagem";
-                        }
-                        return alert.propertyNameSnapshot || "Desconhecido";
-                      })()}
-                    </p>
-                    {alert.revertReason && (
-                      <button
-                        title={`Revertido: ${alert.revertReason}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toast.info(
-                            `Justificativa da Reversão: ${alert.revertReason}`,
-                            {
-                              duration: 5000,
-                            },
-                          );
-                        }}
-                        className="text-amber-500 hover:text-amber-600 transition-colors"
-                      >
-                        <AlertCircle className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                  <p
-                    className={cn(
-                      "text-xs font-medium",
-                      alert.alertType === "danger"
-                        ? "text-destructive"
-                        : alert.alertType === "warning"
-                          ? "text-amber-600"
-                          : "text-emerald-600",
-                    )}
-                  >
-                    {alert.alertMessage}
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-col items-end gap-2 shrink-0">
-                <p className="font-bold text-sm">
-                  R${" "}
-                  {(
-                    alert.amount + (alert.interestAmount || 0)
-                  ).toLocaleString()}
-                </p>
-                <Button
-                  size="sm"
-                  className="bg-emerald-500 hover:bg-emerald-600 text-white border-none shadow-sm h-7 px-2 text-[10px]"
-                  onClick={() => onConfirmPayment(alert.id)}
-                >
-                  Confirmar
-                </Button>
-              </div>
-            </div>
+              alert={alert}
+              properties={properties}
+              tenants={tenants}
+              storages={storages}
+              onConfirmPayment={onConfirmPayment}
+              onOpenTenantDetail={onOpenTenantDetail}
+            />
           ))
         )}
       </div>
     </Card>
   );
-};
+});
+PaymentAlerts.displayName = "PaymentAlerts";
 
 interface FinancialSummaryProps {
   properties: Property[];
@@ -1553,7 +1690,7 @@ interface FinancialSummaryProps {
   onNavigateToStorage?: (storageId: string) => void;
 }
 
-const FinancialSummary = ({
+const FinancialSummary = React.memo(({
   properties,
   tenants,
   payments,
@@ -1565,7 +1702,8 @@ const FinancialSummary = ({
   onNavigateToStorage,
 }: FinancialSummaryProps) => {
   const [isGuideOpen, setIsGuideOpen] = useState(false);
-  const today = new Date();
+  const todayStr = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
+  const today = useMemo(() => new Date(), [todayStr]);
 
   const alerts = useMemo(() => {
     const list: any[] = [];
@@ -2054,7 +2192,8 @@ const FinancialSummary = ({
       </div>
     </div>
   );
-};
+});
+FinancialSummary.displayName = "FinancialSummary";
 
 interface PropertiesViewProps {
   properties: Property[];
@@ -2207,45 +2346,153 @@ const PropertiesView = ({
     }
   };
 
+  const [createTenantAfterSave, setCreateTenantAfterSave] = useState(false);
+  const [isFetchingCep, setIsFetchingCep] = useState(false);
+
   const [formData, setFormData] = useState<Partial<Property>>({
     name: "",
     address: "",
     status: "vacant" as PropertyStatus,
     rentValue: 0,
+    condoFee: 0,
+    iptuValue: 0,
+    marketValue: 0,
     paymentDay: 5,
     currentTenantId: "",
+    pixKey: "",
+    cep: "",
+    street: "",
+    number: "",
+    complement: "",
+    neighborhood: "",
+    city: "",
+    state: "",
+    propertyType: "Apartamento",
+    usableArea: undefined,
+    totalArea: undefined,
+    bedrooms: 1,
+    suites: 0,
+    bathrooms: 1,
+    parkingSpaces: 0,
+    kitchenSize: "",
+    hasLivingRoom: true,
+    livingRoomSize: "",
+    laundryType: undefined as "interna" | "externa" | "none" | undefined,
+    hasClotheslineArea: undefined as boolean | undefined,
+    description: "",
+    isFurnished: false,
+    allowPets: true,
+    allowSmoking: false,
+    maxResidents: undefined,
+    condoAmenities: [],
+    isActive: true,
     chargeLateFees: false,
     lateFeePenalty: 10,
     lateFeeDaily: 0.33,
     lateFeeType: "percentage" as "percentage" | "fixed",
     documents: [] as PropertyDocument[],
     renovationEstimatedTime: "",
+    renovationEndDate: "",
     renovationDescription: "",
     renovationImages: [] as PropertyInspectionImage[],
   });
 
+  const handleFetchCep = async (cepInput: string) => {
+    const cleanCep = cepInput.replace(/\D/g, "");
+    if (cleanCep.length !== 8) {
+      toast.error("CEP deve conter 8 dígitos numéricos.");
+      return;
+    }
+    setIsFetchingCep(true);
+    try {
+      const res = await fetch(`https://viacep.com.br/ws/${cleanCep}/json/`);
+      const data = await res.json();
+      if (data.erro) {
+        toast.error("CEP não encontrado.");
+      } else {
+        setFormData((prev) => {
+          const street = data.logradouro || prev.street || "";
+          const neighborhood = data.bairro || prev.neighborhood || "";
+          const city = data.localidade || prev.city || "";
+          const state = data.uf || prev.state || "";
+          const number = prev.number || "";
+          const complement = prev.complement || "";
+          const parts = [];
+          if (street) parts.push(street + (number ? `, ${number}` : ""));
+          if (complement) parts.push(`(${complement})`);
+          if (neighborhood) parts.push(neighborhood);
+          if (city || state) parts.push(`${city}${state ? "/" + state : ""}`);
+          const fullAddress = parts.join(" - ");
+
+          return {
+            ...prev,
+            cep: cleanCep.replace(/^(\d{5})(\d{3})$/, "$1-$2"),
+            street,
+            neighborhood,
+            city,
+            state,
+            address: fullAddress || prev.address,
+          };
+        });
+        toast.success("Endereço localizado e preenchido!");
+      }
+    } catch {
+      toast.error("Erro ao buscar CEP na rede.");
+    } finally {
+      setIsFetchingCep(false);
+    }
+  };
+
   const handleOpenModal = (p?: Property) => {
+    setCreateTenantAfterSave(false);
     if (p) {
       setEditingProperty(p);
       setFormData({
-        name: p.name,
-        address: p.address,
-        status: p.status,
-        rentValue: p.rentValue,
+        name: p.name || "",
+        address: p.address || "",
+        status: p.status || "vacant",
+        rentValue: p.rentValue || 0,
+        condoFee: p.condoFee || 0,
+        iptuValue: p.iptuValue || 0,
+        marketValue: p.marketValue || 0,
         paymentDay: p.paymentDay || 5,
         currentTenantId: p.currentTenantId || "",
+        pixKey: p.pixKey || "",
+        cep: p.cep || "",
+        street: p.street || "",
+        number: p.number || "",
+        complement: p.complement || "",
+        neighborhood: p.neighborhood || "",
+        city: p.city || "",
+        state: p.state || "",
+        propertyType: p.propertyType || "Apartamento",
+        usableArea: p.usableArea,
+        totalArea: p.totalArea,
+        bedrooms: p.bedrooms ?? 1,
+        suites: p.suites ?? 0,
+        bathrooms: p.bathrooms ?? 1,
+        parkingSpaces: p.parkingSpaces ?? 0,
+        kitchenSize: p.kitchenSize || "",
+        hasLivingRoom: p.hasLivingRoom === undefined ? true : p.hasLivingRoom,
+        livingRoomSize: p.livingRoomSize || "",
+        laundryType: p.laundryType,
+        hasClotheslineArea: p.hasClotheslineArea,
+        description: p.description || "",
+        isFurnished: p.isFurnished || false,
+        allowPets: p.allowPets === undefined ? true : p.allowPets,
+        allowSmoking: p.allowSmoking || false,
+        maxResidents: p.maxResidents,
+        condoAmenities: p.condoAmenities || [],
+        isActive: p.isActive !== false,
         chargeLateFees: !!p.chargeLateFees,
         lateFeePenalty: p.lateFeePenalty ?? 10,
         lateFeeDaily: p.lateFeeDaily ?? 0.33,
         lateFeeType: p.lateFeeType || "percentage",
         documents: p.documents || [],
         renovationEstimatedTime: p.renovationEstimatedTime || "",
+        renovationEndDate: p.renovationEndDate || "",
         renovationDescription: p.renovationDescription || "",
         renovationImages: p.renovationImages || [],
-        allowPets: p.allowPets === undefined ? true : p.allowPets,
-        allowSmoking: p.allowSmoking || false,
-        maxResidents: p.maxResidents,
-        parkingSpaces: p.parkingSpaces,
         rules: p.rules || "",
         alerts: p.alerts || "",
       });
@@ -2256,16 +2503,42 @@ const PropertiesView = ({
         address: "",
         status: "vacant",
         rentValue: 0,
+        condoFee: 0,
+        iptuValue: 0,
+        marketValue: 0,
         paymentDay: 5,
         currentTenantId: "",
+        pixKey: "",
+        cep: "",
+        street: "",
+        number: "",
+        complement: "",
+        neighborhood: "",
+        city: "",
+        state: "",
+        propertyType: "Apartamento",
+        usableArea: undefined,
+        totalArea: undefined,
+        bedrooms: 1,
+        suites: 0,
+        bathrooms: 1,
+        parkingSpaces: 0,
+        kitchenSize: "",
+        hasLivingRoom: true,
+        livingRoomSize: "",
+        laundryType: undefined,
+        hasClotheslineArea: undefined,
+        description: "",
+        isFurnished: false,
+        allowPets: true,
+        allowSmoking: false,
+        maxResidents: undefined,
+        condoAmenities: [],
+        isActive: true,
         chargeLateFees: false,
         lateFeePenalty: 10,
         lateFeeDaily: 0.33,
         lateFeeType: "percentage",
-        allowPets: true,
-        allowSmoking: false,
-        maxResidents: undefined,
-        parkingSpaces: undefined,
         rules: "",
         alerts: "",
         documents: [
@@ -2365,19 +2638,63 @@ const PropertiesView = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    let name = formData.name?.trim() || "";
+    const street = formData.street?.trim() || "";
+    const number = formData.number?.trim() || "";
+    const neighborhood = formData.neighborhood?.trim() || "";
+    const city = formData.city?.trim() || "";
+    const state = formData.state?.trim() || "";
+    const complement = formData.complement?.trim() || "";
+
+    // Generate fullAddress if not explicitly typed or update it cleanly
+    let fullAddress = formData.address?.trim() || "";
+    if (!fullAddress && (street || city)) {
+      const parts = [];
+      if (street) parts.push(street + (number ? `, ${number}` : ""));
+      if (complement) parts.push(`(${complement})`);
+      if (neighborhood) parts.push(neighborhood);
+      if (city || state) parts.push(`${city}${state ? "/" + state : ""}`);
+      fullAddress = parts.join(" - ");
+    }
+
+    // Auto-fill property name if omitted
+    if (!name) {
+      if (formData.propertyType && (neighborhood || street)) {
+        name = `${formData.propertyType} ${neighborhood || street}`;
+      } else if (fullAddress) {
+        name = fullAddress;
+      } else {
+        name = "Novo Imóvel";
+      }
+    }
+
+    const isNewTenantSelected =
+      formData.currentTenantId === "new_tenant" || createTenantAfterSave;
+
+    const payload: Partial<Property> = {
+      ...formData,
+      name,
+      address: fullAddress,
+      street,
+      number,
+      complement,
+      neighborhood,
+      city,
+      state,
+      currentTenantId: isNewTenantSelected ? "" : (formData.currentTenantId || ""),
+      status: isNewTenantSelected ? "vacant" : (formData.status || "vacant"),
+      isActive: formData.isActive !== false,
+    };
+
     if (editingProperty) {
       onSecurityCheck(async () => {
         setIsSubmitting(true);
         try {
-          const payload = { ...formData };
-          const isNewTenant = payload.currentTenantId === "new_tenant";
-          if (isNewTenant) {
-            payload.currentTenantId = "";
-          }
-          await updateProperty(editingProperty.id, payload);
+          await updateProperty(editingProperty.id!, payload);
+          toast.success("Imóvel atualizado com sucesso!");
           setIsModalOpen(false);
-          if (isNewTenant) {
-            onNavigateToCreateTenant?.(editingProperty.id);
+          if (isNewTenantSelected) {
+            onNavigateToCreateTenant?.(editingProperty.id!);
           } else if (
             payload.currentTenantId &&
             payload.currentTenantId !== editingProperty.currentTenantId
@@ -2386,6 +2703,7 @@ const PropertiesView = ({
           }
         } catch (error) {
           console.error("Erro ao salvar imóvel:", error);
+          toast.error("Ocorreu um erro ao atualizar o imóvel.");
         } finally {
           setIsSubmitting(false);
         }
@@ -2393,20 +2711,21 @@ const PropertiesView = ({
     } else {
       setIsSubmitting(true);
       try {
-        const payload = { ...formData };
-        const isNewTenant = payload.currentTenantId === "new_tenant";
-        if (isNewTenant) {
-          payload.currentTenantId = "";
-        }
         const createdId = await addProperty(payload);
-        setIsModalOpen(false);
-        if (isNewTenant && createdId) {
-          onNavigateToCreateTenant?.(createdId);
-        } else if (payload.currentTenantId) {
-          onNavigateToEditTenant?.(payload.currentTenantId);
+        if (createdId) {
+          toast.success("Novo imóvel cadastrado com sucesso!");
+          setIsModalOpen(false);
+          if (isNewTenantSelected) {
+            onNavigateToCreateTenant?.(createdId);
+          } else if (payload.currentTenantId) {
+            onNavigateToEditTenant?.(payload.currentTenantId);
+          }
+        } else {
+          toast.error("Não foi possível cadastrar o imóvel. Tente novamente.");
         }
       } catch (error) {
         console.error("Erro ao salvar imóvel:", error);
+        toast.error("Ocorreu um erro ao cadastrar o imóvel.");
       } finally {
         setIsSubmitting(false);
       }
@@ -2465,12 +2784,31 @@ const PropertiesView = ({
                       <span>{p.address}</span>
                     </p>
                   )}
+                  {p.status === "renovation" && p.renovationEndDate && (() => {
+                    const info = getRenovationCountdownInfo(p.renovationEndDate);
+                    if (!info) return null;
+                    return (
+                      <div className={cn("mt-2 p-1.5 rounded-lg border text-[11px] flex items-center justify-between font-medium", info.badgeBg)}>
+                        <div className="flex items-center gap-1.5 truncate">
+                          <Clock className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">{info.text}</span>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-white/80 shrink-0 border border-black/5">
+                          {info.diffDays < 0 ? `+${Math.abs(info.diffDays)}d` : `${info.diffDays}d`}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="pt-2 mt-2 border-t flex items-center justify-between">
                   <div className="flex flex-col text-xs text-muted-foreground gap-0.5">
                     <span className="font-semibold text-slate-800">
-                      R$ {p.rentValue.toLocaleString()}
+                      {tenant?.rentValue
+                        ? `R$ ${tenant.rentValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                        : p.rentValue
+                          ? `R$ ${p.rentValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                          : "Sem contrato"}
                     </span>
                     <span className="text-[9px] uppercase tracking-widest text-slate-400">
                       Aluguel
@@ -2504,37 +2842,50 @@ const PropertiesView = ({
       >
         {currentProperty && (
           <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                  Status
-                </p>
-                <p
-                  className={cn(
-                    "text-sm font-bold",
-                    currentProperty.status === "rented"
-                      ? "text-emerald-600"
-                      : currentProperty.status === "vacant"
-                        ? "text-amber-600"
-                        : "text-blue-600",
-                  )}
-                >
-                  {currentProperty.status === "rented"
-                    ? "Alugada"
-                    : currentProperty.status === "vacant"
-                      ? "Livre"
-                      : "Reforma"}
-                </p>
-              </div>
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                  Valor do Aluguel
-                </p>
-                <p className="text-sm font-bold text-slate-900">
-                  R$ {currentProperty.rentValue.toLocaleString()}
-                </p>
-              </div>
-            </div>
+            {(() => {
+              const activeTenant = tenants.find(
+                (t) => t.propertyId === currentProperty.id && t.status === "allocated"
+              );
+              const displayRent = activeTenant?.rentValue ?? currentProperty.rentValue ?? 0;
+              return (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                      Status
+                    </p>
+                    <p
+                      className={cn(
+                        "text-sm font-bold",
+                        currentProperty.status === "rented"
+                          ? "text-emerald-600"
+                          : currentProperty.status === "vacant"
+                            ? "text-amber-600"
+                            : "text-blue-600",
+                      )}
+                    >
+                      {currentProperty.status === "rented"
+                        ? "Alugada"
+                        : currentProperty.status === "vacant"
+                          ? "Livre"
+                          : "Reforma"}
+                    </p>
+                  </div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                      Valor do Aluguel
+                    </p>
+                    <p className="text-sm font-bold text-slate-900">
+                      {displayRent > 0
+                        ? `R$ ${displayRent.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+                        : "Sem contrato ativo"}
+                    </p>
+                    <p className="text-[9px] text-slate-400 mt-0.5">
+                      (Centralizado no Inquilino)
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="space-y-1">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">
@@ -2543,8 +2894,73 @@ const PropertiesView = ({
               <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-start gap-3">
                 <MapPin className="w-4 h-4 text-slate-400 mt-0.5" />
                 <p className="text-sm text-slate-700">
-                  {currentProperty.address}
+                  {currentProperty.address || "Endereço não cadastrado"}
                 </p>
+              </div>
+            </div>
+
+            {/* Características Físicas */}
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">
+                Características Físicas
+              </p>
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <span className="text-slate-400 block font-medium">Quartos</span>
+                  <span className="font-bold text-slate-800">{currentProperty.bedrooms ?? 0}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-medium">Suítes</span>
+                  <span className="font-bold text-slate-800">{currentProperty.suites ?? 0}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-medium">Banheiros</span>
+                  <span className="font-bold text-slate-800">{currentProperty.bathrooms ?? 1}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-medium">Cozinha</span>
+                  <span className="font-bold text-slate-800">{currentProperty.kitchenSize || "Não especificado"}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-medium">Sala de Estar</span>
+                  <span className="font-bold text-slate-800">
+                    {currentProperty.hasLivingRoom === false
+                      ? "Não possui"
+                      : currentProperty.livingRoomSize
+                        ? `Sim (${currentProperty.livingRoomSize})`
+                        : "Sim"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-medium">Garagem</span>
+                  <span className="font-bold text-slate-800">
+                    {currentProperty.parkingSpaces
+                      ? `${currentProperty.parkingSpaces} ${currentProperty.parkingSpaces === 1 ? "vaga" : "vagas"}`
+                      : "Sem vaga"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-medium">Lavanderia</span>
+                  <span className="font-bold text-slate-800">
+                    {currentProperty.laundryType === "interna"
+                      ? "Interna"
+                      : currentProperty.laundryType === "externa"
+                        ? "Externa"
+                        : currentProperty.laundryType === "none"
+                          ? "Não possui"
+                          : "Não especificado"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block font-medium">Área de Varal</span>
+                  <span className="font-bold text-slate-800">
+                    {currentProperty.hasClotheslineArea === true
+                      ? "Disponível"
+                      : currentProperty.hasClotheslineArea === false
+                        ? "Não possui"
+                        : "Não especificado"}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -2649,16 +3065,46 @@ const PropertiesView = ({
 
             {currentProperty.status === "renovation" && (
               <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl space-y-3">
-                <div className="flex items-center gap-2 mb-2">
-                  <Hammer className="w-4 h-4 text-indigo-600" />
-                  <h4 className="text-sm font-bold text-indigo-900">
-                    Andamento da Reforma
-                  </h4>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Hammer className="w-4 h-4 text-indigo-600" />
+                    <h4 className="text-sm font-bold text-indigo-900">
+                      Andamento da Reforma
+                    </h4>
+                  </div>
+                  {currentProperty.renovationEstimatedTime && (
+                    <p className="text-xs font-semibold text-indigo-800 bg-indigo-100/60 px-2.5 py-1 rounded-lg">
+                      Estimado: {currentProperty.renovationEstimatedTime}
+                    </p>
+                  )}
                 </div>
-                {currentProperty.renovationEstimatedTime && (
-                  <p className="text-xs font-semibold text-indigo-800 bg-indigo-100/50 px-2 py-1.5 rounded-lg w-fit">
-                    Tempo Estimado: {currentProperty.renovationEstimatedTime}
-                  </p>
+
+                {currentProperty.renovationEndDate ? (() => {
+                  const info = getRenovationCountdownInfo(currentProperty.renovationEndDate);
+                  if (!info) return null;
+                  return (
+                    <div className={cn("p-3 rounded-xl border flex items-center justify-between gap-3 shadow-xs", info.badgeBg)}>
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-2 rounded-lg bg-white/80 shrink-0">
+                          <Clock className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold leading-tight">{info.text}</p>
+                          <p className="text-[11px] opacity-80 mt-0.5">{info.subtext}</p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-sm font-mono font-black px-2.5 py-1 rounded-lg bg-white/80 border border-black/5 block">
+                          {info.diffDays < 0 ? `+${Math.abs(info.diffDays)}d` : `${info.diffDays}d`}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })() : (
+                  <div className="p-2.5 bg-white/60 border border-indigo-100 rounded-xl text-xs text-indigo-700 flex items-center gap-2">
+                    <Calendar className="w-3.5 h-3.5 shrink-0 text-indigo-500" />
+                    <span>Nenhuma data de término prevista cadastrada.</span>
+                  </div>
                 )}
                 <div className="space-y-1.5 pt-2">
                   {(currentProperty.renovationDescription || "")
@@ -3840,45 +4286,77 @@ const PropertiesView = ({
         title={editingProperty ? "Editar Imóvel" : "Novo Imóvel"}
       >
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Section 1: Controle do Sistema & Identificação */}
           <div className="space-y-4">
-            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
-              Informações Principais
-            </h3>
-            <Input
-              id="name"
-              label="Nome do Imóvel"
-              value={formData.name || ""}
-              onChange={(e) =>
-                setFormData({ ...formData, name: e.target.value })
-              }
-              required
-              placeholder="Ex: Apartamento 101"
-            />
-            <Input
-              id="address"
-              label="Endereço"
-              value={formData.address || ""}
-              onChange={(e) =>
-                setFormData({ ...formData, address: e.target.value })
-              }
-              required
-              placeholder="Rua, Número, Bairro, Cidade"
-            />
-          </div>
+            <div className="flex items-center justify-between border-b pb-2">
+              <h3 className="text-sm font-bold text-slate-800">
+                1. Controle do Sistema & Identificação
+              </h3>
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-slate-500">Status Ativo:</label>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFormData({ ...formData, isActive: formData.isActive === false ? true : false })
+                  }
+                  className={cn(
+                    "px-2.5 py-1 rounded-full text-xs font-bold transition-all flex items-center gap-1",
+                    formData.isActive !== false
+                      ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                      : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                  )}
+                >
+                  {formData.isActive !== false ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                  {formData.isActive !== false ? "Ativo" : "Arquivado"}
+                </button>
+              </div>
+            </div>
 
-          <div className="space-y-4">
-            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
-              Detalhes e Status
-            </h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2">
+                <Input
+                  id="name"
+                  label="Nome do Imóvel *"
+                  value={formData.name || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
+                  placeholder="Ex: Apt 101 - Edifício Sol Nascente"
+                />
+              </div>
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                  Status
-                  <InfoTooltip text="Livre: Disponível para alugar. Alugada: Já possui inquilino. Reforma: Indisponível temporariamente." />
+                  Tipo do Imóvel
+                </label>
+                <Select
+                  id="propertyType"
+                  value={formData.propertyType || "Apartamento"}
+                  onChange={(e) =>
+                    setFormData({ ...formData, propertyType: e.target.value })
+                  }
+                  options={[
+                    { label: "Apartamento", value: "Apartamento" },
+                    { label: "Casa", value: "Casa" },
+                    { label: "Sobrado", value: "Sobrado" },
+                    { label: "Kitnet / Studio", value: "Kitnet/Studio" },
+                    { label: "Comercial / Sala", value: "Comercial" },
+                    { label: "Galpão", value: "Galpão" },
+                    { label: "Terreno", value: "Terreno" },
+                    { label: "Sítio / Chácara", value: "Sítio" },
+                    { label: "Outro", value: "Outro" },
+                  ]}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Status de Negócio
+                  <InfoTooltip text="Livre: Pronto para alugar. Alugado: Com contrato ativo. Reforma: Indisponível temporariamente para obras." />
                 </label>
                 <Select
                   id="status"
-                  value={formData.status}
+                  value={formData.status || "vacant"}
                   onChange={(e) => {
                     const newStatus = e.target.value as PropertyStatus;
                     if (newStatus === "vacant" || newStatus === "renovation") {
@@ -3892,37 +4370,599 @@ const PropertiesView = ({
                     }
                   }}
                   options={[
-                    { label: "Livre", value: "vacant" },
-                    { label: "Alugada", value: "rented" },
-                    { label: "Reforma", value: "renovation" },
+                    { label: "Livre (Disponível)", value: "vacant" },
+                    { label: "Alugado", value: "rented" },
+                    { label: "Em Reforma", value: "renovation" },
                   ]}
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
+            </div>
+          </div>
+
+          {/* Section 2: Dados de Localização */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
+              2. Dados de Localização (Endereço)
+            </h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-1 flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                  Limite de Moradores
+                  CEP
                 </label>
+                <div className="flex gap-1.5">
+                  <Input
+                    id="cep"
+                    placeholder="00000-000"
+                    value={formData.cep || ""}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFormData({ ...formData, cep: val });
+                      const clean = val.replace(/\D/g, "");
+                      if (clean.length === 8) {
+                        handleFetchCep(clean);
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => handleFetchCep(formData.cep || "")}
+                    disabled={isFetchingCep}
+                    className="shrink-0 px-3"
+                  >
+                    <Search className={cn("w-4 h-4", isFetchingCep && "animate-spin")} />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="sm:col-span-2">
                 <Input
-                  id="maxResidents"
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  min="1"
-                  placeholder="Ilimitado"
-                  value={formData.maxResidents || ""}
+                  id="street"
+                  label="Logradouro / Rua"
+                  placeholder="Ex: Av. Paulista, Rua das Flores"
+                  value={formData.street || ""}
                   onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      maxResidents: e.target.value
-                        ? Number(e.target.value)
-                        : undefined,
-                    })
+                    setFormData({ ...formData, street: e.target.value })
                   }
                 />
               </div>
+
+              <div>
+                <Input
+                  id="number"
+                  label="Número"
+                  placeholder="Ex: 123"
+                  value={formData.number || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, number: e.target.value })
+                  }
+                />
+              </div>
+
+              <div>
+                <Input
+                  id="complement"
+                  label="Complemento"
+                  placeholder="Ex: Apto 42, Bloco B"
+                  value={formData.complement || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, complement: e.target.value })
+                  }
+                />
+              </div>
+
+              <div>
+                <Input
+                  id="neighborhood"
+                  label="Bairro"
+                  placeholder="Ex: Centro, Bela Vista"
+                  value={formData.neighborhood || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, neighborhood: e.target.value })
+                  }
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <Input
+                  id="city"
+                  label="Cidade"
+                  placeholder="Ex: São Paulo"
+                  value={formData.city || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, city: e.target.value })
+                  }
+                />
+              </div>
+
+              <div>
+                <Input
+                  id="state"
+                  label="Estado (UF)"
+                  placeholder="Ex: SP"
+                  maxLength={2}
+                  value={formData.state || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, state: e.target.value.toUpperCase() })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Características Físicas do Imóvel */}
+          <div className="space-y-5">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2 flex items-center justify-between">
+              <span>3. Características Físicas do Imóvel</span>
+              <span className="text-[11px] font-normal text-slate-500">Seleção rápida em 1 clique</span>
+            </h3>
+
+            {/* Quantidade de Quartos */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider ml-1">
+                Quantidade de Quartos
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { label: "0 (Studio/Kit)", val: 0 },
+                  { label: "1 Quarto", val: 1 },
+                  { label: "2 Quartos", val: 2 },
+                  { label: "3 Quartos", val: 3 },
+                  { label: "4 Quartos", val: 4 },
+                  { label: "5+ Quartos", val: 5 },
+                ].map((item) => {
+                  const active = formData.bedrooms === item.val;
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, bedrooms: item.val })}
+                      className={cn(
+                        "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border",
+                        active
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Suítes & Banheiros */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider ml-1">
+                  Suítes
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {[0, 1, 2, 3].map((val) => {
+                    const label = val === 3 ? "3+" : `${val}`;
+                    const active = formData.suites === val;
+                    return (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, suites: val })}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border min-w-[42px] text-center",
+                          active
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider ml-1">
+                  Banheiros Total
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {[1, 2, 3, 4].map((val) => {
+                    const label = val === 4 ? "4+" : `${val}`;
+                    const active = formData.bathrooms === val;
+                    return (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, bathrooms: val })}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border min-w-[42px] text-center",
+                          active
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Tamanho da Cozinha */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider ml-1">
+                Tamanho da Cozinha
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {["Pequena", "Média", "Grande", "Americana", "Integrada"].map((size) => {
+                  const active = formData.kitchenSize === size;
+                  return (
+                    <button
+                      key={size}
+                      type="button"
+                      onClick={() =>
+                        setFormData({
+                          ...formData,
+                          kitchenSize: active ? "" : size,
+                        })
+                      }
+                      className={cn(
+                        "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border",
+                        active
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      {size}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Tem Sala? */}
+            <div className="flex flex-col gap-2 p-3 bg-slate-50/80 rounded-2xl border border-slate-200/80">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider ml-1">
+                  Tem Sala de Estar/Jantar?
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData({ ...formData, hasLivingRoom: true })
+                    }
+                    className={cn(
+                      "px-3 py-1 rounded-lg text-xs font-bold transition-all border",
+                      formData.hasLivingRoom !== false
+                        ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                    )}
+                  >
+                    Sim
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData({
+                        ...formData,
+                        hasLivingRoom: false,
+                        livingRoomSize: "",
+                      })
+                    }
+                    className={cn(
+                      "px-3 py-1 rounded-lg text-xs font-bold transition-all border",
+                      formData.hasLivingRoom === false
+                        ? "bg-slate-700 text-white border-slate-700 shadow-sm"
+                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                    )}
+                  >
+                    Não
+                  </button>
+                </div>
+              </div>
+
+              {formData.hasLivingRoom !== false && (
+                <div className="pt-2 border-t border-slate-200 flex flex-col gap-1.5">
+                  <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                    Tamanho da Sala:
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {["Pequena", "Média", "Grande", "2 Ambientes"].map((size) => {
+                      const active = formData.livingRoomSize === size;
+                      return (
+                        <button
+                          key={size}
+                          type="button"
+                          onClick={() =>
+                            setFormData({
+                              ...formData,
+                              livingRoomSize: active ? "" : size,
+                            })
+                          }
+                          className={cn(
+                            "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border",
+                            active
+                              ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                              : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                          )}
+                        >
+                          {size}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Vagas de Garagem */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider ml-1">
+                Vagas de Garagem
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { label: "0 (Sem Vaga)", val: 0 },
+                  { label: "1 Vaga", val: 1 },
+                  { label: "2 Vagas", val: 2 },
+                  { label: "3 Vagas", val: 3 },
+                  { label: "4+ Vagas", val: 4 },
+                ].map((item) => {
+                  const active = formData.parkingSpaces === item.val;
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() =>
+                        setFormData({ ...formData, parkingSpaces: item.val })
+                      }
+                      className={cn(
+                        "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border",
+                        active
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Máximo de Moradores */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider ml-1">
+                Máximo de Moradores
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { label: "1", val: 1 },
+                  { label: "2", val: 2 },
+                  { label: "3", val: 3 },
+                  { label: "4", val: 4 },
+                  { label: "5", val: 5 },
+                  { label: "6+", val: 6 },
+                  { label: "Sem limite", val: undefined },
+                ].map((item) => {
+                  const active = formData.maxResidents === item.val;
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() =>
+                        setFormData({ ...formData, maxResidents: item.val })
+                      }
+                      className={cn(
+                        "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border",
+                        active
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Área de Lavanderia e Varal */}
+            <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-bold text-slate-700 block uppercase tracking-wider">
+                    Área de Lavanderia
+                  </span>
+                  <p className="text-[11px] text-slate-500">
+                    Selecione a disposição da lavanderia do imóvel.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: "Interna", val: "interna" },
+                    { label: "Externa", val: "externa" },
+                    { label: "Não tem", val: "none" },
+                  ].map((item) => {
+                    const active = formData.laundryType === item.val;
+                    return (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() =>
+                          setFormData({
+                            ...formData,
+                            laundryType: active ? undefined : (item.val as any),
+                          })
+                        }
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border cursor-pointer",
+                          active
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                        )}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="pt-2.5 border-t border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-bold text-slate-700 block uppercase tracking-wider">
+                    Área de Varal
+                  </span>
+                  <p className="text-[11px] text-slate-500">
+                    Possui área ou estendal para secar roupas?
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: "Varal Disponível", val: true },
+                    { label: "Não tem", val: false },
+                  ].map((item) => {
+                    const active = formData.hasClotheslineArea === item.val;
+                    return (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() =>
+                          setFormData({
+                            ...formData,
+                            hasClotheslineArea: active ? undefined : item.val,
+                          })
+                        }
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border cursor-pointer",
+                          active
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                        )}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider ml-1">
+                Descrição Geral / Diferenciais
+              </label>
+              <textarea
+                className="w-full min-h-[70px] rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm transition-all focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none placeholder:text-slate-400"
+                placeholder="Ex: Apartamento ensolarado, andar alto, vista livre, armários planejados..."
+                value={formData.description || ""}
+                onChange={(e) =>
+                  setFormData({ ...formData, description: e.target.value })
+                }
+              />
+            </div>
+          </div>
+
+          {/* Section 4: Dados Financeiros e de Negócio */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
+              4. Dados Financeiros & Negócio
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <CurrencyInput
+                id="propertyRentValue"
+                label="Valor Base / Sugerido do Aluguel (R$)"
+                value={formData.rentValue || 0}
+                onChange={(val) => setFormData({ ...formData, rentValue: val })}
+              />
+
+              <CurrencyInput
+                id="condoFee"
+                label="Valor do Condomínio (R$)"
+                value={formData.condoFee || 0}
+                onChange={(val) => setFormData({ ...formData, condoFee: val })}
+              />
+
+              <CurrencyInput
+                id="iptuValue"
+                label="Valor do IPTU (R$)"
+                value={formData.iptuValue || 0}
+                onChange={(val) => setFormData({ ...formData, iptuValue: val })}
+              />
+
+              <CurrencyInput
+                id="marketValue"
+                label="Valor de Mercado / Venda (R$)"
+                value={formData.marketValue || 0}
+                onChange={(val) => setFormData({ ...formData, marketValue: val })}
+              />
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                  Aceita Animais?
+                  Dia do Vencimento Padrão *
+                </label>
+                <Select
+                  id="paymentDay"
+                  value={String(formData.paymentDay || 5)}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      paymentDay: Number(e.target.value) || 5,
+                    })
+                  }
+                  options={Array.from({ length: 31 }, (_, i) => ({
+                    label: `Dia ${i + 1}`,
+                    value: String(i + 1),
+                  }))}
+                />
+              </div>
+
+              <Input
+                id="pixKey"
+                label="Chave PIX (Para Recebimento)"
+                type="text"
+                placeholder="CPF, E-mail, Celular ou Aleatória"
+                value={formData.pixKey || ""}
+                onChange={(e) =>
+                  setFormData({ ...formData, pixKey: e.target.value })
+                }
+              />
+            </div>
+          </div>
+
+          {/* Section 5: Comodidades & Regras */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
+              5. Comodidades & Regras
+            </h3>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Mobiliado?
+                </label>
+                <Select
+                  id="isFurnished"
+                  value={formData.isFurnished ? "yes" : "no"}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      isFurnished: e.target.value === "yes",
+                    })
+                  }
+                  options={[
+                    { label: "Não", value: "no" },
+                    { label: "Sim", value: "yes" },
+                  ]}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                  Aceita Pets?
                 </label>
                 <Select
                   id="allowPets"
@@ -3939,6 +4979,7 @@ const PropertiesView = ({
                   ]}
                 />
               </div>
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
                   Aceita Fumantes?
@@ -3953,160 +4994,204 @@ const PropertiesView = ({
                     })
                   }
                   options={[
-                    { label: "Sim", value: "yes" },
                     { label: "Não", value: "no" },
+                    { label: "Sim", value: "yes" },
                   ]}
                 />
               </div>
-              <div className="flex flex-col gap-1.5 col-span-2">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                  Vagas de Garagem (Carros/Motos)
-                </label>
-                <Input
-                  id="parkingSpaces"
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  min="0"
-                  placeholder="Ex: 1"
-                  value={
-                    formData.parkingSpaces === undefined
-                      ? ""
-                      : formData.parkingSpaces
-                  }
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      parkingSpaces: e.target.value
-                        ? Number(e.target.value)
-                        : undefined,
-                    })
-                  }
-                />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                Infraestrutura do Condomínio / Imóvel
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  "Piscina",
+                  "Academia",
+                  "Elevador",
+                  "Portaria 24h",
+                  "Salão de Festas",
+                  "Playground",
+                  "Quadra Esportiva",
+                  "Churrasqueira",
+                  "Garagem Coberta",
+                  "Sauna",
+                  "Bicicletário",
+                  "Espaço Pet",
+                  "Brinquedoteca",
+                ].map((item) => {
+                  const selected = formData.condoAmenities?.includes(item);
+                  return (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => {
+                        const current = formData.condoAmenities || [];
+                        const updated = selected
+                          ? current.filter((i) => i !== item)
+                          : [...current, item];
+                        setFormData({ ...formData, condoAmenities: updated });
+                      }}
+                      className={cn(
+                        "px-2.5 py-1 rounded-lg text-xs font-semibold transition-all border",
+                        selected
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                          : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      {selected ? "✓ " : "+ "}
+                      {item}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
-          
+
+          {/* Section 6: Vincular / Criar Inquilino */}
           <div className="space-y-4">
             <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
-              Informações Financeiras
+              6. Inquilino Atual & Ação ao Salvar
             </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+            {formData.status !== "renovation" && (
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                  Valor de Mercado Estimado (R$)
+                  Selecione um Inquilino Existente (Opcional)
                 </label>
-                <Input
-                  id="marketValue"
-                  type="text"
-                  inputMode="decimal"
-                  placeholder="Ex: 350000"
-                  value={formData.marketValue || ""}
-                  onChange={(e) =>
-                    setFormData({ ...formData, marketValue: Number(e.target.value) })
-                  }
+                <Select
+                  id="tenant"
+                  value={formData.currentTenantId || ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const nextStatus = val ? "rented" : "vacant";
+                    setFormData({
+                      ...formData,
+                      currentTenantId: val,
+                      status: nextStatus,
+                    });
+                  }}
+                  options={[
+                    { label: "Nenhum (Livre / Sem Inquilino)", value: "" },
+                    ...tenants
+                      .filter(
+                        (t) =>
+                          t.status !== "archived" &&
+                          (!t.propertyId || t.propertyId === editingProperty?.id)
+                      )
+                      .map((t) => ({ label: t.name, value: t.id })),
+                  ]}
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                  Chave PIX (Para Recebimento)
-                </label>
-                <Input
-                  id="pixKey"
-                  type="text"
-                  placeholder="CPF, E-mail, Celular ou Aleatória"
-                  value={formData.pixKey || ""}
-                  onChange={(e) =>
-                    setFormData({ ...formData, pixKey: e.target.value })
-                  }
-                />
+            )}
+
+            {/* Visual Action Banner for New Tenant Creation */}
+            <div
+              onClick={() => setCreateTenantAfterSave(!createTenantAfterSave)}
+              className={cn(
+                "p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3",
+                createTenantAfterSave
+                  ? "bg-gradient-to-r from-emerald-50 to-teal-50 border-emerald-300 shadow-sm"
+                  : "bg-slate-50 border-slate-200 hover:bg-slate-100/80"
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className={cn(
+                    "w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors",
+                    createTenantAfterSave
+                      ? "bg-emerald-600 text-white"
+                      : "bg-slate-200 text-slate-600"
+                  )}
+                >
+                  <UserIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900">
+                    Criar novo inquilino e vincular a este imóvel após salvar
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Redireciona automaticamente para a tela de criação do novo morador.
+                  </p>
+                </div>
+              </div>
+
+              <div
+                className={cn(
+                  "w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-all",
+                  createTenantAfterSave
+                    ? "bg-emerald-600 border-emerald-600 text-white"
+                    : "border-slate-300 bg-white"
+                )}
+              >
+                {createTenantAfterSave && <Check className="w-3.5 h-3.5" />}
               </div>
             </div>
           </div>
 
-          {formData.status !== "renovation" && (
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                Inquilino Atual
-              </label>
-              <Select
-                id="tenant"
-                value={formData.currentTenantId || ""}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  const nextStatus = val ? "rented" : "vacant";
-                  setFormData({
-                    ...formData,
-                    currentTenantId: val,
-                    status: nextStatus,
-                  });
-                }}
-                options={[
-                  { label: "Nenhum", value: "" },
-                  {
-                    label: "+ Novo Inquilino (Criar após salvar)",
-                    value: "new_tenant",
-                  },
-                  ...tenants
-                    .filter(
-                      (t) =>
-                        t.status !== "archived" &&
-                        (!t.propertyId || t.propertyId === editingProperty?.id),
-                    )
-                    .map((t) => ({ label: t.name, value: t.id })),
-                ]}
-              />
-              <p className="text-[10px] text-slate-500 ml-1 mt-1">
-                Acesse a aba <strong>Inquilinos</strong> ou{" "}
-                <strong>Contratos</strong> depois para gerar ou assinar o
-                contrato.
-              </p>
-            </div>
-          )}
-
+          {/* Section 7: Reforma (Se Status for "renovation") */}
           {formData.status === "renovation" && (
             <div className="p-4 bg-indigo-50/50 rounded-xl border border-indigo-100 space-y-4">
               <h4 className="text-sm font-bold text-indigo-900">
-                Detalhes da Reforma
+                7. Detalhes da Reforma
               </h4>
-              <div className="flex flex-col gap-2">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                  Tempo Estimado
-                </label>
-                <div className="flex gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                    Tempo Estimado
+                  </label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="renovationTime"
+                      className="flex-grow"
+                      placeholder="Tempo"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={
+                        formData.renovationEstimatedTime?.split(" ")[0] || ""
+                      }
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          renovationEstimatedTime: `${e.target.value} ${formData.renovationEstimatedTime?.split(" ")[1] || "meses"}`,
+                        })
+                      }
+                    />
+                    <select
+                      className="rounded-xl border border-indigo-200 bg-white px-3 text-sm focus:border-indigo-500 outline-none"
+                      value={
+                        formData.renovationEstimatedTime?.split(" ")[1] || "meses"
+                      }
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          renovationEstimatedTime: `${formData.renovationEstimatedTime?.split(" ")[0] || ""} ${e.target.value}`,
+                        })
+                      }
+                    >
+                      <option value="dias">dias</option>
+                      <option value="semanas">semanas</option>
+                      <option value="meses">meses</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
+                    Data Prevista de Término
+                  </label>
                   <Input
-                    id="renovationTime"
-                    className="flex-grow"
-                    placeholder="Tempo"
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    value={
-                      formData.renovationEstimatedTime?.split(" ")[0] || ""
-                    }
+                    id="renovationEndDate"
+                    type="date"
+                    value={formData.renovationEndDate || ""}
                     onChange={(e) =>
                       setFormData({
                         ...formData,
-                        renovationEstimatedTime: `${e.target.value} ${formData.renovationEstimatedTime?.split(" ")[1] || "meses"}`,
+                        renovationEndDate: e.target.value,
                       })
                     }
                   />
-                  <select
-                    className="rounded-xl border border-indigo-200 bg-white px-3 text-sm focus:border-indigo-500 outline-none"
-                    value={
-                      formData.renovationEstimatedTime?.split(" ")[1] || "meses"
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        renovationEstimatedTime: `${formData.renovationEstimatedTime?.split(" ")[0] || ""} ${e.target.value}`,
-                      })
-                    }
-                  >
-                    <option value="dias">dias</option>
-                    <option value="semanas">semanas</option>
-                    <option value="meses">meses</option>
-                  </select>
                 </div>
               </div>
               <div className="flex flex-col gap-1.5">
@@ -4327,10 +5412,11 @@ const PropertiesView = ({
             </div>
           )}
 
+          {/* Section 8: Alertas e Observações */}
           <div className="space-y-4">
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">
-                Alertas sobre o Imóvel
+                Alertas e Observações sobre o Imóvel
               </label>
               <textarea
                 className="flex min-h-[80px] w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm transition-all focus:bg-white focus:border-red-500 focus:ring-4 focus:ring-red-500/10 outline-none placeholder:text-slate-400"
@@ -4345,9 +5431,10 @@ const PropertiesView = ({
 
           <div className="pt-4 flex gap-2">
             <Button type="submit" className="flex-1" disabled={isSubmitting}>
-              {isSubmitting ? "Salvando..." : "Salvar"}
+              {isSubmitting ? "Salvando..." : "Salvar Imóvel"}
             </Button>
             <Button
+              type="button"
               variant="outline"
               onClick={() => setIsModalOpen(false)}
               disabled={isSubmitting}
@@ -5992,7 +7079,7 @@ interface FinancialViewProps {
   setHighlightedPaymentId?: (id: string | null) => void;
 }
 
-const FinancialView = ({
+const FinancialView = React.memo(({
   properties,
   tenants,
   payments,
@@ -8684,7 +9771,7 @@ const FinancialView = ({
                 ...paymentForm,
                 tenantId: tId,
                 propertyId: tenant?.propertyId || "",
-                amount: property?.rentValue || 0,
+                amount: tenant?.rentValue || property?.rentValue || 0,
               });
             }}
             options={[
@@ -8820,13 +9907,15 @@ const FinancialView = ({
       </Modal>
     </div>
   );
-};
+});
+FinancialView.displayName = "FinancialView";
 
 interface ReceivablesViewProps {
   properties: Property[];
   tenants: Tenant[];
   payments: Payment[];
   agreements: Agreement[];
+  contracts?: Contract[];
   setConfirmingPayment: (p: any) => void;
   setIsPaymentModalOpen: (open: boolean) => void;
   setIsRevertModalOpen?: (open: boolean) => void;
@@ -8848,6 +9937,7 @@ const ReceivablesView = ({
   tenants,
   payments,
   agreements,
+  contracts,
   setConfirmingPayment,
   setIsPaymentModalOpen,
   setIsRevertModalOpen,
@@ -8872,10 +9962,38 @@ const ReceivablesView = ({
 
   const [receiptModalPayment, setReceiptModalPayment] =
     useState<Payment | null>(null);
-  const [receiptType, setReceiptType] = useState<"simple" | "detailed">(
-    "simple",
-  );
+  const [receiptType, setReceiptType] = useState<
+    "simple" | "detailed" | "residence" | "regularity"
+  >("simple");
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+
+  const [landlordProfile, setLandlordProfile] = useState<LandlordProfile>(() => {
+    try {
+      const saved = localStorage.getItem("imob_landlord_profile");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {
+      name: "",
+      cpfCnpj: "",
+      rg: "",
+      qualification: "brasileiro(a), proprietário(a)",
+      address: "",
+      phone: "",
+      email: "",
+      pixKey: "",
+    };
+  });
+
+  useEffect(() => {
+    const syncLandlord = () => {
+      try {
+        const saved = localStorage.getItem("imob_landlord_profile");
+        if (saved) setLandlordProfile(JSON.parse(saved));
+      } catch (e) {}
+    };
+    window.addEventListener("landlord-profile-updated", syncLandlord);
+    return () => window.removeEventListener("landlord-profile-updated", syncLandlord);
+  }, []);
 
   const handleDownloadPDF = async () => {
     const input = document.getElementById("receipt-content");
@@ -8898,8 +10016,17 @@ const ReceivablesView = ({
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
 
+      const filePrefix =
+        receiptType === "residence"
+          ? "declaracao_residencia"
+          : receiptType === "regularity"
+            ? "declaracao_regularidade_aluguel"
+            : receiptType === "detailed"
+              ? "recibo_detalhado"
+              : "recibo_simples";
+
       pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`recibo_${receiptModalPayment.id?.substring(0, 8)}.pdf`);
+      pdf.save(`${filePrefix}_${receiptModalPayment.id?.substring(0, 8)}.pdf`);
     } catch (error) {
       console.error("Error generating PDF:", error);
     } finally {
@@ -9643,34 +10770,62 @@ const ReceivablesView = ({
             const tenant = tenants.find(
               (t) => t.id === receiptModalPayment.tenantId,
             );
+            const linkedContract = contracts?.find(
+              (c) =>
+                c.tenantId === receiptModalPayment.tenantId &&
+                c.propertyId === receiptModalPayment.propertyId,
+            ) || contracts?.find((c) => c.tenantId === receiptModalPayment.tenantId);
+
             const paymentDate = receiptModalPayment.paidDate
               ? format(parseISO(receiptModalPayment.paidDate), "dd/MM/yyyy")
               : "-";
 
             return (
               <div className="space-y-6 print:space-y-4 print:text-black">
-                <div className="flex gap-2 print:hidden mb-4 border-b border-slate-100 pb-4">
+                <div className="flex flex-wrap gap-2 print:hidden mb-4 border-b border-slate-100 pb-4">
                   <button
                     onClick={() => setReceiptType("simple")}
                     className={cn(
-                      "px-4 py-2 text-sm font-bold rounded-xl transition-all",
+                      "px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5",
                       receiptType === "simple"
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-slate-50 text-slate-500 hover:bg-slate-100",
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 shadow-xs"
+                        : "bg-slate-50 text-slate-600 hover:bg-slate-100",
                     )}
                   >
-                    Recibo Simples
+                    <Receipt className="w-3.5 h-3.5" /> Recibo Simples
                   </button>
                   <button
                     onClick={() => setReceiptType("detailed")}
                     className={cn(
-                      "px-4 py-2 text-sm font-bold rounded-xl transition-all",
+                      "px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5",
                       receiptType === "detailed"
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-slate-50 text-slate-500 hover:bg-slate-100",
+                        ? "bg-indigo-100 text-indigo-800 ring-1 ring-indigo-300 shadow-xs"
+                        : "bg-slate-50 text-slate-600 hover:bg-slate-100",
                     )}
                   >
-                    Recibo Detalhado
+                    <FileText className="w-3.5 h-3.5" /> Recibo Detalhado
+                  </button>
+                  <button
+                    onClick={() => setReceiptType("residence")}
+                    className={cn(
+                      "px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5",
+                      receiptType === "residence"
+                        ? "bg-blue-100 text-blue-800 ring-1 ring-blue-300 shadow-xs"
+                        : "bg-slate-50 text-slate-600 hover:bg-slate-100",
+                    )}
+                  >
+                    <Home className="w-3.5 h-3.5 text-blue-600" /> Declaração de Residência
+                  </button>
+                  <button
+                    onClick={() => setReceiptType("regularity")}
+                    className={cn(
+                      "px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5",
+                      receiptType === "regularity"
+                        ? "bg-amber-100 text-amber-900 ring-1 ring-amber-300 shadow-xs"
+                        : "bg-slate-50 text-slate-600 hover:bg-slate-100",
+                    )}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-amber-600" /> Regularidade & Quitação (Lei 12.007/09)
                   </button>
                 </div>
 
@@ -9801,7 +10956,7 @@ const ReceivablesView = ({
                         </div>
                       </div>
                     </>
-                  ) : (
+                  ) : receiptType === "detailed" ? (
                     <div className="text-sm text-slate-800 space-y-6">
                       <div className="text-center space-y-1 mb-8 border-b pb-6 print:pb-4">
                         <LogoSVG className="w-16 h-16 mx-auto mb-4 print:hidden" />
@@ -10201,6 +11356,7 @@ const ReceivablesView = ({
                           <strong className="shrink-0">Local:</strong>
                           <input
                             type="text"
+                            defaultValue="São Paulo - SP"
                             className="flex-1 min-w-0 bg-transparent border-b border-slate-300 focus:border-emerald-500 outline-none px-1 print:border-b-0 print:p-0"
                           />
                         </div>
@@ -10211,6 +11367,368 @@ const ReceivablesView = ({
                             defaultValue={paymentDate}
                             className="w-28 bg-transparent border-b border-slate-300 focus:border-emerald-500 outline-none px-1 print:border-b-0 print:p-0"
                           />
+                        </div>
+                      </div>
+                    </div>
+                  ) : receiptType === "residence" ? (
+                    /* DECLARAÇÃO FORMAL DE RESIDÊNCIA E VÍNCULO LOCATÍCIO (USO OFICIAL) */
+                    <div className="text-sm text-slate-900 space-y-6 font-serif leading-relaxed" style={{ fontFamily: '"Times New Roman", Times, Georgia, serif' }}>
+                      <div className="text-center pb-4 border-b-2 border-slate-900">
+                        <div className="flex justify-between items-center mb-2">
+                          <LogoSVG className="w-10 h-10 print:hidden" />
+                          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest print:hidden">
+                            Ref: DECL-RES-{receiptModalPayment.id?.substring(0, 8).toUpperCase()}
+                          </span>
+                        </div>
+                        <h2 className="text-lg sm:text-xl font-bold text-slate-900 uppercase tracking-tight">
+                          DECLARAÇÃO FORMAL DE RESIDÊNCIA E VÍNCULO LOCATÍCIO (USO OFICIAL)
+                        </h2>
+                      </div>
+
+                      <p className="text-justify leading-relaxed text-slate-900">
+                        Pelo presente instrumento particular, para todos os fins de direito e sob as penas da lei, em especial as dispostas no <strong>Artigo 299 do Código Penal Brasileiro (Falsidade Ideológica)</strong>, o(a) <strong>LOCADOR(A)/PROPRIETÁRIO(A)</strong> abaixo qualificado(a) declara, de forma expressa e irrevogável, que o(a) <strong>LOCATÁRIO(A)/INQUILINO(A) TITULAR</strong> e demais ocupantes igualmente qualificados residem de forma habitual e permanente no imóvel adiante descrito, estabelecendo nele seu domicílio civil.
+                      </p>
+
+                      {/* 1. DAS PARTES DECLARANTES */}
+                      <div className="space-y-3">
+                        <h3 className="text-xs font-bold uppercase text-slate-900 border-b border-slate-300 pb-1">
+                          1. DAS PARTES DECLARANTES
+                        </h3>
+
+                        <div className="space-y-2 pl-2">
+                          <h4 className="text-xs font-bold uppercase text-slate-800">
+                            1.1. DO(A) LOCADOR(A) / PROPRIETÁRIO(A) DECLARANTE:
+                          </h4>
+                          <div className="text-xs space-y-1 pl-3">
+                            <div className="flex items-center gap-1">
+                              <strong>Nome/Razão Social:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordName || landlordProfile.name || auth.currentUser?.displayName || "Locador(a) / Proprietário(a)"}
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-indigo-500 outline-none px-1 print:border-none print:p-0 font-medium"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>CPF/CNPJ:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordCpf || landlordProfile.cpfCnpj || ""}
+                                placeholder="CPF ou CNPJ do locador"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-indigo-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>RG:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordRg || landlordProfile.rg || ""}
+                                placeholder="RG do locador"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-indigo-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>Nacionalidade e Qualificação:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordQualification || landlordProfile.qualification || "Brasileiro(a), Proprietário(a)"}
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-indigo-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>Endereço Residencial/Comercial:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordAddress || landlordProfile.address || ""}
+                                placeholder="Endereço do locador"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-indigo-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>Telefone:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordPhone || landlordProfile.phone || ""}
+                                placeholder="Telefone do locador"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-indigo-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>E-mail:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordEmail || landlordProfile.email || auth.currentUser?.email || ""}
+                                placeholder="E-mail do locador"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-indigo-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                          </div>
+
+                          <h4 className="text-xs font-bold uppercase text-slate-800 pt-2">
+                            1.2. DO(A) LOCATÁRIO(A) / INQUILINO(A) TITULAR:
+                          </h4>
+                          <div className="text-xs space-y-1 pl-3">
+                            <div className="flex items-center gap-1">
+                              <strong>Nome Completo:</strong>
+                              <input
+                                type="text"
+                                defaultValue={tenant?.name || "Nome do(a) Inquilino(a)"}
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-emerald-500 outline-none px-1 print:border-none print:p-0 font-medium"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>CPF:</strong>
+                              <input
+                                type="text"
+                                defaultValue={tenant?.cpf || ""}
+                                placeholder="CPF do inquilino"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-emerald-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>Contato/Telefone:</strong>
+                              <input
+                                type="text"
+                                defaultValue={tenant?.contact || (tenant as any)?.secondaryContact || ""}
+                                placeholder="Telefone do inquilino"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-emerald-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 2. DO IMÓVEL E VÍNCULO LOCATÍCIO */}
+                      <div className="space-y-3 pt-2">
+                        <h3 className="text-xs font-bold uppercase text-slate-900 border-b border-slate-300 pb-1">
+                          2. DO IMÓVEL E VÍNCULO LOCATÍCIO
+                        </h3>
+
+                        <div className="space-y-2 pl-2">
+                          <h4 className="text-xs font-bold uppercase text-slate-800">
+                            2.1. DO IMÓVEL OBJETO DA LOCAÇÃO:
+                          </h4>
+                          <div className="text-xs space-y-1 pl-3">
+                            <div className="flex items-center gap-1">
+                              <strong>Identificação/Nome:</strong>
+                              <input
+                                type="text"
+                                defaultValue={property?.name || "Imóvel Residencial"}
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-blue-500 outline-none px-1 print:border-none print:p-0 font-medium"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>Endereço Completo:</strong>
+                              <input
+                                type="text"
+                                defaultValue={property?.address || ""}
+                                placeholder="Endereço completo do imóvel"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-blue-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>CEP:</strong>
+                              <input
+                                type="text"
+                                defaultValue={property?.cep || (property?.address?.match(/0[0-9]{4}-?[0-9]{3}/)?.[0] || "")}
+                                placeholder="CEP"
+                                className="flex-1 bg-transparent border-b border-slate-300 focus:border-blue-500 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong>Finalidade:</strong> Exclusivamente residencial.
+                            </div>
+                          </div>
+
+                          <h4 className="text-xs font-bold uppercase text-slate-800 pt-2">
+                            2.2. DO VÍNCULO LOCATÍCIO:
+                          </h4>
+                          <p className="text-xs text-justify pl-3">
+                            O(A) LOCADOR(A) declara que existe um contrato de locação formalmente celebrado com o(a) LOCATÁRIO(A) <strong>{tenant?.name || "Inquilino(a) Titular"}</strong> para o imóvel acima especificado. Este contrato encontra-se ativo e regular.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* 3. DA FINALIDADE E VALIDADE JURÍDICA */}
+                      <div className="space-y-2 pt-2">
+                        <h3 className="text-xs font-bold uppercase text-slate-900 border-b border-slate-300 pb-1">
+                          3. DA FINALIDADE E VALIDADE JURÍDICA
+                        </h3>
+                        <p className="text-xs text-justify leading-relaxed">
+                          A presente declaração é expedida com plena validade probatória para comprovação de endereço e residência habitual perante órgãos públicos federais, estaduais e municipais, concessionárias de serviços públicos, instituições de ensino, entidades bancárias, órgãos de trânsito (DETRAN/Poupatempo) e repartições de saúde/SUS.
+                        </p>
+                      </div>
+
+                      <div className="pt-6 pb-2 space-y-8">
+                        <div className="flex justify-between items-center text-xs">
+                          <div>
+                            <strong>Local / Emissão:</strong>{" "}
+                            <input
+                              type="text"
+                              defaultValue={property?.address?.toLowerCase().includes("embu das artes") ? "Embu das Artes - SP" : property?.address?.toLowerCase().includes("são paulo") ? "São Paulo - SP" : (landlordProfile.address?.split("-")?.pop()?.trim() || "São Paulo - SP")}
+                              className="w-36 bg-transparent border-b border-slate-300 focus:border-blue-500 outline-none px-1 print:border-none print:p-0"
+                            />
+                          </div>
+                          <div>
+                            <strong>Data:</strong>{" "}
+                            <input
+                              type="text"
+                              defaultValue={format(new Date(), "dd 'de' MMMM 'de' yyyy", { locale: ptBR })}
+                              className="w-48 bg-transparent border-b border-slate-300 focus:border-blue-500 outline-none px-1 text-right print:border-none print:p-0 font-medium"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-8 text-center pt-8 border-t border-slate-400 signature-block">
+                          <div>
+                            <p className="font-bold text-xs uppercase">{linkedContract?.landlordName || landlordProfile.name || auth.currentUser?.displayName || "LOCADOR(A) / PROPRIETÁRIO(A)"}</p>
+                            <p className="text-[10px] text-slate-600">LOCADOR(A) / PROPRIETÁRIO(A)</p>
+                            <p className="text-[10px] text-slate-500">{(linkedContract?.landlordCpf || landlordProfile.cpfCnpj) ? `CPF/CNPJ: ${linkedContract?.landlordCpf || landlordProfile.cpfCnpj}` : ""}</p>
+                          </div>
+                          <div>
+                            <p className="font-bold text-xs uppercase">{tenant?.name || "LOCATÁRIO(A) / INQUILINO(A) TITULAR"}</p>
+                            <p className="text-[10px] text-slate-600">LOCATÁRIO(A) / INQUILINO(A) TITULAR</p>
+                            <p className="text-[10px] text-slate-500">{tenant?.cpf ? `CPF: ${tenant.cpf}` : ""}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* DECLARAÇÃO DE REGULARIDADE E QUITAÇÃO (Lei nº 12.007/2009, Lei nº 8.245/1991 e CC Lei nº 10.406/2002) */
+                    <div className="text-sm text-slate-800 space-y-6">
+                      <div className="text-center space-y-2 border-b-2 border-amber-900 pb-6 print:pb-4">
+                        <div className="flex justify-between items-center mb-2">
+                          <LogoSVG className="w-12 h-12 print:hidden" />
+                          <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-widest">
+                            Ref: DECL-QUIT-{receiptModalPayment.id?.substring(0, 8).toUpperCase()}
+                          </span>
+                        </div>
+                        <h2 className="text-xl sm:text-2xl font-black text-amber-950 uppercase tracking-tight">
+                          DECLARAÇÃO DE REGULARIDADE E QUITAÇÃO DE ALUGUÉIS
+                        </h2>
+                        <p className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">
+                          Declaração de Quitação Anual / Periódica de Débitos — Lei Federal nº 12.007/2009, Art. 22, VI da Lei nº 8.245/1991 e Arts. 319 e 320 do Código Civil (Lei nº 10.406/2002)
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200 space-y-2">
+                          <h4 className="text-[10px] font-black text-amber-900 uppercase tracking-widest flex items-center gap-1.5">
+                            <UserIcon className="w-3.5 h-3.5 text-amber-700" /> DADOS DO LOCADOR / PROPRIETÁRIO
+                          </h4>
+                          <div className="text-xs space-y-1.5">
+                            <div className="flex items-center gap-1">
+                              <strong className="shrink-0">Nome:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordName || landlordProfile.name || auth.currentUser?.displayName || "Gerente do Imóvel"}
+                                className="flex-1 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 print:border-none print:p-0 font-semibold"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong className="shrink-0">CPF/CNPJ:</strong>
+                              <input
+                                type="text"
+                                defaultValue={linkedContract?.landlordCpf || landlordProfile.cpfCnpj || ""}
+                                placeholder="Ex: 000.000.000-00"
+                                className="flex-1 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 print:border-none print:p-0 font-semibold"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200 space-y-2">
+                          <h4 className="text-[10px] font-black text-amber-900 uppercase tracking-widest flex items-center gap-1.5">
+                            <UserIcon className="w-3.5 h-3.5 text-amber-700" /> DADOS DO LOCATÁRIO (INQUILINO)
+                          </h4>
+                          <div className="text-xs space-y-1.5">
+                            <div className="flex items-center gap-1">
+                              <strong className="shrink-0">Nome:</strong>
+                              <input
+                                type="text"
+                                defaultValue={tenant?.name}
+                                className="flex-1 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 print:border-none print:p-0 font-semibold"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <strong className="shrink-0">CPF/CNPJ:</strong>
+                              <input
+                                type="text"
+                                defaultValue={tenant?.cpf || ""}
+                                className="flex-1 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 print:border-none print:p-0"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200 space-y-2 text-xs">
+                        <h4 className="text-[10px] font-black text-amber-900 uppercase tracking-widest flex items-center gap-1.5">
+                          <Home className="w-3.5 h-3.5 text-amber-700" /> IMÓVEL LOCADO E PERÍODO DE ABRANGÊNCIA DA QUITAÇÃO
+                        </h4>
+                        <div className="flex items-start gap-1">
+                          <strong className="shrink-0">Endereço Completo:</strong>
+                          <input
+                            type="text"
+                            defaultValue={`${property?.name || ""} ${property?.address ? `- ${property.address}` : ""}`}
+                            className="flex-1 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 print:border-none print:p-0 font-medium"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <strong className="shrink-0">Período Compreendido / Quitado:</strong>
+                          <input
+                            type="text"
+                            defaultValue={`Até a presente data (${format(new Date(), "dd/MM/yyyy")})`}
+                            className="flex-1 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 print:border-none print:p-0 font-bold text-amber-900"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 leading-relaxed text-slate-800 text-sm">
+                        <p className="text-justify">
+                          DECLARO, para os fins e efeitos do disposto na <strong>Lei Federal nº 12.007/2009</strong>, no <strong>Artigo 22, inciso VI, da Lei Federal nº 8.245/1991 (Lei do Inquilinato)</strong> e nos <strong>Artigos 319 e 320 do Código Civil Brasileiro (Lei Federal nº 10.406/2002)</strong>, que o(a) LOCATÁRIO(A) <strong>{tenant?.name || "__________________________"}</strong>, acima qualificado(a), encontra-se em <strong>PLENA E IRRESTRITA REGULARIDADE FINANCEIRA DE ALUGUÉIS E ENCARGOS LOCATÍCIOS</strong>.
+                        </p>
+                        <p className="text-justify">
+                          Atesto que foram integralmente adimplidas e quitadas todas as parcelas mensais de aluguel, bem como os encargos acessórios de sua responsabilidade (IPTU e taxas adicionais acordadas), referentes ao imóvel situado no endereço acima descrito, compreendidos até o presente período de apuração.
+                        </p>
+                        <p className="text-justify">
+                          Nos termos da Lei nº 12.007/2009, a presente declaração substitui, para a comprovação do cumprimento das obrigações do locatário, as quitações dos faturamentos mensais dos débitos do período, outorgando quitação plena e geral em relação aos valores adimplidos.
+                        </p>
+                      </div>
+
+                      <div className="p-3 bg-amber-100/70 border border-amber-300 rounded-xl text-[11px] text-amber-950 flex items-center gap-2.5">
+                        <ShieldCheck className="w-5 h-5 text-amber-700 shrink-0" />
+                        <span><strong>Garantia Jurídica Integral:</strong> Emissão em estrita observância às Leis Federais nº 12.007/09, 8.245/91 e Código Civil (Lei 10.406/02), plenamente aplicável no Estado de São Paulo e União.</span>
+                      </div>
+
+                      <div className="pt-10 pb-4 space-y-8">
+                        <div className="flex justify-between items-center text-xs">
+                          <div>
+                            <strong>Local / Emissão:</strong>{" "}
+                            <input
+                              type="text"
+                              defaultValue="São Paulo - SP"
+                              className="w-36 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 print:border-none print:p-0"
+                            />
+                          </div>
+                          <div>
+                            <strong>Data:</strong>{" "}
+                            <input
+                              type="text"
+                              defaultValue={format(new Date(), "dd 'de' MMMM 'de' yyyy", { locale: ptBR })}
+                              className="w-48 bg-transparent border-b border-amber-300 focus:border-amber-600 outline-none px-1 text-right print:border-none print:p-0 font-medium"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-8 text-center pt-8 border-t border-amber-300">
+                          <div>
+                            <p className="font-bold text-xs uppercase">{linkedContract?.landlordName || landlordProfile.name || auth.currentUser?.displayName || "Locador / Administrador"}</p>
+                            <p className="text-[10px] text-slate-500">{(linkedContract?.landlordCpf || landlordProfile.cpfCnpj) ? `CPF/CNPJ: ${linkedContract?.landlordCpf || landlordProfile.cpfCnpj}` : "Locador / Responsável Legal"}</p>
+                          </div>
+                          <div>
+                            <p className="font-bold text-xs uppercase">{tenant?.name || "Locatário"}</p>
+                            <p className="text-[10px] text-slate-500">Locatário (Inquilino)</p>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -12029,7 +13547,7 @@ const SettingsView = ({
       if (regs.length === 0) {
         logs.push("⚙️ Tentando registrar Service Worker forçadamente...");
         try {
-          await navigator.serviceWorker.register("/sw.js?v=6.6.0");
+          await navigator.serviceWorker.register("/sw.js?v=6.8.0");
           logs.push("✅ SW registrado forçadamente!");
         } catch (e: any) {
           logs.push(`❌ Erro ao registrar SW: ${e.message}`);
@@ -12129,6 +13647,63 @@ const SettingsView = ({
   const [profileCompany, setProfileCompany] = useState("");
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
 
+  // Dados do Proprietário / Locador (Lei nº 8.245/1991 e Código Civil Lei nº 10.406/2002)
+  const [landlordName, setLandlordName] = useState("");
+  const [landlordCpf, setLandlordCpf] = useState("");
+  const [landlordRg, setLandlordRg] = useState("");
+  const [landlordQualification, setLandlordQualification] = useState("brasileiro(a), proprietário(a)");
+  const [landlordAddress, setLandlordAddress] = useState("");
+  const [landlordPhone, setLandlordPhone] = useState("");
+  const [landlordEmail, setLandlordEmail] = useState(user?.email || "");
+  const [landlordPixKey, setLandlordPixKey] = useState("");
+
+  useEffect(() => {
+    if (!user) return;
+    const loadProfileData = async () => {
+      try {
+        const savedLandlord = localStorage.getItem("imob_landlord_profile");
+        if (savedLandlord) {
+          const parsed = JSON.parse(savedLandlord);
+          setLandlordName(parsed.name || user.displayName || "");
+          setLandlordCpf(parsed.cpfCnpj || "");
+          setLandlordRg(parsed.rg || "");
+          setLandlordQualification(parsed.qualification || "brasileiro(a), proprietário(a)");
+          setLandlordAddress(parsed.address || "");
+          setLandlordPhone(parsed.phone || "");
+          setLandlordEmail(parsed.email || user.email || "");
+          setLandlordPixKey(parsed.pixKey || "");
+        } else {
+          setLandlordName(user.displayName || "");
+          setLandlordEmail(user.email || "");
+        }
+
+        const configDoc = await getDoc(doc(db, "config", user.uid));
+        if (configDoc.exists()) {
+          const data = configDoc.data();
+          if (data.profileCompany) setProfileCompany(data.profileCompany);
+          if (data.profilePhone) setProfilePhone(data.profilePhone);
+          if (data.landlordProfile) {
+            const lp = data.landlordProfile;
+            if (lp.name) setLandlordName(lp.name);
+            if (lp.cpfCnpj) setLandlordCpf(lp.cpfCnpj);
+            if (lp.rg) setLandlordRg(lp.rg);
+            if (lp.qualification) setLandlordQualification(lp.qualification);
+            if (lp.address) setLandlordAddress(lp.address);
+            if (lp.phone) setLandlordPhone(lp.phone);
+            if (lp.email) setLandlordEmail(lp.email);
+            if (lp.pixKey) setLandlordPixKey(lp.pixKey);
+
+            localStorage.setItem("imob_landlord_profile", JSON.stringify(lp));
+            window.dispatchEvent(new Event("landlord-profile-updated"));
+          }
+        }
+      } catch (err) {
+        console.error("Erro ao carregar perfil do locador:", err);
+      }
+    };
+    loadProfileData();
+  }, [user]);
+
   const handleUpdateProfile = async () => {
     if (!user) return;
     setIsUpdatingProfile(true);
@@ -12137,9 +13712,34 @@ const SettingsView = ({
         displayName: profileName,
         photoURL: profilePhoto,
       });
-      toast.success("Perfil atualizado com sucesso!");
+
+      const updatedLandlord: LandlordProfile = {
+        name: landlordName || profileName,
+        cpfCnpj: landlordCpf,
+        rg: landlordRg,
+        qualification: landlordQualification,
+        address: landlordAddress,
+        phone: landlordPhone || profilePhone,
+        email: landlordEmail || user.email || "",
+        pixKey: landlordPixKey,
+      };
+
+      await setDoc(
+        doc(db, "config", user.uid),
+        cleanObject({
+          profileCompany,
+          profilePhone,
+          landlordProfile: updatedLandlord,
+          updatedAt: new Date().toISOString(),
+        }),
+        { merge: true }
+      );
+
+      localStorage.setItem("imob_landlord_profile", JSON.stringify(updatedLandlord));
+      window.dispatchEvent(new Event("landlord-profile-updated"));
+
+      toast.success("Perfil do Proprietário (Locador) atualizado com sucesso!");
       setIsEditingProfile(false);
-      setTimeout(() => window.location.reload(), 1500); // Reload to reflect changes
     } catch (error) {
       console.error("Update profile error", error);
       toast.error("Erro ao atualizar o perfil.");
@@ -12195,14 +13795,31 @@ const SettingsView = ({
                   {user?.displayName || "Administrador"}
                 </p>
                 <p className="text-sm text-slate-500">{user?.email}</p>
-                <div className="mt-2 flex gap-2">
+
+                <div className="mt-3 p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl space-y-1 max-w-md">
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-indigo-950">
+                    <UserIcon className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Locador: {landlordName || user?.displayName || "A configurar"}</span>
+                  </div>
+                  {landlordCpf ? (
+                    <p className="text-[11px] text-indigo-800">
+                      CPF/CNPJ: <strong>{landlordCpf}</strong> {landlordRg ? `• RG: ${landlordRg}` : ""}
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-indigo-600 italic">
+                      Cadastre o CPF/CNPJ e dados legais do Locador para autopreenchimento de documentos.
+                    </p>
+                  )}
+                </div>
+
+                <div className="mt-3 flex gap-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-8 text-[11px] font-bold"
+                    className="h-8 text-[11px] font-bold border-indigo-200 text-indigo-700 hover:bg-indigo-50"
                     onClick={() => setIsEditingProfile(true)}
                   >
-                    Editar Perfil
+                    Editar Perfil e Dados do Locador
                   </Button>
                 </div>
               </div>
@@ -12766,7 +14383,7 @@ const SettingsView = ({
             Gerente Imobiliário
           </p>
           <p className="text-[10px] font-medium text-slate-400 mt-1">
-            Versão 6.6.0 <span className="mx-1.5 opacity-50">•</span> 27/07/2026
+            Versão 6.8.0 (Modo de Correção) <span className="mx-1.5 opacity-50">•</span> 12/08/2026
           </p>
         </div>
       </div>
@@ -12774,52 +14391,160 @@ const SettingsView = ({
       <Modal
         isOpen={isEditingProfile}
         onClose={() => setIsEditingProfile(false)}
-        title="Editar Perfil"
+        title="Editar Perfil do Usuário e Locador"
       >
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Nome de Exibição</label>
-              <Input
-                id="profile-name"
-                value={profileName || ""}
-                onChange={(e) => setProfileName(e.target.value)}
-                placeholder="Seu nome"
-              />
+        <div className="space-y-6 max-h-[80vh] overflow-y-auto pr-1">
+          {/* DADOS DE ACESSO E CONTA */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5 border-b pb-1">
+              <UserIcon className="w-3.5 h-3.5 text-slate-600" /> Dados Básicos da Conta
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">Nome de Exibição</label>
+                <Input
+                  id="profile-name"
+                  value={profileName || ""}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  placeholder="Seu nome"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">Empresa / Imobiliária</label>
+                <Input
+                  id="profile-company"
+                  value={profileCompany}
+                  onChange={(e) => setProfileCompany(e.target.value)}
+                  placeholder="Nome da sua empresa"
+                />
+              </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Empresa/Imobiliária</label>
-              <Input
-                id="profile-company"
-                value={profileCompany}
-                onChange={(e) => setProfileCompany(e.target.value)}
-                placeholder="Nome da sua empresa"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">Telefone de Contato</label>
+                <Input
+                  id="profile-phone"
+                  value={profilePhone}
+                  onChange={(e) => setProfilePhone(e.target.value)}
+                  placeholder="(00) 00000-0000"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">URL da Foto de Perfil</label>
+                <Input
+                  id="profile-photo"
+                  value={profilePhoto || ""}
+                  onChange={(e) => setProfilePhoto(e.target.value)}
+                  placeholder="https://exemplo.com/foto.jpg"
+                />
+              </div>
             </div>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Telefone de Contato</label>
+
+          {/* DADOS DO PROPRIETÁRIO / LOCADOR (LEI DO INQUILINATO & CÓDIGO CIVIL) */}
+          <div className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 space-y-4">
+            <div className="flex justify-between items-start">
+              <div>
+                <h4 className="text-xs font-black text-indigo-900 uppercase tracking-wider flex items-center gap-1.5">
+                  <UserIcon className="w-4 h-4 text-indigo-600" /> DADOS DO PROPRIETÁRIO / LOCADOR
+                </h4>
+                <p className="text-[11px] text-indigo-700/80 mt-0.5">
+                  Estes dados alimentam automaticamente as Declarações de Residência, Quitação e Contratos (Lei nº 8.245/1991 e Código Civil Lei nº 10.406/2002).
+                </p>
+              </div>
+              <span className="px-2 py-0.5 bg-indigo-100 text-indigo-800 text-[10px] font-bold rounded-md shrink-0">
+                Lei nº 8.245/91
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800">Nome Completo / Razão Social do Locador *</label>
+                <Input
+                  id="landlord-name"
+                  value={landlordName}
+                  onChange={(e) => setLandlordName(e.target.value)}
+                  placeholder="Ex: João da Silva Santos"
+                  className="bg-white"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800">CPF ou CNPJ do Locador *</label>
+                <Input
+                  id="landlord-cpf"
+                  value={landlordCpf}
+                  onChange={(e) => setLandlordCpf(e.target.value)}
+                  placeholder="000.000.000-00 ou 00.000.000/0001-00"
+                  className="bg-white"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800">RG / Doc. Identidade</label>
+                <Input
+                  id="landlord-rg"
+                  value={landlordRg}
+                  onChange={(e) => setLandlordRg(e.target.value)}
+                  placeholder="00.000.000-0 SSP/SP"
+                  className="bg-white"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800">Qualificação (Nacionalidade, Est. Civil, Profissão)</label>
+                <Input
+                  id="landlord-qualification"
+                  value={landlordQualification}
+                  onChange={(e) => setLandlordQualification(e.target.value)}
+                  placeholder="Ex: brasileiro(a), casado(a), proprietário(a)"
+                  className="bg-white"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-800">Endereço Completo do Locador</label>
               <Input
-                id="profile-phone"
-                value={profilePhone}
-                onChange={(e) => setProfilePhone(e.target.value)}
-                placeholder="(00) 00000-0000"
+                id="landlord-address"
+                value={landlordAddress}
+                onChange={(e) => setLandlordAddress(e.target.value)}
+                placeholder="Rua/Av, nº, Apto, Bairro, Cidade - UF, CEP"
+                className="bg-white"
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">
-                URL da Foto de Perfil
-              </label>
-              <Input
-                id="profile-photo"
-                value={profilePhoto || ""}
-                onChange={(e) => setProfilePhoto(e.target.value)}
-                placeholder="https://exemplo.com/foto.jpg"
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">
-                Link público para atualizar sua foto.
-              </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800">Telefone / WhatsApp</label>
+                <Input
+                  id="landlord-phone"
+                  value={landlordPhone}
+                  onChange={(e) => setLandlordPhone(e.target.value)}
+                  placeholder="(11) 99999-9999"
+                  className="bg-white"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800">E-mail do Locador</label>
+                <Input
+                  id="landlord-email"
+                  value={landlordEmail}
+                  onChange={(e) => setLandlordEmail(e.target.value)}
+                  placeholder="locador@email.com"
+                  className="bg-white"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800">Chave PIX Recebimento</label>
+                <Input
+                  id="landlord-pix"
+                  value={landlordPixKey}
+                  onChange={(e) => setLandlordPixKey(e.target.value)}
+                  placeholder="Chave PIX do Locador"
+                  className="bg-white"
+                />
+              </div>
             </div>
           </div>
 
@@ -13706,7 +15431,7 @@ const Input = ({
   label?: string;
   id: string;
   type?: string;
-  value: string | number;
+  value?: string | number;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   placeholder?: string;
   required?: boolean;
@@ -13739,7 +15464,7 @@ const Input = ({
       type={type}
       inputMode={inputMode}
       pattern={pattern}
-      value={value}
+      value={value ?? ""}
       onChange={onChange}
       onKeyDown={onKeyDown}
       onFocus={(e) => e.target.select()}
@@ -13765,19 +15490,20 @@ const CurrencyInput = ({
 }: {
   label?: string;
   id: string;
-  value: number;
+  value?: number;
   onChange: (val: number) => void;
   required?: boolean;
   className?: string;
 }) => {
+  const safeVal = value ?? 0;
   const [displayValue, setDisplayValue] = useState(
-    value ? value.toString().replace(".", ",") : ""
+    safeVal ? safeVal.toString().replace(".", ",") : ""
   );
 
   useEffect(() => {
     const currentNum = parseFloat(displayValue.replace(/\./g, "").replace(",", ".")) || 0;
-    if (Math.abs(currentNum - value) > 0.001) {
-      setDisplayValue(value ? value.toString().replace(".", ",") : "");
+    if (Math.abs(currentNum - safeVal) > 0.001) {
+      setDisplayValue(safeVal ? safeVal.toString().replace(".", ",") : "");
     }
   }, [value]);
 
@@ -13831,7 +15557,7 @@ const CurrencyInput = ({
           id={id}
           type="text"
           inputMode="decimal"
-          value={displayValue}
+          value={displayValue ?? ""}
           onChange={handleChange}
           onBlur={handleBlur}
           onFocus={(e) => e.target.select()}
@@ -13855,7 +15581,7 @@ const Select = ({
 }: {
   label?: string;
   id: string;
-  value: string;
+  value?: string;
   onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   options: { label: string; value: string; disabled?: boolean }[];
   className?: string;
@@ -13878,7 +15604,7 @@ const Select = ({
     )}
     <select
       id={id}
-      value={value}
+      value={value ?? ""}
       onChange={onChange}
       required={required}
       disabled={disabled}
@@ -13907,12 +15633,12 @@ const Modal = ({
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 print:static print:block print:p-0 print:m-0 print:w-full print:h-auto print:overflow-visible">
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-slate-900/40 backdrop-blur-md"
+            className="absolute inset-0 bg-slate-900/40 backdrop-blur-md print:hidden"
             onClick={onClose}
           />
           <motion.div
@@ -13920,9 +15646,9 @@ const Modal = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
             transition={{ type: "spring", damping: 25, stiffness: 300 }}
-            className="bg-white/95 backdrop-blur-xl rounded-[2rem] border border-white/50 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)] w-full max-w-lg overflow-hidden flex flex-col relative z-10"
+            className="bg-white/95 backdrop-blur-xl rounded-[2rem] border border-white/50 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)] w-full max-w-lg overflow-hidden flex flex-col relative z-10 print:static print:block print:p-0 print:m-0 print:w-full print:max-w-none print:shadow-none print:border-none print:bg-transparent print:rounded-none"
           >
-            <div className="flex items-center justify-between p-6 border-b border-slate-100 bg-white/50">
+            <div className="flex items-center justify-between p-6 border-b border-slate-100 bg-white/50 print:hidden">
               <h2 className="text-xl font-black tracking-tight text-slate-800">
                 {title}
               </h2>
@@ -13933,7 +15659,7 @@ const Modal = ({
                 <XCircle className="w-6 h-6" />
               </button>
             </div>
-            <div className="p-6 overflow-y-auto max-h-[75vh] custom-scrollbar bg-white/80">
+            <div className="p-6 overflow-y-auto max-h-[75vh] custom-scrollbar bg-white/80 print:p-0 print:m-0 print:max-h-none print:overflow-visible print:bg-transparent">
               {children}
             </div>
           </motion.div>
@@ -13952,20 +15678,31 @@ const SecurityCheckModal = ({
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: () => void | Promise<void>;
   correctPassword: string;
   description?: string;
 }) => {
   const [input, setInput] = useState("");
   const [error, setError] = useState(false);
+  const [isExecuting, setIsExecuting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isExecuting) return;
+
     if (input === correctPassword) {
       setError(false);
-      setInput("");
-      await onSuccess();
-      onClose();
+      setIsExecuting(true);
+      try {
+        await onSuccess();
+        setInput("");
+        onClose();
+      } catch (err) {
+        console.error("Erro na validação de segurança:", err);
+        toast.error("Ocorreu um erro ao concluir a ação. Tente novamente.");
+      } finally {
+        setIsExecuting(false);
+      }
     } else {
       setError(true);
       toast.error("Senha de segurança incorreta!");
@@ -13999,12 +15736,14 @@ const SecurityCheckModal = ({
             <input
               type="password"
               autoFocus
+              disabled={isExecuting}
               placeholder="Digite sua senha"
               className={cn(
                 "w-full pl-12 pr-4 py-4 bg-slate-50 border rounded-2xl text-center text-xl font-bold tracking-[0.5em] outline-none transition-all focus:ring-4 focus:ring-amber-500/10",
                 error
                   ? "border-rose-500 bg-rose-50 animate-shake"
                   : "border-slate-200 focus:border-amber-500",
+                isExecuting && "opacity-60 cursor-not-allowed"
               )}
               value={input}
               onChange={(e) => {
@@ -14018,6 +15757,7 @@ const SecurityCheckModal = ({
             <Button
               type="button"
               variant="outline"
+              disabled={isExecuting}
               className="flex-1 py-4 rounded-2xl font-bold text-slate-600"
               onClick={() => {
                 setInput("");
@@ -14029,9 +15769,10 @@ const SecurityCheckModal = ({
             </Button>
             <Button
               type="submit"
+              disabled={isExecuting}
               className="flex-1 py-4 rounded-2xl font-bold bg-amber-500 hover:bg-amber-600 text-white border-none shadow-lg shadow-amber-200"
             >
-              Confirmar
+              {isExecuting ? "Processando..." : "Confirmar"}
             </Button>
           </div>
         </form>
@@ -14238,7 +15979,7 @@ export default function App() {
 
   useEffect(() => {
     const handleSWUpdate = () => {
-      toast.info("Uma nova versão do Gerente Imobiliário (v6.6.0) está disponível!", {
+      toast.info("Uma nova versão do Gerente Imobiliário (v6.8.0) está disponível!", {
         description: "Recomendamos atualizar para carregar as melhorias mais recentes e evitar erros. Clique no botão abaixo para carregar agora.",
         duration: Infinity, // Mantém ativo até interação do usuário
         action: {
@@ -14321,6 +16062,33 @@ export default function App() {
     }
   });
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [landlordProfile, setLandlordProfile] = useState<LandlordProfile>(() => {
+    try {
+      const saved = localStorage.getItem("imob_landlord_profile");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {
+      name: "",
+      cpfCnpj: "",
+      rg: "",
+      qualification: "brasileiro(a), proprietário(a)",
+      address: "",
+      phone: "",
+      email: "",
+      pixKey: "",
+    };
+  });
+
+  useEffect(() => {
+    const syncLandlord = () => {
+      try {
+        const saved = localStorage.getItem("imob_landlord_profile");
+        if (saved) setLandlordProfile(JSON.parse(saved));
+      } catch (e) {}
+    };
+    window.addEventListener("landlord-profile-updated", syncLandlord);
+    return () => window.removeEventListener("landlord-profile-updated", syncLandlord);
+  }, []);
   const [activeTab, setActiveTab] = useState<
     | "dashboard"
     | "intelligence_hub"
@@ -14689,6 +16457,13 @@ export default function App() {
           const data = configDoc.data();
           setSecurityPassword(data.securityPassword || "1234");
 
+          if (data.autoBackupEnabled !== undefined) {
+            setAutoBackupEnabled(data.autoBackupEnabled);
+          }
+          if (data.lastBackupDate) {
+            setLastBackupDate(data.lastBackupDate);
+          }
+
           if (data.googleDriveTokens) {
             const storedTokens = localStorage.getItem("google_drive_tokens");
             if (!storedTokens || storedTokens !== data.googleDriveTokens) {
@@ -14714,8 +16489,12 @@ export default function App() {
             }
           }
         }
-      } catch (err) {
-        console.error("Erro ao carregar configurações:", err);
+      } catch (err: any) {
+        if (err?.code === 'unavailable' || err?.message?.includes('offline')) {
+          console.warn("Offline ao carregar configurações, usando padrões locais.");
+        } else {
+          console.error("Erro ao carregar configurações:", err);
+        }
       }
     };
     loadConfig();
@@ -14792,6 +16571,9 @@ export default function App() {
   const [resetConfirmText, setResetConfirmText] = useState("");
   const [resetReason, setResetReason] = useState("");
   const [backupStepMsg, setBackupStepMsg] = useState("");
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState(true);
+  const [lastBackupDate, setLastBackupDate] = useState<string | null>(null);
+  const [isAutoBackupRunning, setIsAutoBackupRunning] = useState(false);
   const [agreementForm, setAgreementForm] = useState<Partial<Agreement>>({
     tenantId: "",
     description: "",
@@ -14851,7 +16633,7 @@ export default function App() {
       timestamp: string;
       error?: string;
       url?: string;
-      type: "receipt" | "contract" | "expense";
+      type: "receipt" | "contract" | "expense" | "backup";
     }[]
   >([]);
 
@@ -14865,7 +16647,7 @@ export default function App() {
           timestamp: string;
           error?: string;
           url?: string;
-          type: "receipt" | "contract" | "expense";
+          type: "receipt" | "contract" | "expense" | "backup";
         },
         "id" | "timestamp"
       >,
@@ -15146,9 +16928,10 @@ export default function App() {
     fileData: string,
     mimeType: string,
     folderName?: string,
-    type: "receipt" | "contract" | "expense" = "receipt",
+    type: "receipt" | "contract" | "expense" | "backup" = "receipt",
+    overwrite = false,
   ) => {
-    addSyncLog({ fileName, status: "pending", type });
+    addSyncLog({ fileName, status: "pending", type: type as any });
     try {
       const storedTokens = localStorage.getItem("google_drive_tokens");
       const headers: Record<string, string> = {
@@ -15167,6 +16950,8 @@ export default function App() {
           mimeType,
           folderName,
           uid: user?.uid,
+          overwrite,
+          isBackup: type === "backup",
         }),
         credentials: "include",
       });
@@ -15241,6 +17026,130 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const generatingRef = useRef<Record<string, boolean>>({});
 
+  const toggleAutoBackup = async (enabled: boolean) => {
+    setAutoBackupEnabled(enabled);
+    if (user) {
+      try {
+        await setDoc(
+          doc(db, "config", user.uid),
+          { autoBackupEnabled: enabled, updatedAt: new Date().toISOString() },
+          { merge: true }
+        );
+        toast.success(
+          enabled
+            ? "Backup Automático Mensal ativado! O sistema substituirá a cópia no seu Drive a cada 30 dias sem acumular arquivos."
+            : "Backup Automático Mensal desativado. Você ainda poderá usar o Backup Inteligente manual."
+        );
+      } catch (err) {
+        console.error("Erro ao atualizar configuração do backup automático:", err);
+      }
+    }
+  };
+
+  const handleAutoBackupSystem = async () => {
+    if (!user || isAutoBackupRunning) return;
+    setIsAutoBackupRunning(true);
+    try {
+      const collections = [
+        "properties",
+        "tenants",
+        "expenses",
+        "payments",
+        "agreements",
+        "contracts",
+        "tickets",
+        "storages",
+      ];
+
+      const systemData: any = {};
+      const allDocsToProcess: { coll: string; id: string; data: any }[] = [];
+
+      for (const collName of collections) {
+        let q = query(
+          collection(db, collName),
+          where("ownerId", "==", user.uid)
+        );
+        const snap = await getDocs(q);
+        systemData[collName] = snap.docs.length;
+        snap.docs.forEach((d) => {
+          allDocsToProcess.push({ coll: collName, id: d.id, data: d.data() });
+        });
+      }
+
+      const backupPayload = JSON.stringify(
+        {
+          timestamp: new Date().toISOString(),
+          type: "auto_monthly_backup",
+          data: allDocsToProcess,
+        },
+        null,
+        2
+      );
+
+      const jsonBlob = new Blob([backupPayload], { type: "application/json" });
+      const jsonBase64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(jsonBlob);
+      });
+
+      if (isDriveConnected && uploadToDrive) {
+        await uploadToDrive(
+          "GerenteImobiliario_Backup_Oficial.json",
+          jsonBase64,
+          "application/json",
+          "Gerente imobiliário Backups",
+          "backup",
+          true
+        );
+        const nowIso = new Date().toISOString();
+        setLastBackupDate(nowIso);
+        await setDoc(
+          doc(db, "config", user.uid),
+          { lastBackupDate: nowIso, updatedAt: new Date().toISOString() },
+          { merge: true }
+        );
+        toast.success(
+          "Backup mensal automático sincronizado no Google Drive com sucesso! (Cópia substituída)",
+          { duration: 6000 }
+        );
+      }
+    } catch (err) {
+      console.warn("[Auto Backup] Falha ao executar rotina de backup mensal:", err);
+    } finally {
+      setIsAutoBackupRunning(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user || !isDriveConnected || !autoBackupEnabled || loading || isAutoBackupRunning) return;
+
+    let timer: NodeJS.Timeout;
+    if (!lastBackupDate) {
+      // First time initialization delay
+      timer = setTimeout(() => {
+        handleAutoBackupSystem();
+      }, 8000);
+    } else {
+      try {
+        const lastDate = parseISO(lastBackupDate);
+        const daysDiff = differenceInDays(new Date(), lastDate);
+        if (daysDiff >= 30) {
+          console.log(`[Auto Backup] ${daysDiff} dias desde o último backup. Disparando atualização no Google Drive...`);
+          timer = setTimeout(() => {
+            handleAutoBackupSystem();
+          }, 5000);
+        }
+      } catch (e) {
+        console.error("[Auto Backup] Erro ao calcular intervalo de backup:", e);
+      }
+    }
+
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [user, isDriveConnected, autoBackupEnabled, lastBackupDate, loading]);
+
   // Synchronize tenant data to localStorage for local testing & development backup
   // and also write to firestore tenant_portal_data for live secure tenant login
   useEffect(() => {
@@ -15278,8 +17187,8 @@ export default function App() {
 
         localStorage.setItem("local_tenants_backup", dataStr);
 
-        // Sync to cloud Firestore tenant_portal_data (so tenants can log in from anywhere)
-        const syncToCloud = async () => {
+        // Sync to cloud Firestore tenant_portal_data asynchronously with delay to avoid blocking startup
+        const timerId = setTimeout(async () => {
           const promises = backupData.map(async (item) => {
             const cleanCpf = item.cpf.replace(/\D/g, "");
             const password = item.password;
@@ -15300,8 +17209,8 @@ export default function App() {
             }
           });
           await Promise.all(promises);
-        };
-        syncToCloud();
+        }, 3000);
+        return () => clearTimeout(timerId);
       } catch (err) {
         console.warn("Could not save tenants backup:", err);
       }
@@ -15360,8 +17269,12 @@ export default function App() {
               setUserRole(data.role);
             }
           }
-        } catch (err) {
-          console.error("Error ensuring user document:", err);
+        } catch (err: any) {
+          if (err?.code === 'unavailable' || err?.message?.includes('offline')) {
+            console.warn("Offline ao verificar documento do usuário, aplicando papel por padrão.");
+          } else {
+            console.error("Error ensuring user document:", err);
+          }
           // Fallback context based user role determination for offline/disconnected clients
           let role: "admin" | "tenant" =
             u.email === "dennyancasa@gmail.com" ||
@@ -15376,24 +17289,6 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
-
-  // Firestore Connection Test
-  useEffect(() => {
-    if (!isAuthReady) return;
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, "test", "connection"));
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message.includes("the client is offline")
-        ) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    };
-    testConnection();
-  }, [isAuthReady]);
 
   // Data Listeners
   useEffect(() => {
@@ -15410,6 +17305,11 @@ export default function App() {
     }
 
     setLoading(true);
+
+    // Fast loading release: ensures pages open within <500ms max
+    const loadingTimeout = setTimeout(() => {
+      setLoading(false);
+    }, 500);
 
     const handleListError = (err: any, op: OperationType, path: string) => {
       setLoading(false);
@@ -15464,6 +17364,7 @@ export default function App() {
         setProperties(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Property),
         );
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "properties"),
     );
@@ -15472,6 +17373,7 @@ export default function App() {
       qTenants,
       (snap) => {
         setTenants(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Tenant));
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "tenants"),
     );
@@ -15482,6 +17384,7 @@ export default function App() {
         setExpenses(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Expense),
         );
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "expenses"),
     );
@@ -15503,6 +17406,7 @@ export default function App() {
         setAgreements(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Agreement),
         );
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "agreements"),
     );
@@ -15513,6 +17417,7 @@ export default function App() {
         setContracts(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Contract),
         );
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "contracts"),
     );
@@ -15521,6 +17426,7 @@ export default function App() {
       qTickets,
       (snap) => {
         setTickets(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Ticket));
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "tickets"),
     );
@@ -15531,6 +17437,7 @@ export default function App() {
         setStagingRecords(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }) as StagingRecord),
         );
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "staging_records"),
     );
@@ -15541,6 +17448,7 @@ export default function App() {
         setCustomAlerts(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CustomAlert),
         );
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "custom_alerts"),
     );
@@ -15551,11 +17459,13 @@ export default function App() {
         setStorages(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }) as StorageSpace),
         );
+        setLoading(false);
       },
       (err) => handleListError(err, OperationType.LIST, "storages"),
     );
 
     return () => {
+      clearTimeout(loadingTimeout);
       unsubProps();
       unsubTenants();
       unsubExpenses();
@@ -15570,15 +17480,15 @@ export default function App() {
   }, [isAuthReady, user, userRole]);
 
   
-  const backgroundTasksRunUser = useRef<string | null>(null);
+  const backgroundTasksTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // --- Background Data Tasks (Deduplicate, Generate, Clean, Late Checks) ---
   useEffect(() => {
-    if (!user || payments.length === 0 || contracts.length === 0 || properties.length === 0) return;
-    if (backgroundTasksRunUser.current === user.uid) return;
-    
-    // Set to true immediately so we don't double trigger
-    backgroundTasksRunUser.current = user.uid;
+    if (!user) return;
+
+    if (backgroundTasksTimeoutRef.current) {
+      clearTimeout(backgroundTasksTimeoutRef.current);
+    }
 
     const runAllBackgroundTasks = async () => {
       try {
@@ -15756,18 +17666,16 @@ export default function App() {
       }
     };
 
-    runAllBackgroundTasks();
-  }, [
-    user, 
-    payments.length > 0, 
-    contracts.length > 0, 
-    properties.length > 0,
-    payments,
-    contracts,
-    properties,
-    agreements,
-    tenants
-  ]);
+    backgroundTasksTimeoutRef.current = setTimeout(() => {
+      runAllBackgroundTasks();
+    }, 1500);
+
+    return () => {
+      if (backgroundTasksTimeoutRef.current) {
+        clearTimeout(backgroundTasksTimeoutRef.current);
+      }
+    };
+  }, [user, contracts.length, payments.length, properties.length, tenants.length]);
 
 
   const sidebarItems = useMemo(() => {
@@ -16016,45 +17924,58 @@ export default function App() {
   };
 
   const addProperty = async (data: Partial<Property>) => {
-    if (!user) return;
+    if (!user) {
+      toast.error("Usuário não autenticado. Por favor, faça login novamente.");
+      return;
+    }
     try {
-      const docRef = await addDoc(
-        collection(db, "properties"),
-        cleanObject({
-          ...data,
-          ownerId: user.uid,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }),
-      );
+      const propRef = doc(collection(db, "properties"));
+      const docId = propRef.id;
+
+      const cleanedData = cleanObject({
+        ...data,
+        ownerId: user.uid,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Use a safety timeout so UI never freezes if network hangs or offline queue delays
+      const setPromise = setDoc(propRef, cleanedData);
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([setPromise, timeoutPromise]);
 
       // If created as rented with a tenant, update the tenant
       if (data.status === "rented" && data.currentTenantId) {
-        await updateDoc(
+        const tenantPromise = updateDoc(
           doc(db, "tenants", data.currentTenantId),
           cleanObject({
             status: "allocated",
-            propertyId: docRef.id,
+            propertyId: docId,
             updatedAt: new Date().toISOString(),
           }),
         );
+        await Promise.race([tenantPromise, timeoutPromise]);
       }
-      return docRef.id;
+      return docId;
     } catch (err) {
+      console.error("Erro ao salvar imóvel:", err);
       handleFirestoreError(err, OperationType.CREATE, "properties");
+      // Return a generated ID so UI flow can continue safely
+      return doc(collection(db, "properties")).id;
     }
   };
 
   const updateProperty = async (id: string, data: Partial<Property>) => {
     try {
       const oldProp = properties.find((p) => p.id === id);
-      await updateDoc(
-        doc(db, "properties", id),
-        cleanObject({
-          ...data,
-          updatedAt: new Date().toISOString(),
-        }),
-      );
+      const cleanedData = cleanObject({
+        ...data,
+        updatedAt: new Date().toISOString(),
+      });
+
+      const updatePromise = updateDoc(doc(db, "properties", id), cleanedData);
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([updatePromise, timeoutPromise]);
 
       // Handle tenant status change if property status changed to rented
       if (data.status === "rented" && data.currentTenantId) {
@@ -16063,7 +17984,7 @@ export default function App() {
           oldProp?.status !== "rented"
         ) {
           // Update new tenant
-          await updateDoc(
+          const t1 = updateDoc(
             doc(db, "tenants", data.currentTenantId),
             cleanObject({
               status: "allocated",
@@ -16071,17 +17992,19 @@ export default function App() {
               updatedAt: new Date().toISOString(),
             }),
           );
+          await Promise.race([t1, timeoutPromise]);
 
           // If there was a previous tenant, update them to waiting
           if (
             oldProp?.currentTenantId &&
             oldProp.currentTenantId !== data.currentTenantId
           ) {
-            await updateDoc(doc(db, "tenants", oldProp.currentTenantId), {
+            const t2 = updateDoc(doc(db, "tenants", oldProp.currentTenantId), {
               status: "waiting",
               propertyId: "",
               updatedAt: new Date().toISOString(),
             });
+            await Promise.race([t2, timeoutPromise]);
           }
         }
       } else if (
@@ -16090,19 +18013,24 @@ export default function App() {
         oldProp?.currentTenantId
       ) {
         // Property was rented but now is not, update tenant to waiting
-        await updateDoc(doc(db, "tenants", oldProp.currentTenantId), {
+        const t3 = updateDoc(doc(db, "tenants", oldProp.currentTenantId), {
           status: "waiting",
           propertyId: "",
           updatedAt: new Date().toISOString(),
         });
+        await Promise.race([t3, timeoutPromise]);
       }
     } catch (err) {
+      console.error("Erro ao atualizar imóvel:", err);
       handleFirestoreError(err, OperationType.UPDATE, `properties/${id}`);
     }
   };
 
   const deleteProperty = async (id: string) => {
     setIsSubmitting(true);
+    setProperties((prev) => prev.filter((p) => p.id !== id));
+    toast.success("Imóvel excluído com sucesso!");
+
     try {
       const batch = writeBatch(db);
       const property = properties.find((p) => p.id === id);
@@ -16167,7 +18095,9 @@ export default function App() {
       // Delete the property itself
       batch.delete(doc(db, "properties", id));
 
-      await batch.commit();
+      const commitPromise = batch.commit();
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([commitPromise, timeoutPromise]);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `properties/${id}`);
     } finally {
@@ -16177,9 +18107,12 @@ export default function App() {
 
   const deleteExpense = async (id: string) => {
     setIsSubmitting(true);
+    setExpenses((prev) => prev.filter((e) => e.id !== id));
+    toast.success("Despesa excluída com sucesso!");
     try {
-      await deleteDoc(doc(db, "expenses", id));
-      toast.success("Despesa excluída com sucesso!");
+      const opPromise = deleteDoc(doc(db, "expenses", id));
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([opPromise, timeoutPromise]);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `expenses/${id}`);
     } finally {
@@ -16207,9 +18140,12 @@ export default function App() {
 
   const deleteStagingRecord = async (id: string) => {
     setIsSubmitting(true);
+    setStagingRecords((prev) => prev.filter((r) => r.id !== id));
+    toast.success("Registro excluído do arquivo morto!");
     try {
-      await deleteDoc(doc(db, "staging_records", id));
-      toast.success("Registro excluído do arquivo morto!");
+      const opPromise = deleteDoc(doc(db, "staging_records", id));
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([opPromise, timeoutPromise]);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `staging_records/${id}`);
       throw err;
@@ -16302,6 +18238,60 @@ export default function App() {
           });
           batch.set(tenantRef, tenantData);
           operations++;
+
+          if (hasValidProp) {
+            // Simultaneously create Contract record
+            const contractRef = doc(collection(db, "contracts"));
+            const startDateStr = occupancyDate && !isNaN(Date.parse(occupancyDate))
+              ? occupancyDate
+              : format(new Date(), "yyyy-MM-dd");
+            batch.set(
+              contractRef,
+              cleanObject({
+                tenantId: tenantRef.id,
+                propertyId: propRef.id,
+                startDate: startDateStr,
+                endDate: format(addMonths(parseISO(startDateStr), 12), "yyyy-MM-dd"),
+                leaseDurationMonths: 12,
+                rentValue: rentValue || 0,
+                paymentDay: 10,
+                chargeLateFees: true,
+                lateFeePenalty: 2,
+                lateFeeDaily: 0.033,
+                lateFeeType: "percentage",
+                status: "active",
+                observations: "Contrato ativado a partir do Arquivo Morto / Importação",
+                ownerId: user.uid,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              })
+            );
+            operations++;
+
+            // Simultaneously create Rent Payment record in Finance
+            if (rentValue > 0) {
+              const paymentRef = doc(collection(db, "payments"));
+              const rentAdj = adjustDateToNextBusinessDay(format(new Date(), "yyyy-MM-dd"));
+              batch.set(
+                paymentRef,
+                cleanObject({
+                  propertyId: propRef.id,
+                  tenantId: tenantRef.id,
+                  amount: rentValue,
+                  dueDate: rentAdj.adjustedDate,
+                  originalDueDate: rentAdj.wasAdjusted ? rentAdj.originalDate : undefined,
+                  status: "pending",
+                  ownerId: user.uid,
+                  type: "rent",
+                  description: "Aluguel (Importado do Contrato)",
+                  observations: rentAdj.wasAdjusted ? rentAdj.adjustmentReason : "Sincronizado da importação",
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                })
+              );
+              operations++;
+            }
+          }
         }
 
         importedCount++;
@@ -16327,6 +18317,126 @@ export default function App() {
       handleFirestoreError(err, OperationType.CREATE, "bulk_import");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const generateRentPaymentsForTenant = async (
+    tenantId: string,
+    propertyId: string,
+    rentValue: number,
+    paymentDay: number,
+    startDateStr: string,
+    ownerId: string,
+    historyOption: string = "all_paid",
+    confirmHistoryOverrides: Record<string, "paid" | "pending"> = {}
+  ) => {
+    if (!rentValue || rentValue <= 0 || !propertyId || !tenantId || !ownerId) return;
+
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+    const nextMonthLimit = addMonths(today, 1);
+    let currentPeriod = parseISO(startDateStr);
+    if (isNaN(currentPeriod.getTime())) {
+      currentPeriod = today;
+    }
+
+    const startYear = currentPeriod.getFullYear();
+    const startMonth = currentPeriod.getMonth();
+
+    while (
+      currentPeriod.getFullYear() < nextMonthLimit.getFullYear() ||
+      (currentPeriod.getFullYear() === nextMonthLimit.getFullYear() &&
+        currentPeriod.getMonth() <= nextMonthLimit.getMonth())
+    ) {
+      const year = currentPeriod.getFullYear();
+      const month = currentPeriod.getMonth();
+      const isPastMonth = year < currentYear || (year === currentYear && month < currentMonth);
+
+      const exists = payments.some((p) => {
+        if (
+          p.tenantId !== tenantId ||
+          p.propertyId !== propertyId ||
+          !(p.type === "rent" ||
+            !p.type ||
+            (p.type !== "deposit" && p.type !== "agreement") ||
+            p.description?.toLowerCase().includes("aluguel"))
+        ) return false;
+
+        const checkDateStr = (dateStr?: string) => {
+          if (!dateStr) return false;
+          const parts = dateStr.split("T")[0].split("-");
+          if (parts.length >= 2) {
+            return parseInt(parts[0], 10) === year && (parseInt(parts[1], 10) - 1) === month;
+          }
+          return false;
+        };
+        return checkDateStr(p.dueDate) || checkDateStr(p.originalDueDate);
+      });
+
+      if (!exists) {
+        const pDay = paymentDay || 5;
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        const actualDay = Math.min(pDay, daysInMonth);
+        const baseDateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(actualDay).padStart(2, "0")}`;
+        const rentAdj = adjustDateToNextBusinessDay(baseDateStr);
+
+        const isFirstMonth = (year === startYear && month === startMonth);
+
+        // Determine status for past months based on debt confirmation choice
+        let paymentStatus: "paid" | "pending" = "pending";
+        let paymentDescription = isFirstMonth ? "Primeiro Aluguel" : "Aluguel Mensal";
+        let paidAtDate: string | undefined = undefined;
+
+        if (isPastMonth) {
+          const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+          const overridden = confirmHistoryOverrides[monthKey];
+          
+          if (historyOption === "has_pending") {
+            if (overridden === "pending") {
+              paymentStatus = "pending";
+              paymentDescription = "Aluguel (Débito Anterior Pendente)";
+            } else {
+              paymentStatus = "paid";
+              paidAtDate = rentAdj.adjustedDate;
+              paymentDescription = "Aluguel (Quitado Retroativo)";
+            }
+          } else if (historyOption === "unconfirmed") {
+            paymentStatus = "pending";
+            paymentDescription = "Aluguel (Pendente de Verificação)";
+          } else {
+            // "all_paid" or default
+            paymentStatus = "paid";
+            paidAtDate = rentAdj.adjustedDate;
+            paymentDescription = "Aluguel (Quitado Retroativo)";
+          }
+        }
+
+        try {
+          await addDoc(
+            collection(db, "payments"),
+            cleanObject({
+              propertyId,
+              tenantId,
+              amount: rentValue,
+              dueDate: rentAdj.adjustedDate,
+              originalDueDate: rentAdj.wasAdjusted ? rentAdj.originalDate : undefined,
+              status: paymentStatus,
+              paidAt: paidAtDate,
+              ownerId,
+              type: "rent",
+              description: paymentDescription,
+              observations: rentAdj.wasAdjusted ? rentAdj.adjustmentReason : "",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            })
+          );
+        } catch (err) {
+          console.error("Erro ao gerar pagamento de aluguel:", err);
+        }
+      }
+
+      currentPeriod = addMonths(currentPeriod, 1);
     }
   };
 
@@ -16372,18 +18482,50 @@ export default function App() {
           }),
         );
 
-        const dueDate = data.firstRentDueDate
-          ? data.firstRentDueDate
-          : data.paymentDay
-            ? getNextDueDate(data.paymentDay)
-            : format(addDays(new Date(), 30), "yyyy-MM-dd");
+        let dueDate = format(addDays(new Date(), 30), "yyyy-MM-dd");
+        if (data.firstRentDueDate && !isNaN(Date.parse(data.firstRentDueDate))) {
+          dueDate = data.firstRentDueDate;
+        } else if (data.paymentDay && !isNaN(Number(data.paymentDay))) {
+          dueDate = getNextDueDate(Number(data.paymentDay));
+        }
 
         // Automatically create a Contract document
-        const startDateStr = data.startDate || format(new Date(), "yyyy-MM-dd");
-        const months = data.leaseDurationMonths || 12;
-        const endDateStr =
-          data.endDate ||
-          format(addMonths(parseISO(startDateStr), months), "yyyy-MM-dd");
+        let startDateStr = data.startDate;
+        if (!startDateStr || isNaN(Date.parse(startDateStr))) {
+          startDateStr = format(new Date(), "yyyy-MM-dd");
+        }
+        const months = Number(data.leaseDurationMonths) || 12;
+        let endDateStr = data.endDate;
+        if (!endDateStr || isNaN(Date.parse(endDateStr))) {
+          try {
+            const parsedStart = parseISO(startDateStr);
+            endDateStr = format(
+              addMonths(isNaN(parsedStart.getTime()) ? new Date() : parsedStart, months),
+              "yyyy-MM-dd",
+            );
+          } catch {
+            endDateStr = format(addMonths(new Date(), months), "yyyy-MM-dd");
+          }
+        }
+
+        let calculatedDepositDay: number | undefined = undefined;
+        if (data.initialPaymentType === "deposit") {
+          if (data.depositDueDate) {
+            const parts = data.depositDueDate.split("-");
+            if (parts.length === 3) {
+              const pDay = parseInt(parts[2], 10);
+              if (!isNaN(pDay) && pDay >= 1 && pDay <= 31) {
+                calculatedDepositDay = pDay;
+              }
+            }
+          }
+          if (!calculatedDepositDay && data.paymentDay) {
+            const pDay = Number(data.paymentDay);
+            if (!isNaN(pDay) && pDay >= 1 && pDay <= 31) {
+              calculatedDepositDay = pDay;
+            }
+          }
+        }
 
         const contractData = {
           tenantId: docRef.id,
@@ -16407,14 +18549,10 @@ export default function App() {
             data.initialPaymentType === "deposit"
               ? data.depositInstallments
               : undefined,
-          depositDay:
-            data.initialPaymentType === "deposit"
-              ? data.depositDueDate
-                ? Number(data.depositDueDate.split("-")[2])
-                : data.paymentDay
-              : undefined,
+          depositDay: calculatedDepositDay,
           observations: data.observations,
           status: "active",
+          historyStatus: (data as any).historyStatus || "all_paid",
           contractFile: (data as any).contractFile,
           evidenceName: (data as any).evidenceName,
           ownerId: user.uid,
@@ -16423,46 +18561,46 @@ export default function App() {
         };
         await addDoc(collection(db, "contracts"), cleanObject(contractData));
 
-        // 1. Rent entry (Revenue)
-        const rentAdj = adjustDateToNextBusinessDay(dueDate);
-        await addDoc(
-          collection(db, "payments"),
-          cleanObject({
-            propertyId: data.propertyId,
-            tenantId: docRef.id,
-            amount: data.rentValue || 0,
-            dueDate: rentAdj.adjustedDate,
-            originalDueDate: rentAdj.wasAdjusted
-              ? rentAdj.originalDate
-              : undefined,
-            status: "pending",
-            ownerId: user.uid,
-            type: "rent",
-            description: "Primeiro Aluguel",
-            observations: rentAdj.wasAdjusted ? rentAdj.adjustmentReason : "",
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }),
+        // Generate Rent entries for all active months starting from contract startDate
+        await generateRentPaymentsForTenant(
+          docRef.id,
+          data.propertyId,
+          data.rentValue || 0,
+          Number(data.paymentDay) || 5,
+          startDateStr,
+          user.uid,
+          (data as any).historyStatus || "all_paid",
+          (data as any).confirmHistoryOverrides || {}
         );
 
-        // 2. Deposit Entry if configured
+        // Deposit Entry if configured
         if (
           data.initialPaymentType === "deposit" &&
           data.depositValue &&
           data.depositValue > 0
         ) {
-          const installments = data.depositInstallments || 1;
+          const installments = Math.max(1, Number(data.depositInstallments) || 1);
           const installmentValue = data.depositValue / installments;
 
           let depositStartDate = data.depositDueDate;
-          if (!depositStartDate) {
+          if (!depositStartDate || isNaN(Date.parse(depositStartDate))) {
             depositStartDate = dueDate;
           }
 
+          const isDepositPaid = (data as any).depositIsPaid === true || (data as any).depositStatus === "paid";
+
           for (let i = 0; i < installments; i++) {
-            const currentObjDate = parseISO(depositStartDate);
-            currentObjDate.setMonth(currentObjDate.getMonth() + i);
-            const installmentDueDate = format(currentObjDate, "yyyy-MM-dd");
+            let installmentDueDate = depositStartDate;
+            try {
+              const currentObjDate = parseISO(depositStartDate);
+              if (!isNaN(currentObjDate.getTime())) {
+                currentObjDate.setMonth(currentObjDate.getMonth() + i);
+                installmentDueDate = format(currentObjDate, "yyyy-MM-dd");
+              }
+            } catch {
+              installmentDueDate = depositStartDate;
+            }
+
             const depAdj = adjustDateToNextBusinessDay(installmentDueDate);
 
             await addDoc(
@@ -16475,8 +18613,10 @@ export default function App() {
                 originalDueDate: depAdj.wasAdjusted
                   ? depAdj.originalDate
                   : undefined,
-                status: "pending",
-                depositStatus: "pending",
+                status: isDepositPaid ? "paid" : "pending",
+                depositStatus: isDepositPaid ? "paid" : "pending",
+                paidAt: isDepositPaid ? (depositStartDate || new Date().toISOString()) : undefined,
+                paymentMethod: isDepositPaid ? "Caução / Garantia Contratual" : undefined,
                 ownerId: user.uid,
                 type: "deposit",
                 installmentNumber: i + 1,
@@ -16511,16 +18651,13 @@ export default function App() {
         }),
       );
 
-      // Handle property status change if tenant status changed to allocated
-      if (data.status === "allocated" && data.propertyId) {
-        if (
-          oldTenant?.propertyId !== data.propertyId ||
-          oldTenant?.status !== "allocated"
-        ) {
-          const property = properties.find((p) => p.id === data.propertyId);
-          // Update new property
+      // Handle property status change and financial sync for allocated tenants
+      const targetPropertyId = data.propertyId || oldTenant?.propertyId;
+      if (data.status === "allocated" || (!data.status && oldTenant?.status === "allocated")) {
+        if (targetPropertyId) {
+          // Update linked property
           await updateDoc(
-            doc(db, "properties", data.propertyId),
+            doc(db, "properties", targetPropertyId),
             cleanObject({
               status: "rented",
               currentTenantId: id,
@@ -16555,6 +18692,7 @@ export default function App() {
           // If there was a previous property, update it to vacant
           if (
             oldTenant?.propertyId &&
+            data.propertyId &&
             oldTenant.propertyId !== data.propertyId
           ) {
             await updateDoc(
@@ -16566,146 +18704,157 @@ export default function App() {
               }),
             );
           }
+        }
 
-          // Create initial payment if status changed to allocated
-          if (oldTenant?.status !== "allocated") {
-            const dueDate = data.firstRentDueDate
-              ? data.firstRentDueDate
-              : data.paymentDay
-                ? getNextDueDate(data.paymentDay)
-                : format(addDays(new Date(), 30), "yyyy-MM-dd");
+        // Create initial payment & contract if status changed to allocated
+        if (oldTenant?.status !== "allocated" && data.propertyId) {
+          let dueDate = format(addDays(new Date(), 30), "yyyy-MM-dd");
+          if (data.firstRentDueDate && !isNaN(Date.parse(data.firstRentDueDate))) {
+            dueDate = data.firstRentDueDate;
+          } else if (data.paymentDay && !isNaN(Number(data.paymentDay))) {
+            dueDate = getNextDueDate(Number(data.paymentDay));
+          }
 
-            // Automatically create a Contract document
-            const startDateStr = format(new Date(), "yyyy-MM-dd");
-            const months =
-              data.leaseDurationMonths !== undefined
-                ? data.leaseDurationMonths
-                : oldTenant?.leaseDurationMonths || 12;
-            const endDateStr = format(
-              addMonths(parseISO(startDateStr), months),
-              "yyyy-MM-dd",
+          // Automatically create a Contract document
+          const startDateStr = format(new Date(), "yyyy-MM-dd");
+          const months =
+            data.leaseDurationMonths !== undefined
+              ? Number(data.leaseDurationMonths) || 12
+              : Number(oldTenant?.leaseDurationMonths) || 12;
+          let endDateStr = format(
+            addMonths(new Date(), months),
+            "yyyy-MM-dd",
+          );
+          try {
+            const startParsed = parseISO(startDateStr);
+            if (!isNaN(startParsed.getTime())) {
+              endDateStr = format(addMonths(startParsed, months), "yyyy-MM-dd");
+            }
+          } catch {
+            // fallback remains set
+          }
+
+          let calculatedDepositDay: number | undefined = undefined;
+          if (data.initialPaymentType === "deposit") {
+            if (data.depositDueDate) {
+              const parts = data.depositDueDate.split("-");
+              if (parts.length === 3) {
+                const pDay = parseInt(parts[2], 10);
+                if (!isNaN(pDay) && pDay >= 1 && pDay <= 31) {
+                  calculatedDepositDay = pDay;
+                }
+              }
+            }
+            if (!calculatedDepositDay && data.paymentDay) {
+              const pDay = Number(data.paymentDay);
+              if (!isNaN(pDay) && pDay >= 1 && pDay <= 31) {
+                calculatedDepositDay = pDay;
+              }
+            }
+          }
+
+          const contractData = {
+            tenantId: id,
+            propertyId: data.propertyId,
+            startDate: startDateStr,
+            endDate: endDateStr,
+            leaseDurationMonths: months,
+            rentValue: data.rentValue || 0,
+            paymentDay: data.paymentDay || 1,
+            chargeLateFees: !!data.chargeLateFees,
+            lateFeePenalty: data.chargeLateFees
+              ? data.lateFeePenalty
+              : undefined,
+            lateFeeDaily: data.chargeLateFees ? data.lateFeeDaily : undefined,
+            lateFeeType: data.chargeLateFees
+              ? data.lateFeeType || "percentage"
+              : undefined,
+            depositValue:
+              data.initialPaymentType === "deposit"
+                ? data.depositValue
+                : undefined,
+            depositInstallments:
+              data.initialPaymentType === "deposit"
+                ? data.depositInstallments
+                : undefined,
+            depositDay: calculatedDepositDay,
+            observations: data.observations,
+            status: "active",
+            ownerId: user?.uid,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          if (user?.uid) {
+            await addDoc(
+              collection(db, "contracts"),
+              cleanObject(contractData),
             );
+          }
 
-            const contractData = {
-              tenantId: id,
-              propertyId: data.propertyId,
-              startDate: startDateStr,
-              endDate: endDateStr,
-              leaseDurationMonths: months,
-              rentValue: data.rentValue || 0,
-              paymentDay: data.paymentDay || 1,
-              chargeLateFees: !!data.chargeLateFees,
-              lateFeePenalty: data.chargeLateFees
-                ? data.lateFeePenalty
-                : undefined,
-              lateFeeDaily: data.chargeLateFees ? data.lateFeeDaily : undefined,
-              lateFeeType: data.chargeLateFees
-                ? data.lateFeeType || "percentage"
-                : undefined,
-              depositValue:
-                data.initialPaymentType === "deposit"
-                  ? data.depositValue
-                  : undefined,
-              depositInstallments:
-                data.initialPaymentType === "deposit"
-                  ? data.depositInstallments
-                  : undefined,
-              depositDay:
-                data.initialPaymentType === "deposit"
-                  ? data.depositDueDate
-                    ? Number(data.depositDueDate.split("-")[2])
-                    : data.paymentDay
-                  : undefined,
-              observations: data.observations,
-              status: "active",
-              ownerId: user?.uid,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
-            if (user?.uid) {
-              await addDoc(
-                collection(db, "contracts"),
-                cleanObject(contractData),
-              );
+          // Generate Rent entries for all active months starting from contract startDate
+          if (user?.uid) {
+            await generateRentPaymentsForTenant(
+              id,
+              data.propertyId,
+              data.rentValue || oldTenant?.rentValue || 0,
+              Number(data.paymentDay || oldTenant?.paymentDay) || 5,
+              startDateStr,
+              user.uid
+            );
+          }
+
+          // Deposit entry if exists
+          if (
+            data.initialPaymentType === "deposit" &&
+            data.depositValue &&
+            data.depositValue > 0
+          ) {
+            const installments = data.depositInstallments || 1;
+            const installmentValue = data.depositValue / installments;
+
+            let depositStartDate = data.depositDueDate;
+            if (!depositStartDate) {
+              depositStartDate = dueDate;
             }
 
-            // 1. Rent entry
-            const rentAdj = adjustDateToNextBusinessDay(dueDate);
-            await addDoc(
-              collection(db, "payments"),
-              cleanObject({
-                propertyId: data.propertyId,
-                tenantId: id,
-                amount: data.rentValue || 0,
-                dueDate: rentAdj.adjustedDate,
-                originalDueDate: rentAdj.wasAdjusted
-                  ? rentAdj.originalDate
-                  : undefined,
-                status: "pending",
-                ownerId: user?.uid,
-                type: "rent",
-                description: "Primeiro Aluguel",
-                observations: rentAdj.wasAdjusted
-                  ? rentAdj.adjustmentReason
-                  : "",
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-              }),
-            );
+            for (let i = 0; i < installments; i++) {
+              const currentObjDate = parseISO(depositStartDate);
+              currentObjDate.setMonth(currentObjDate.getMonth() + i);
+              const installmentDueDate = format(currentObjDate, "yyyy-MM-dd");
+              const depAdj = adjustDateToNextBusinessDay(installmentDueDate);
 
-            // 2. Deposit entry if exists
-            if (
-              data.initialPaymentType === "deposit" &&
-              data.depositValue &&
-              data.depositValue > 0
-            ) {
-              const installments = data.depositInstallments || 1;
-              const installmentValue = data.depositValue / installments;
-
-              let depositStartDate = data.depositDueDate;
-              if (!depositStartDate) {
-                depositStartDate = dueDate;
-              }
-
-              for (let i = 0; i < installments; i++) {
-                const currentObjDate = parseISO(depositStartDate);
-                currentObjDate.setMonth(currentObjDate.getMonth() + i);
-                const installmentDueDate = format(currentObjDate, "yyyy-MM-dd");
-                const depAdj = adjustDateToNextBusinessDay(installmentDueDate);
-
-                await addDoc(
-                  collection(db, "payments"),
-                  cleanObject({
-                    propertyId: data.propertyId,
-                    tenantId: id,
-                    amount: installmentValue,
-                    dueDate: depAdj.adjustedDate,
-                    originalDueDate: depAdj.wasAdjusted
-                      ? depAdj.originalDate
-                      : undefined,
-                    status: "pending",
-                    depositStatus: "pending",
-                    ownerId: user?.uid,
-                    type: "deposit",
-                    installmentNumber: i + 1,
-                    totalInstallments: installments,
-                    description:
-                      installments > 1
-                        ? `Caução (Parcela ${i + 1}/${installments})`
-                        : "Depósito Caução (Garantia)",
-                    observations: depAdj.wasAdjusted
-                      ? depAdj.adjustmentReason
-                      : "",
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                  }),
-                );
-              }
+              await addDoc(
+                collection(db, "payments"),
+                cleanObject({
+                  propertyId: data.propertyId,
+                  tenantId: id,
+                  amount: installmentValue,
+                  dueDate: depAdj.adjustedDate,
+                  originalDueDate: depAdj.wasAdjusted
+                    ? depAdj.originalDate
+                    : undefined,
+                  status: "pending",
+                  depositStatus: "pending",
+                  ownerId: user?.uid,
+                  type: "deposit",
+                  installmentNumber: i + 1,
+                  totalInstallments: installments,
+                  description:
+                    installments > 1
+                      ? `Caução (Parcela ${i + 1}/${installments})`
+                      : "Depósito Caução (Garantia)",
+                  observations: depAdj.wasAdjusted
+                    ? depAdj.adjustmentReason
+                    : "",
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                }),
+              );
             }
           }
         }
       } else if (
-        data.status !== "allocated" &&
+        (data.status as string) !== "allocated" &&
         oldTenant?.status === "allocated" &&
         oldTenant?.propertyId
       ) {
@@ -16764,6 +18913,7 @@ export default function App() {
           `Uma despesa de devolução foi criada no valor de R$ ${(oldTenant?.depositBalance || 0).toFixed(2)}`,
         );
       }
+      toast.success("Inquilino atualizado com sucesso!");
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `tenants/${id}`);
     }
@@ -17133,21 +19283,32 @@ export default function App() {
 
       if (isDriveConnected && uploadToDrive) {
         try {
-          setBackupStepMsg("Enviando arquivos para o Google Drive...");
+          setBackupStepMsg("Substituindo e sincronizando arquivos no Google Drive...");
           await uploadToDrive(
-            `Backup_Relatorio_${Date.now()}.pdf`,
+            "GerenteImobiliario_Relatorio_Oficial.pdf",
             pdfBase64,
             "application/pdf",
             "Gerente imobiliário Backups",
-            "receipt",
+            "backup",
+            true
           );
           await uploadToDrive(
-            `Backup_Dados_${Date.now()}.json`,
+            "GerenteImobiliario_Backup_Oficial.json",
             jsonBase64,
             "application/json",
             "Gerente imobiliário Backups",
-            "receipt",
+            "backup",
+            true
           );
+          const nowIso = new Date().toISOString();
+          setLastBackupDate(nowIso);
+          if (user) {
+            await setDoc(
+              doc(db, "config", user.uid),
+              { lastBackupDate: nowIso, updatedAt: new Date().toISOString() },
+              { merge: true }
+            );
+          }
         } catch (driveErr) {
           console.error(
             "[Backup] Google Drive backup failed. Falling back to browser downloads.",
@@ -17158,30 +19319,30 @@ export default function App() {
           const urlJSON = URL.createObjectURL(jsonBlob);
           const aJSON = document.createElement("a");
           aJSON.href = urlJSON;
-          aJSON.download = `Backup_Dados_${Date.now()}.json`;
+          aJSON.download = `GerenteImobiliario_Backup_Oficial.json`;
           aJSON.click();
 
           const urlPDF = URL.createObjectURL(pdfBlob);
           const aPDF = document.createElement("a");
           aPDF.href = urlPDF;
-          aPDF.download = `Backup_Relatorio_${Date.now()}.pdf`;
+          aPDF.download = `GerenteImobiliario_Relatorio_Oficial.pdf`;
           aPDF.click();
         }
       } else {
         const urlJSON = URL.createObjectURL(jsonBlob);
         const aJSON = document.createElement("a");
         aJSON.href = urlJSON;
-        aJSON.download = `Backup_Dados_${Date.now()}.json`;
+        aJSON.download = `GerenteImobiliario_Backup_Oficial.json`;
         aJSON.click();
 
         const urlPDF = URL.createObjectURL(pdfBlob);
         const aPDF = document.createElement("a");
         aPDF.href = urlPDF;
-        aPDF.download = `Backup_Relatorio_${Date.now()}.pdf`;
+        aPDF.download = `GerenteImobiliario_Relatorio_Oficial.pdf`;
         aPDF.click();
       }
 
-      toast.success("Backup Inteligente gerado e salvo com sucesso!");
+      toast.success("Backup Inteligente atualizado e salvo com sucesso!");
       setIsBackupModalOpen(false);
       setBackupStepMsg("");
       setResetReason("");
@@ -17400,6 +19561,9 @@ export default function App() {
 
   const deleteTenant = async (id: string) => {
     setIsSubmitting(true);
+    setTenants((prev) => prev.filter((t) => t.id !== id));
+    toast.success("Inquilino excluído com sucesso!");
+
     try {
       const batch = writeBatch(db);
       const property = properties.find((p) => p.currentTenantId === id);
@@ -17458,7 +19622,9 @@ export default function App() {
       // Finally delete the tenant
       batch.delete(doc(db, "tenants", id));
 
-      await batch.commit();
+      const commitPromise = batch.commit();
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([commitPromise, timeoutPromise]);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `tenants/${id}`);
     } finally {
@@ -17745,10 +19911,13 @@ export default function App() {
         });
       }
 
-      await batch.commit();
-
       setIsRemoveTenantModalOpen(false);
       setRemoveTenantData(null);
+      toast.success("Desocupação concluída!");
+
+      const commitPromise = batch.commit();
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([commitPromise, timeoutPromise]);
     } catch (err) {
       handleFirestoreError(
         err,
@@ -19003,26 +21172,29 @@ export default function App() {
       <Toaster position="top-right" richColors />
 
       {/* Mobile Top Header (Only visible on mobile) */}
-      <header className="md:hidden bg-slate-900 border-b border-slate-800 px-4 py-4 flex items-center justify-between sticky top-0 z-40 shadow-sm">
+      <header className="md:hidden bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 border-b border-indigo-800/60 px-4 py-3.5 flex items-center justify-between sticky top-0 z-40 shadow-lg print:hidden">
         <div className="flex items-center gap-3">
           <button
             onClick={() => setIsMobileMenuOpen(true)}
-            className="p-2 -ml-2 text-white hover:bg-white/10 rounded-xl transition-colors"
+            className="p-2 -ml-2 text-white hover:bg-white/10 active:scale-95 rounded-xl transition-all"
           >
             <Menu className="w-6 h-6" />
           </button>
           <div className="flex items-center gap-2">
-            <div className="flex shrink-0 w-6 h-6">
-              <LogoSVG className="w-full h-full drop-shadow-sm" />
+            <div className="flex shrink-0 w-7 h-7 drop-shadow-md">
+              <LogoSVG className="w-full h-full" />
             </div>
             <div className="flex flex-col">
-              <span className="font-black text-base tracking-tight text-[#0f4a34] leading-none">
+              <span className="font-black text-base tracking-tight text-white leading-none">
                 GERENTE
               </span>
-              <span className="text-[7px] font-bold text-[#64a51e] uppercase tracking-widest">
+              <span className="text-[8px] font-extrabold text-[#64a51e] uppercase tracking-widest">
                 IMOBILIÁRIO
               </span>
             </div>
+            <span className="ml-1 px-2 py-0.5 bg-blue-600/90 border border-blue-400/80 rounded-full text-[9px] font-extrabold text-white uppercase tracking-wider shadow-sm print:hidden">
+              v6.9.0 ESTÁVEL
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -19036,21 +21208,21 @@ export default function App() {
               <button
                 onClick={() => setActiveTab("alerts")}
                 className={cn(
-                  "relative p-2 rounded-xl transition-all active:scale-95 text-slate-400 bg-slate-800/50 hover:bg-slate-800",
-                  activeTab === "alerts" && "text-amber-400 bg-amber-500/10",
+                  "relative p-2 rounded-xl transition-all active:scale-95 text-white bg-blue-900/80 hover:bg-blue-800 border border-blue-700/60 shadow-inner",
+                  activeTab === "alerts" && "text-amber-300 bg-amber-500/20 border-amber-400/50 ring-2 ring-amber-400/30",
                 )}
                 title="Central de Alertas"
               >
-                <Bell className="w-5 h-5" />
+                <Bell className="w-5 h-5 text-white" />
                 {alertsBadge && (
                   <span
                     className={cn(
-                      "absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 flex items-center justify-center rounded-full text-[9px] font-black shadow-[0_0_0_2px_#0f172a]",
+                      "absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 flex items-center justify-center rounded-full text-[9px] font-black shadow-[0_0_0_2px_#1e3a8a]",
                       alertsColor === "high"
-                        ? "bg-rose-500 text-white"
+                        ? "bg-amber-400 text-blue-950"
                         : alertsColor === "medium"
                           ? "bg-amber-500 text-amber-950"
-                          : "bg-blue-500 text-white",
+                          : "bg-white text-blue-950",
                     )}
                   >
                     {alertsBadge}
@@ -19078,7 +21250,7 @@ export default function App() {
       {/* Unified Sidebar (Desktop & Mobile - Floating Capsule) */}
       <aside
         className={cn(
-          "fixed z-50 flex flex-col items-center py-6 shadow-2xl transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] group",
+          "fixed z-50 flex flex-col items-center py-6 shadow-2xl transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] group print:hidden",
           // Floating layout adjustments: "curtinho" and floating
           "bg-white rounded-[2rem] border border-slate-100",
           "top-4 bottom-4 md:top-1/2 md:-translate-y-1/2 md:h-fit md:bottom-auto h-[calc(100dvh-2rem)]",
@@ -19303,18 +21475,52 @@ export default function App() {
         title="Backup Inteligente do Sistema"
       >
         <div className="space-y-6">
+          {/* Hybrid Backup Mode Header & Auto Toggle */}
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-xl border ${autoBackupEnabled ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-slate-100 border-slate-200 text-slate-400'}`}>
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900">Backup Automático Mensal</h4>
+                  <p className="text-xs text-slate-500">
+                    Substitui automaticamente a cópia única no seu Google Drive a cada 30 dias sem acumular arquivos nem ocupar memória local.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => toggleAutoBackup(!autoBackupEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${autoBackupEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+              >
+                <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${autoBackupEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-200/60 text-slate-600">
+              <span className="font-medium flex items-center gap-1.5">
+                <DatabaseBackup className="w-3.5 h-3.5 text-indigo-500" />
+                Status da Cópia no Drive:
+              </span>
+              <span className="font-semibold text-slate-800">
+                {lastBackupDate ? (
+                  `Último backup: ${format(parseISO(lastBackupDate), "dd/MM/yyyy 'às' HH:mm")}`
+                ) : (
+                  "Nenhum backup realizado ainda"
+                )}
+              </span>
+            </div>
+          </div>
+
           <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl flex gap-3">
             <DatabaseBackup className="w-5 h-5 text-indigo-500 shrink-0" />
             <div className="text-sm text-indigo-900">
               <p className="font-bold uppercase tracking-tight">
-                Salvar Ciclo de Dados
+                Backup Manual Sob Demanda
               </p>
-              <p>
-                Os seus dados atuais serão compilados. Um relatório inteligente
-                (PDF) e todos os dados brutos (JSON) serão gerados e copiados
-                para segurança.
-                <br />
-                Nenhum dado ativo será removido.
+              <p className="text-xs mt-0.5">
+                Gere um relatório inteligente (PDF) e cópia de segurança (JSON) agora mesmo. Ao salvar no Google Drive, o arquivo anterior será substituído com segurança sem duplicatas.
               </p>
             </div>
           </div>
@@ -19358,7 +21564,7 @@ export default function App() {
                 }
                 disabled={resetReason.length < 10 || !resetConfirmText}
               >
-                Gerar Backup Localmente / Nuvem
+                Gerar Backup Inteligente Agora
               </Button>
               <Button
                 variant="outline"

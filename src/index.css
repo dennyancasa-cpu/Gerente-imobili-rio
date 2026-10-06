@@ -55,3 +55,128 @@
 .markdown-body pre code {
   @apply bg-transparent p-0 text-slate-800;
 }
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 15mm 15mm 20mm 15mm; /* Margem superior 15mm, laterais 15mm e área de segurança inferior de 20mm */
+  }
+  
+  html, body {
+    background: white !important;
+    color: black !important;
+    font-family: "Times New Roman", Times, Georgia, serif !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Reset layout constraints on all ancestor containers during print */
+  #root, main, div, section, article {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+    position: static !important;
+    transform: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Hide everything on the body during print by default */
+  body * {
+    visibility: hidden !important;
+  }
+
+  /* Make ONLY the printable areas and their children visible */
+  #quick-doc-printable-area,
+  #quick-doc-printable-area *,
+  #receipt-content,
+  #receipt-content * {
+    visibility: visible !important;
+  }
+
+  /* Absolute position for printable documents to start at exact top of Page 1 */
+  #quick-doc-printable-area,
+  #receipt-content {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: white !important;
+    color: black !important;
+    font-size: 11pt !important;
+    line-height: 1.5 !important;
+    font-family: "Times New Roman", Times, Georgia, serif !important;
+    overflow: visible !important;
+    display: block !important;
+    box-sizing: border-box !important;
+    min-height: 0 !important;
+  }
+
+  /* Paragraph and block element pagination protection (avoids half-cut text) */
+  #quick-doc-printable-area p,
+  #quick-doc-printable-area div,
+  #quick-doc-printable-area li,
+  #quick-doc-printable-area blockquote,
+  #receipt-content p,
+  #receipt-content div,
+  #receipt-content li {
+    orphans: 3 !important;
+    widows: 3 !important;
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+    line-height: 1.6 !important;
+    margin-bottom: 0.8em !important;
+  }
+
+  /* Headings must never be orphaned at the bottom of a page */
+  #quick-doc-printable-area h1,
+  #quick-doc-printable-area h2,
+  #quick-doc-printable-area h3,
+  #quick-doc-printable-area h4,
+  #quick-doc-printable-area h5,
+  #quick-doc-printable-area h6,
+  #receipt-content h1,
+  #receipt-content h2,
+  #receipt-content h3,
+  #receipt-content h4 {
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    margin-top: 1.2em !important;
+    margin-bottom: 0.5em !important;
+  }
+
+  /* Keep signature blocks, tables, and clauses together on the same page */
+  #quick-doc-printable-area .signature-block,
+  #quick-doc-printable-area .avoid-break,
+  #quick-doc-printable-area tr,
+  #quick-doc-printable-area table,
+  #receipt-content .signature-block,
+  #receipt-content tr,
+  #receipt-content table {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  /* Force strip all yellow/green background highlights and mark tags */
+  mark, span, div, p, strong, h1, h2, h3, h4, li, td, th {
+    background-color: transparent !important;
+    background: transparent !important;
+    color: black !important;
+    text-shadow: none !important;
+  }
+}

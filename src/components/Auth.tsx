@@ -161,11 +161,10 @@ export const Auth: React.FC<AuthProps> = ({ onTenantLogin }) => {
     setError(null);
     setLoading(true);
     try {
+      // Standard Google Auth provider without sensitive scopes during initial login
+      // Sensitive scopes (Drive, Calendar, Tasks) require verification on GCP or being added as Test Users.
+      // Basic login only requires default profile/email which works for all users.
       const provider = new GoogleAuthProvider();
-      provider.addScope('https://www.googleapis.com/auth/drive.file');
-      provider.addScope('https://www.googleapis.com/auth/calendar');
-      provider.addScope('https://www.googleapis.com/auth/tasks');
-      provider.addScope('https://www.googleapis.com/auth/tasks.readonly');
       const result = await signInWithPopup(auth, provider);
       
       const credential = GoogleAuthProvider.credentialFromResult(result);
@@ -209,8 +208,16 @@ export const Auth: React.FC<AuthProps> = ({ onTenantLogin }) => {
         }
       }
     } catch (err: any) {
-      console.error(err);
-      setError('Falha ao entrar com Google. Verifique se popups estão permitidos e libere acesso ao Drive.');
+      console.error('Google Sign-In Error:', err);
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('O método de login pelo Google precisa ser ativado na aba Authentication do console do Firebase.');
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        setError('A janela do Google foi fechada antes de concluir o login.');
+      } else if (err.code === 'auth/popup-blocked') {
+        setError('O navegador bloqueou a janela pop-up. Por favor, permita pop-ups para este site.');
+      } else {
+        setError('Falha ao entrar com Google. Tente fazer login digitando e-mail e senha.');
+      }
     } finally {
       setLoading(false);
     }
@@ -227,8 +234,14 @@ export const Auth: React.FC<AuthProps> = ({ onTenantLogin }) => {
     try {
       await signInWithEmailAndPassword(auth, email, password);
     } catch (err: any) {
-      console.error(err);
-      setError('E-mail ou senha incorretos.');
+      console.error('Email Login Error:', err);
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('O método de login por E-mail e Senha não está habilitado no Firebase Authentication.');
+      } else if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        setError('E-mail ou senha incorretos.');
+      } else {
+        setError('Falha ao fazer login. Verifique seus dados e tente novamente.');
+      }
     } finally {
       setLoading(false);
     }
@@ -251,11 +264,17 @@ export const Auth: React.FC<AuthProps> = ({ onTenantLogin }) => {
       await updateProfile(userCredential.user, { displayName: name });
       // User is logged in automatically after registration
     } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/email-already-in-use') {
-        setError('Este e-mail já está em uso.');
+      console.error('Register Error:', err);
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('O cadastro por E-mail e Senha precisa ser ativado no Firebase Console (Authentication > Sign-in method).');
+      } else if (err.code === 'auth/email-already-in-use') {
+        setError('Este e-mail já está cadastrado. Clique em "Faça login" abaixo para acessar sua conta ou redefinir a senha.');
+      } else if (err.code === 'auth/invalid-email') {
+        setError('Endereço de e-mail inválido.');
+      } else if (err.code === 'auth/weak-password') {
+        setError('A senha é muito fraca. Use pelo menos 6 caracteres.');
       } else {
-        setError('Falha ao criar conta. Tente novamente.');
+        setError(err.message || 'Falha ao criar conta. Tente novamente.');
       }
     } finally {
       setLoading(false);
