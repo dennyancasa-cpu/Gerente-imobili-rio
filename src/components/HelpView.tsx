@@ -6,7 +6,7 @@ import {
   Wrench, Cloud, Bell, Smartphone, RefreshCw, FileText, ArrowRightLeft, Search,
   Zap, LifeBuoy, FileSearch, TrendingUp, ShieldCheck, GraduationCap, Compass,
   ChevronDown, ArrowRight, Play, Settings, Layers, Building2, Check, HelpCircle,
-  MapPin, Volume2, ExternalLink, QrCode, Warehouse
+  MapPin, Volume2, ExternalLink, QrCode, Warehouse, DatabaseBackup, RotateCcw, History
 } from 'lucide-react';
 import { Payment, Property, Tenant } from '../types';
 import { SetupGuideModal } from './SetupGuideModal';
@@ -357,13 +357,28 @@ export function HelpView({
       actionQuestion: 'Como funciona o Aluguel de Espaço e Garagens?'
     },
     {
+      id: 'update-backup-restore',
+      tag: 'Segurança & Versões',
+      badgeColor: 'bg-emerald-600 text-white',
+      borderColor: 'border-emerald-200 bg-emerald-50/50',
+      icon: <DatabaseBackup className="w-6 h-6 text-emerald-600" />,
+      title: 'Backup Inteligente, Restauração & Versões de Contratos',
+      description: 'Gere backup em 1 clique, restaure bancos a partir de JSON/Drive e recupere vias antigas de contratos.',
+      highlights: [
+        'Backup sem burocracia: gere cópia oficial JSON e relatório IA em PDF com 1 clique, sem digitação de e-mail.',
+        'Assistente de Restauração: suba o arquivo .json ou puxe do Google Drive com prévia de contadores antes de aplicar.',
+        'Histórico e Restauração de Contratos: ao trocar a via de um contrato, a anterior é preservada e pode ser recuperada a qualquer momento.'
+      ],
+      actionQuestion: 'Como funciona a restauração de backup e versões de contratos?'
+    },
+    {
       id: 'update-pwa',
       tag: 'App Offline & Nuvem',
       badgeColor: 'bg-slate-700 text-white',
       borderColor: 'border-slate-200 bg-slate-50',
       icon: <Cloud className="w-6 h-6 text-slate-700" />,
-      title: 'PWA Nativo, Modo Offline & Backup no Google Drive',
-      description: 'Aplicativo instalável na tela de início com funcionamento sem internet e backup seguro.',
+      title: 'PWA Nativo, Modo Offline & Nuvem Google',
+      description: 'Aplicativo instalável na tela de início com funcionamento sem internet e sincronização segura.',
       highlights: [
         'Instalação no Android (Chrome), iOS (Safari "Adicionar à Tela de Início") e Desktop como app nativo.',
         'Cache offline completo via Service Worker v14: acesse seus imóveis mesmo sem sinal de internet.',
@@ -679,6 +694,21 @@ export function HelpView({
         'Conecte o Google Drive para que comprovantes, laudos e recibos fiquem salvos na sua nuvem pessoal.',
         'Instale o app na tela inicial do celular (Android via Chrome / iOS via Safari "Compartilhar").',
         'O sistema armazena dados localmente e funciona mesmo quando você estiver sem internet!'
+      ]
+    },
+    {
+      id: 'backup-restore-system',
+      badge: 'Segurança & Recuperação',
+      badgeColor: 'bg-emerald-600 text-white',
+      title: 'Backup Inteligente, Restauração & Versões de Contratos',
+      icon: <DatabaseBackup className="w-6 h-6 text-emerald-600" />,
+      bg: 'bg-emerald-50/50 border-emerald-100',
+      description: 'Cópia preventiva em 1 clique, restauração de dados via JSON ou Google Drive e histórico de vias de contratos.',
+      steps: [
+        'Backup sem Burocracia: Abra o modal de Backup e clique em "Gerar e Baixar Backup Agora". O pacote .json e o relatório PDF com IA são gerados instantaneamente e baixados localmente, além de sincronizados com o Drive.',
+        'Backup Automático Mensal: A cada 30 dias uma cópia atualizada é enviada silenciosamente para o Google Drive sem ocupar espaço no seu celular.',
+        'Restauração de Dados (Restore): Na aba "Restaurar Backup", envie seu arquivo .json ou clique em "Buscar do Drive". O sistema exibe um resumo com a contagem de imóveis, inquilinos, contratos e pagamentos antes de aplicar a mesclagem segura.',
+        'Histórico de Versões do Contrato: Ao editar um contrato e anexar uma nova via, a versão anterior fica guardada automaticamente. Na lista de contratos, clique no botão de versões para visualizar ou restaurar vias antigas com 1 clique!'
       ]
     }
   ];

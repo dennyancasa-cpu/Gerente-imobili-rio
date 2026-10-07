@@ -190,6 +190,7 @@ import { LegalDocsView } from "./components/LegalDocsView";
 import { PermissionsOnboardingModal } from "./components/PermissionsOnboardingModal";
 import { NotificationSettingsCard } from "./components/NotificationSettingsCard";
 import { PropertyLocationSearch, PropertyLocationMapViewer } from "./components/PropertyLocationMap";
+import { formatOfficialAddress } from "./utils/addressHelpers";
 import {
   requestNativeNotificationPermission,
   triggerTestVencimentoNotification,
@@ -2405,6 +2406,8 @@ const PropertiesView = ({
     renovationImages: [] as PropertyInspectionImage[],
   });
 
+  const [showManualAddressFields, setShowManualAddressFields] = useState(false);
+
   const handleFetchCep = async (cepInput: string) => {
     const cleanCep = cepInput.replace(/\D/g, "");
     if (cleanCep.length !== 8) {
@@ -2455,9 +2458,12 @@ const PropertiesView = ({
     setCreateTenantAfterSave(false);
     if (p) {
       setEditingProperty(p);
+      const official = p.officialAddress || formatOfficialAddress(p) || p.address || "";
+      setShowManualAddressFields(false);
       setFormData({
         name: p.name || "",
-        address: p.address || "",
+        address: official || p.address || "",
+        officialAddress: official,
         status: p.status || "vacant",
         rentValue: p.rentValue || 0,
         condoFee: p.condoFee || 0,
@@ -2509,9 +2515,11 @@ const PropertiesView = ({
       });
     } else {
       setEditingProperty(null);
+      setShowManualAddressFields(false);
       setFormData({
         name: "",
         address: "",
+        officialAddress: "",
         lat: undefined,
         lng: undefined,
         placeId: undefined,
@@ -2659,17 +2667,22 @@ const PropertiesView = ({
     const city = formData.city?.trim() || "";
     const state = formData.state?.trim() || "";
     const complement = formData.complement?.trim() || "";
+    const cep = formData.cep?.trim() || "";
 
-    // Generate fullAddress if not explicitly typed or update it cleanly
-    let fullAddress = formData.address?.trim() || "";
-    if (!fullAddress && (street || city)) {
-      const parts = [];
-      if (street) parts.push(street + (number ? `, ${number}` : ""));
-      if (complement) parts.push(`(${complement})`);
-      if (neighborhood) parts.push(neighborhood);
-      if (city || state) parts.push(`${city}${state ? "/" + state : ""}`);
-      fullAddress = parts.join(" - ");
-    }
+    // Generate standardized official address
+    const officialAddress = formatOfficialAddress({
+      street,
+      number,
+      complement,
+      neighborhood,
+      city,
+      state,
+      cep,
+      address: formData.address,
+      officialAddress: formData.officialAddress,
+    });
+
+    const fullAddress = officialAddress || formData.address?.trim() || "";
 
     // Auto-fill property name if omitted
     if (!name) {
@@ -2689,12 +2702,14 @@ const PropertiesView = ({
       ...formData,
       name,
       address: fullAddress,
+      officialAddress: fullAddress,
       street,
       number,
       complement,
       neighborhood,
       city,
       state,
+      cep,
       currentTenantId: isNewTenantSelected ? "" : (formData.currentTenantId || ""),
       status: isNewTenantSelected ? "vacant" : (formData.status || "vacant"),
       isActive: formData.isActive !== false,
@@ -16730,6 +16745,14 @@ export default function App() {
   const [autoBackupEnabled, setAutoBackupEnabled] = useState(true);
   const [lastBackupDate, setLastBackupDate] = useState<string | null>(null);
   const [isAutoBackupRunning, setIsAutoBackupRunning] = useState(false);
+  const [backupActiveTab, setBackupActiveTab] = useState<'create' | 'restore'>('create');
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreParsedData, setRestoreParsedData] = useState<any | null>(null);
+  const [restoreSummary, setRestoreSummary] = useState<Record<string, number>>({});
+  const [restoreMode, setRestoreMode] = useState<'merge' | 'replace'>('merge');
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState(0);
+  const [isFetchingDriveBackup, setIsFetchingDriveBackup] = useState(false);
   const [agreementForm, setAgreementForm] = useState<Partial<Agreement>>({
     tenantId: "",
     description: "",
@@ -19375,20 +19398,6 @@ export default function App() {
   const handleBackupSystem = async () => {
     if (!user) return;
 
-    if (resetConfirmText.trim().toLowerCase() !== user.email?.toLowerCase()) {
-      toast.error(
-        "Para confirmar o backup, digite seu e-mail exatamente como aparece no sistema.",
-      );
-      return;
-    }
-
-    if (!resetReason || resetReason.length < 10) {
-      toast.error(
-        "Por favor, informe um motivo válido longo e detalhado (mínimo 10 caracteres).",
-      );
-      return;
-    }
-
     setLoading(true);
     try {
       const collections = [
@@ -19399,7 +19408,13 @@ export default function App() {
         "agreements",
         "contracts",
         "tickets",
+        "storages",
       ];
+
+      const effectiveReason =
+        resetReason && resetReason.trim().length > 0
+          ? resetReason.trim()
+          : `Backup de segurança dos dados gerado em ${new Date().toLocaleDateString("pt-BR")}`;
 
       setBackupStepMsg("Organizando dados para backup...");
 
@@ -19422,14 +19437,14 @@ export default function App() {
 
       // Generating Gemini Report
       setBackupStepMsg("Gerando relatório com Inteligência Artificial...");
-      const summaryText = await generateBackupSummary(systemData, resetReason);
+      const summaryText = await generateBackupSummary(systemData, effectiveReason);
 
       // Generating JSON Payload
       setBackupStepMsg("Gerando pacote compactado (JSON)...");
       const backupPayload = JSON.stringify(
         {
           timestamp: new Date().toISOString(),
-          reason: resetReason,
+          reason: effectiveReason,
           summary: summaryText,
           data: allDocsToProcess,
         },
@@ -19444,7 +19459,7 @@ export default function App() {
       docPdf.text("Relatório de Backup", 20, 20);
       docPdf.setFontSize(10);
       docPdf.text(`Data: ${new Date().toLocaleDateString("pt-BR")}`, 20, 30);
-      docPdf.text(`Motivo: ${resetReason}`, 20, 40);
+      docPdf.text(`Motivo: ${effectiveReason}`, 20, 40);
 
       const splitText = docPdf.splitTextToSize(summaryText, 170);
       docPdf.text(splitText, 20, 50);
@@ -19496,7 +19511,7 @@ export default function App() {
             "[Backup] Google Drive backup failed. Falling back to browser downloads.",
             driveErr,
           );
-          toast.error("Upload falhou. Iniciando download local.");
+          toast.error("Upload no Drive falhou. Disparando download local.");
 
           const urlJSON = URL.createObjectURL(jsonBlob);
           const aJSON = document.createElement("a");
@@ -19524,7 +19539,7 @@ export default function App() {
         aPDF.click();
       }
 
-      toast.success("Backup Inteligente atualizado e salvo com sucesso!");
+      toast.success("Backup Inteligente gerado e salvo com sucesso!");
       setIsBackupModalOpen(false);
       setBackupStepMsg("");
       setResetReason("");
@@ -19533,6 +19548,136 @@ export default function App() {
     } finally {
       setLoading(false);
       setBackupStepMsg("");
+    }
+  };
+
+  const handleParseBackupJson = (jsonString: string) => {
+    try {
+      const parsed = JSON.parse(jsonString);
+      if (!parsed) {
+        throw new Error("Arquivo vazio ou inválido.");
+      }
+
+      let docsList: { coll: string; id: string; data: any }[] = [];
+      if (Array.isArray(parsed.data)) {
+        docsList = parsed.data;
+      } else {
+        const knownCollections = [
+          "properties",
+          "tenants",
+          "expenses",
+          "payments",
+          "agreements",
+          "contracts",
+          "tickets",
+          "storages",
+          "staging_records",
+          "custom_alerts",
+        ];
+        knownCollections.forEach((col) => {
+          if (Array.isArray(parsed[col])) {
+            parsed[col].forEach((d: any) => {
+              if (d && d.id) docsList.push({ coll: col, id: d.id, data: d });
+            });
+          }
+        });
+      }
+
+      if (docsList.length === 0) {
+        throw new Error("Nenhum registro reconhecido no arquivo de backup.");
+      }
+
+      const summary: Record<string, number> = {};
+      docsList.forEach((item) => {
+        if (item.coll) {
+          summary[item.coll] = (summary[item.coll] || 0) + 1;
+        }
+      });
+
+      setRestoreParsedData({ ...parsed, normalizedDocs: docsList });
+      setRestoreSummary(summary);
+      toast.success(`Backup reconhecido: ${docsList.length} itens encontrados!`);
+    } catch (err: any) {
+      console.error("Backup parse error:", err);
+      toast.error(`Erro ao processar backup: ${err.message || "Arquivo inválido"}`);
+      setRestoreParsedData(null);
+      setRestoreSummary({});
+    }
+  };
+
+  const handleFetchDriveBackup = async () => {
+    if (!isDriveConnected) {
+      toast.error("Conecte sua conta do Google Drive primeiro.");
+      return;
+    }
+    setIsFetchingDriveBackup(true);
+    try {
+      const storedTokens = localStorage.getItem("google_drive_tokens");
+      const headers: Record<string, string> = {};
+      if (storedTokens) headers["X-Drive-Tokens"] = storedTokens;
+
+      const res = await fetch("/api/drive/latest-backup", { headers, credentials: "include" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Nenhum backup encontrado no Google Drive.");
+      }
+      const json = await res.json();
+      if (!json.backupData) throw new Error("Dados de backup não encontrados na resposta.");
+
+      handleParseBackupJson(JSON.stringify(json.backupData));
+      toast.success(`Backup do Drive carregado com sucesso! (${json.fileName})`);
+    } catch (e: any) {
+      toast.error(`Falha ao buscar backup do Drive: ${e.message}`);
+    } finally {
+      setIsFetchingDriveBackup(false);
+    }
+  };
+
+  const handleExecuteRestore = async () => {
+    if (!user || !restoreParsedData?.normalizedDocs || restoreParsedData.normalizedDocs.length === 0) {
+      toast.error("Nenhum dado selecionado para restauração.");
+      return;
+    }
+
+    setIsRestoring(true);
+    setRestoreProgress(0);
+    try {
+      const docsToRestore: { coll: string; id: string; data: any }[] = restoreParsedData.normalizedDocs;
+      const totalDocs = docsToRestore.length;
+      const chunkSize = 400;
+      let processed = 0;
+
+      for (let i = 0; i < totalDocs; i += chunkSize) {
+        const chunk = docsToRestore.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+
+        chunk.forEach((item) => {
+          if (!item.coll || !item.id) return;
+          const docRef = doc(db, item.coll, item.id);
+          const cleanDocData = cleanObject({
+            ...item.data,
+            ownerId: user.uid,
+          });
+          batch.set(docRef, cleanDocData, { merge: restoreMode === "merge" });
+        });
+
+        await batch.commit();
+        processed += chunk.length;
+        setRestoreProgress(Math.min(100, Math.round((processed / totalDocs) * 100)));
+      }
+
+      toast.success(`Restauração concluída com sucesso! ${totalDocs} registros recuperados.`);
+      setIsBackupModalOpen(false);
+      setRestoreParsedData(null);
+      setRestoreSummary({});
+      setRestoreFile(null);
+    } catch (err: any) {
+      console.error("Erro durante restauração:", err);
+      handleFirestoreError(err, OperationType.WRITE, "restore-backup");
+      toast.error(`Falha ao restaurar dados: ${err.message || "Erro no banco"}`);
+    } finally {
+      setIsRestoring(false);
+      setRestoreProgress(0);
     }
   };
 
@@ -20630,6 +20775,7 @@ export default function App() {
             contracts={contracts}
             properties={properties}
             tenants={tenants}
+            payments={payments}
             storages={storages}
             onSecurityCheck={executeWithSecurity}
             isDriveConnected={isDriveConnected}
@@ -21669,107 +21815,364 @@ export default function App() {
         title="Backup Inteligente do Sistema"
       >
         <div className="space-y-6">
-          {/* Hybrid Backup Mode Header & Auto Toggle */}
-          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className={`p-2.5 rounded-xl border ${autoBackupEnabled ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-slate-100 border-slate-200 text-slate-400'}`}>
-                  <Clock className="w-5 h-5" />
+          {/* Navegação entre Criar Backup e Restaurar Backup */}
+          <div className="flex bg-slate-100 p-1 rounded-2xl gap-1">
+            <button
+              type="button"
+              onClick={() => setBackupActiveTab("create")}
+              className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                backupActiveTab === "create"
+                  ? "bg-white text-indigo-700 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <DatabaseBackup className="w-4 h-4" /> Criar Backup (Exportar)
+            </button>
+            <button
+              type="button"
+              onClick={() => setBackupActiveTab("restore")}
+              className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                backupActiveTab === "restore"
+                  ? "bg-white text-indigo-700 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <RotateCcw className="w-4 h-4" /> Restaurar Backup (Recuperar)
+            </button>
+          </div>
+
+          {backupActiveTab === "create" ? (
+            <div className="space-y-5 animate-in fade-in duration-200">
+              {/* Hybrid Backup Mode Header & Auto Toggle */}
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2.5 rounded-xl border ${autoBackupEnabled ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-slate-100 border-slate-200 text-slate-400'}`}>
+                      <Clock className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-900">Backup Automático Mensal</h4>
+                      <p className="text-xs text-slate-500">
+                        Substitui automaticamente a cópia única no seu Google Drive a cada 30 dias sem acumular arquivos nem ocupar memória local.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleAutoBackup(!autoBackupEnabled)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${autoBackupEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                  >
+                    <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${autoBackupEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
                 </div>
-                <div>
-                  <h4 className="text-sm font-bold text-slate-900">Backup Automático Mensal</h4>
-                  <p className="text-xs text-slate-500">
-                    Substitui automaticamente a cópia única no seu Google Drive a cada 30 dias sem acumular arquivos nem ocupar memória local.
+
+                <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-200/60 text-slate-600">
+                  <span className="font-medium flex items-center gap-1.5">
+                    <DatabaseBackup className="w-3.5 h-3.5 text-indigo-500" />
+                    Status da Cópia no Drive:
+                  </span>
+                  <span className="font-semibold text-slate-800">
+                    {lastBackupDate ? (
+                      `Último backup: ${format(parseISO(lastBackupDate), "dd/MM/yyyy 'às' HH:mm")}`
+                    ) : (
+                      "Nenhum backup realizado ainda"
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-4 bg-indigo-50/70 border border-indigo-100 rounded-2xl flex gap-3">
+                <DatabaseBackup className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+                <div className="text-sm text-indigo-950">
+                  <p className="font-bold uppercase tracking-tight text-xs text-indigo-700">
+                    Backup Manual Sob Demanda (1 Clique)
+                  </p>
+                  <p className="text-xs mt-1 leading-relaxed text-indigo-900">
+                    Gere o pacote oficial compactado (JSON) e o Relatório Executivo com IA (PDF). Ao confirmar, os arquivos são salvos no Google Drive e baixados imediatamente no seu navegador para garantia dupla.
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => toggleAutoBackup(!autoBackupEnabled)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${autoBackupEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
-              >
-                <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${autoBackupEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-              </button>
-            </div>
 
-            <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-200/60 text-slate-600">
-              <span className="font-medium flex items-center gap-1.5">
-                <DatabaseBackup className="w-3.5 h-3.5 text-indigo-500" />
-                Status da Cópia no Drive:
-              </span>
-              <span className="font-semibold text-slate-800">
-                {lastBackupDate ? (
-                  `Último backup: ${format(parseISO(lastBackupDate), "dd/MM/yyyy 'às' HH:mm")}`
-                ) : (
-                  "Nenhum backup realizado ainda"
-                )}
-              </span>
-            </div>
-          </div>
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600 uppercase">
+                    Anotação ou Motivo do Backup (Opcional):
+                  </label>
+                  <input
+                    type="text"
+                    className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-slate-800 bg-white"
+                    placeholder="Ex: Cópia antes da virada do mês, fechamento trimestral..."
+                    value={resetReason}
+                    onChange={(e) => setResetReason(e.target.value)}
+                    disabled={loading}
+                  />
+                </div>
 
-          <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl flex gap-3">
-            <DatabaseBackup className="w-5 h-5 text-indigo-500 shrink-0" />
-            <div className="text-sm text-indigo-900">
-              <p className="font-bold uppercase tracking-tight">
-                Backup Manual Sob Demanda
-              </p>
-              <p className="text-xs mt-0.5">
-                Gere um relatório inteligente (PDF) e cópia de segurança (JSON) agora mesmo. Ao salvar no Google Drive, o arquivo anterior será substituído com segurança sem duplicatas.
-              </p>
+                <div className="pt-2 flex gap-3">
+                  <Button
+                    variant="outline"
+                    className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold border-transparent shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                    onClick={handleBackupSystem}
+                    disabled={loading}
+                  >
+                    <Download className="w-4 h-4" />
+                    {loading ? "Processando Backup..." : "Gerar e Baixar Backup Agora"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsBackupModalOpen(false)}
+                    className="py-3 cursor-pointer"
+                    disabled={loading}
+                  >
+                    Fechar
+                  </Button>
+                </div>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="space-y-5 animate-in fade-in duration-200">
+              {/* Informação sobre Restauração */}
+              <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-2xl flex gap-3">
+                <RotateCcw className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-900 leading-relaxed">
+                  <p className="font-bold uppercase tracking-tight text-amber-800">
+                    Restauração de Dados Segura
+                  </p>
+                  <p className="mt-1">
+                    Você pode selecionar o arquivo <strong>GerenteImobiliario_Backup_Oficial.json</strong> gerado pelo sistema ou buscar diretamente a cópia mais recente salva no seu Google Drive.
+                  </p>
+                </div>
+              </div>
 
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase">
-                Motivo Funcional para o Relatório (Obrigatório):
-              </label>
-              <textarea
-                className="w-full min-h-[80px] p-3 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 hover:border-slate-300 resize-none font-medium text-slate-800"
-                placeholder="Exemplo: Cópia de segurança trimestral. A carteira de clientes está ativa..."
-                value={resetReason}
-                onChange={(e) => setResetReason(e.target.value)}
-                disabled={loading}
-              />
-            </div>
+              {/* Botão de Busca Direta do Google Drive */}
+              {isDriveConnected && (
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between gap-3">
+                  <div>
+                    <h5 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Cloud className="w-4 h-4 text-indigo-600" />
+                      Google Drive Conectado
+                    </h5>
+                    <p className="text-[11px] text-slate-500">
+                      Carregar backup salvo automaticamente na sua nuvem
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleFetchDriveBackup}
+                    disabled={isFetchingDriveBackup || isRestoring}
+                    className="bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-bold text-xs shrink-0 cursor-pointer"
+                  >
+                    {isFetchingDriveBackup ? (
+                      <span className="flex items-center gap-1.5">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Buscando...
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1.5">
+                        <Download className="w-3.5 h-3.5" /> Buscar do Drive
+                      </span>
+                    )}
+                  </Button>
+                </div>
+              )}
 
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase">
-                Confirme seu E-mail para autorização:
-              </label>
-              <Input
-                id="backup-email-confirm"
-                placeholder={user?.email || ""}
-                value={resetConfirmText}
-                onChange={(e) => setResetConfirmText(e.target.value)}
-                disabled={loading}
-              />
-            </div>
+              {/* Área de Seleção de Arquivo Local */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-600 uppercase block">
+                  Ou selecione o arquivo .json do seu dispositivo:
+                </label>
+                <div className="border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-2xl p-4 bg-slate-50/60 transition-all text-center">
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    id="restore-file-input"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setRestoreFile(file);
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                          const text = event.target?.result as string;
+                          if (text) handleParseBackupJson(text);
+                        };
+                        reader.readAsText(file);
+                      }
+                    }}
+                  />
+                  <label
+                    htmlFor="restore-file-input"
+                    className="flex flex-col items-center justify-center cursor-pointer space-y-1.5"
+                  >
+                    <Upload className="w-6 h-6 text-indigo-600" />
+                    <span className="text-xs font-bold text-slate-700">
+                      {restoreFile ? restoreFile.name : "Clique para selecionar o arquivo .json"}
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      Compatível com o formato oficial de backup do Gerente Imobiliário
+                    </span>
+                  </label>
+                </div>
+              </div>
 
-            <div className="pt-2 flex gap-3">
-              <Button
-                variant="outline"
-                className="flex-1 py-3 text-indigo-700 font-black border-indigo-200 hover:bg-indigo-50 bg-white"
-                onClick={() =>
-                  executeWithSecurity(
-                    handleBackupSystem,
-                    "Autorizar backup de dados locais e criação do relatório de inteligência.",
-                  )
-                }
-                disabled={resetReason.length < 10 || !resetConfirmText}
-              >
-                Gerar Backup Inteligente Agora
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setIsBackupModalOpen(false)}
-                className="py-3"
-                disabled={loading}
-              >
-                Cancelar
-              </Button>
+              {/* Prévia do Backup Reconhecido */}
+              {restoreParsedData && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-3 animate-in fade-in">
+                  <div className="flex items-center justify-between text-xs font-bold text-emerald-900 border-b border-emerald-200/60 pb-2">
+                    <span className="flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      Backup Válido Reconhecido
+                    </span>
+                    <span className="text-[11px] font-medium text-emerald-700">
+                      {restoreParsedData.timestamp
+                        ? format(parseISO(restoreParsedData.timestamp), "dd/MM/yyyy 'às' HH:mm")
+                        : "Data não especificada"}
+                    </span>
+                  </div>
+
+                  {restoreParsedData.reason && (
+                    <p className="text-xs text-emerald-800 italic">
+                      "{restoreParsedData.reason}"
+                    </p>
+                  )}
+
+                  {/* Grade de Contadores */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    {Object.entries(restoreSummary).map(([col, count]) => {
+                      const labels: Record<string, string> = {
+                        properties: "Imóveis",
+                        tenants: "Inquilinos",
+                        contracts: "Contratos",
+                        payments: "Pagamentos",
+                        expenses: "Despesas",
+                        agreements: "Acordos",
+                        tickets: "Chamados",
+                        storages: "Galpões/Espaços",
+                        staging_records: "Planilhas",
+                        custom_alerts: "Alertas",
+                      };
+                      return (
+                        <div
+                          key={col}
+                          className="p-2 bg-white rounded-xl border border-emerald-200 text-center"
+                        >
+                          <span className="text-[10px] font-bold text-slate-500 uppercase block truncate">
+                            {labels[col] || col}
+                          </span>
+                          <span className="text-base font-black text-slate-900">
+                            {count}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Seleção do Modo de Restauração */}
+                  <div className="pt-2 border-t border-emerald-200/60 space-y-2">
+                    <span className="text-xs font-bold text-emerald-900 block">
+                      Modo de Restauração:
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      <label
+                        className={`p-2.5 rounded-xl border cursor-pointer flex items-start gap-2 ${
+                          restoreMode === "merge"
+                            ? "bg-white border-indigo-500 ring-2 ring-indigo-200 font-bold text-slate-900"
+                            : "bg-white/70 border-slate-200 text-slate-600"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="restoreMode"
+                          checked={restoreMode === "merge"}
+                          onChange={() => setRestoreMode("merge")}
+                          className="mt-0.5"
+                        />
+                        <div>
+                          <span>Mesclar / Atualizar (Recomendado)</span>
+                          <p className="text-[10px] font-normal text-slate-500 mt-0.5">
+                            Adiciona e atualiza registros preservando itens que não conflitem.
+                          </p>
+                        </div>
+                      </label>
+                      <label
+                        className={`p-2.5 rounded-xl border cursor-pointer flex items-start gap-2 ${
+                          restoreMode === "replace"
+                            ? "bg-white border-amber-500 ring-2 ring-amber-200 font-bold text-slate-900"
+                            : "bg-white/70 border-slate-200 text-slate-600"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="restoreMode"
+                          checked={restoreMode === "replace"}
+                          onChange={() => setRestoreMode("replace")}
+                          className="mt-0.5"
+                        />
+                        <div>
+                          <span>Substituição Completa</span>
+                          <p className="text-[10px] font-normal text-slate-500 mt-0.5">
+                            Sobrescreve os dados existentes pelos dados deste backup.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Barra de Progresso durante a restauração */}
+                  {isRestoring && (
+                    <div className="space-y-1.5 pt-2">
+                      <div className="flex justify-between text-xs font-bold text-indigo-700">
+                        <span>Restaurando banco de dados...</span>
+                        <span>{restoreProgress}%</span>
+                      </div>
+                      <div className="w-full h-2.5 bg-indigo-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
+                          style={{ width: `${restoreProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2 flex gap-3">
+                    <Button
+                      variant="outline"
+                      className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black border-transparent shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                      onClick={handleExecuteRestore}
+                      disabled={isRestoring}
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      {isRestoring ? "Restaurando Dados..." : "Confirmar e Restaurar Dados"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setRestoreParsedData(null);
+                        setRestoreSummary({});
+                        setRestoreFile(null);
+                      }}
+                      className="py-3 cursor-pointer"
+                      disabled={isRestoring}
+                    >
+                      Limpar
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {!restoreParsedData && (
+                <div className="pt-2 flex justify-end">
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsBackupModalOpen(false)}
+                    className="py-2.5 px-6 cursor-pointer"
+                  >
+                    Fechar
+                  </Button>
+                </div>
+              )}
             </div>
-          </div>
+          )}
         </div>
       </Modal>
 

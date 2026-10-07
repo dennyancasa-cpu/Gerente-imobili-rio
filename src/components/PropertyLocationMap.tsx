@@ -19,9 +19,11 @@ import {
   Compass,
 } from 'lucide-react';
 import { GOOGLE_MAPS_API_KEY, MAPS_INTERNAL_ATTRIBUTION } from '../services/mapsConfig';
+import { formatOfficialAddress } from '../utils/addressHelpers';
 
 export interface AddressParsedData {
   address: string;
+  officialAddress?: string;
   street: string;
   number: string;
   neighborhood: string;
@@ -168,10 +170,75 @@ function AutocompleteInputInner({
           }
         }
 
+        // If number was not present in components, attempt extraction from suggestion text or input
+        if (!number) {
+          const rawText = suggestion.placePrediction.text?.text || inputValue;
+          const matchNum = rawText.match(/,\s*(\d{1,6})\b|\b(?:nº|no|n\.|numero)?\s*(\d{1,6})\b/i);
+          if (matchNum) {
+            number = matchNum[1] || matchNum[2] || '';
+          }
+        }
+
         const formatted = place.formattedAddress || suggestion.placePrediction.text?.text || '';
 
-        onSelectAddress({
+        // If CEP is missing, attempt regex extraction from formatted address
+        if (!cep && formatted) {
+          const matchCep = formatted.match(/\b(\d{5}[-\s]?\d{3})\b/);
+          if (matchCep) {
+            const raw = matchCep[1].replace(/\D/g, '');
+            if (raw.length === 8) {
+              cep = raw.replace(/^(\d{5})(\d{3})$/, '$1-$2');
+            }
+          }
+        }
+
+        // Fallback: If still without CEP and we have street and city/state, try a fast Google Places searchByText
+        if (!cep && street && (city || state)) {
+          try {
+            const { Place } = placesLib;
+            const queryStr = `${street}${number ? ` ${number}` : ''}, ${city} ${state} Brasil`;
+            const textSearchRes = await Place.searchByText({
+              textQuery: queryStr,
+              fields: ['addressComponents', 'formattedAddress'],
+            });
+            const firstPlace = textSearchRes.places?.[0];
+            if (firstPlace) {
+              if (firstPlace.addressComponents) {
+                for (const comp of firstPlace.addressComponents) {
+                  if (comp.types?.includes('postal_code')) {
+                    const raw = (comp.longText || comp.shortText || '').replace(/\D/g, '');
+                    if (raw.length === 8) {
+                      cep = raw.replace(/^(\d{5})(\d{3})$/, '$1-$2');
+                      break;
+                    }
+                  }
+                }
+              }
+              if (!cep && firstPlace.formattedAddress) {
+                const m2 = firstPlace.formattedAddress.match(/\b(\d{5}[-\s]?\d{3})\b/);
+                if (m2) {
+                  cep = m2[1].replace(/\D/g, '').replace(/^(\d{5})(\d{3})$/, '$1-$2');
+                }
+              }
+            }
+          } catch (e) {
+            // Non-critical fallback failure
+          }
+        }
+
+        const official = formatOfficialAddress({
+          street,
+          number,
+          neighborhood,
+          city,
+          state,
+          cep,
           address: formatted,
+        });
+
+        onSelectAddress({
+          address: official || formatted,
+          officialAddress: official,
           street,
           number,
           neighborhood,

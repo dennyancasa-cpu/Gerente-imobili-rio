@@ -19,7 +19,10 @@ import {
   FileText,
   Search,
   CheckSquare,
-  Volume2
+  Volume2,
+  DatabaseBackup,
+  RotateCcw,
+  History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -495,6 +498,19 @@ export const SetupGuideModal: React.FC<SetupGuideModalProps> = ({
                       </button>
                     )}
                   </div>
+                </div>
+
+                {/* Destaque de Backup, Restauração e Versionamento de Documentos */}
+                <div className="p-3.5 bg-emerald-50/60 border border-emerald-200/80 rounded-2xl space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-emerald-900">
+                    <DatabaseBackup className="w-4 h-4 text-emerald-600" />
+                    <span>Backup Inteligente, Restauração & Histórico de Contratos</span>
+                  </div>
+                  <ul className="text-[11px] text-emerald-800 space-y-1 list-disc list-inside leading-relaxed">
+                    <li><strong>Backup em 1 Clique:</strong> Gere cópia de segurança em JSON e PDF sem burocracia de confirmação de e-mail.</li>
+                    <li><strong>Restauração Fácil:</strong> Recupere seus dados subindo o arquivo .json ou puxando do Google Drive com prévia de itens antes de confirmar.</li>
+                    <li><strong>Versões de Contratos:</strong> Ao substituir contratos ou termos, as vias anteriores ficam salvas para consulta ou restauração instantânea.</li>
+                  </ul>
                 </div>
 
                 <div className="flex items-center justify-between pt-2">

@@ -39,6 +39,16 @@ export interface DepositUsage {
   timestamp: any;
 }
 
+export interface DocumentVersion {
+  id: string;
+  name: string;
+  url: string;
+  uploadedAt: string;
+  size?: number;
+  notes?: string;
+  uploadedBy?: string;
+}
+
 export interface PropertyDocument {
   id: string;
   name: string;
@@ -46,6 +56,7 @@ export interface PropertyDocument {
   url?: string;
   expirationDate?: string;
   isRequired?: boolean;
+  fileVersions?: DocumentVersion[];
 }
 
 export interface PropertyInspectionImage {
@@ -81,6 +92,7 @@ export interface Property {
   lateFeeType?: "percentage" | "fixed";
   
   // Location fields
+  officialAddress?: string;
   cep?: string;
   street?: string;
   number?: string;
@@ -230,6 +242,45 @@ export interface LandlordProfile {
   pixKey?: string;
 }
 
+export interface RepairItem {
+  id: string;
+  description: string;
+  cost: number;
+}
+
+export interface ContractTerminationDetails {
+  keysReturnDate: string;
+  reason: string;
+  inspectionDone: boolean;
+  inspectionStatus: 'completed_ok' | 'completed_with_repairs' | 'not_done_waived' | 'pending';
+  inspectionNotes?: string;
+  keysReturnedCount?: number;
+  gateControlsReturned?: boolean;
+  hasDebts: boolean;
+  pendingRentAmount: number;
+  consumptionBillsAmount: number;
+  consumptionBillsDetails?: {
+    electricity?: { paid: boolean; debtAmount: number };
+    water?: { paid: boolean; debtAmount: number };
+    gas?: { paid: boolean; debtAmount: number };
+    iptu?: { paid: boolean; debtAmount: number };
+    condo?: { paid: boolean; debtAmount: number };
+    others?: { description: string; debtAmount: number };
+  };
+  totalDebts: number;
+  depositBalance: number;
+  repairItems: RepairItem[];
+  totalRepairs: number;
+  finalBalance: number; // positive = refund tenant, negative = tenant owes
+  balanceAction: 'refund_tenant' | 'tenant_owes' | 'settled';
+  tenantPixKey?: string;
+  observations?: string;
+  propertyDestination: 'vacant' | 'renovation';
+  tenantDestination: 'archived' | 'waiting';
+  terminatedBy?: string;
+  terminatedAt: string;
+}
+
 export interface Contract {
   id?: string;
   tenantId: string;
@@ -253,6 +304,7 @@ export interface Contract {
   evidenceName?: string;
   evidenceLocation?: string;
   thumbnailLink?: string;
+  fileVersions?: DocumentVersion[];
   aiContractText?: string;
   status: "active" | "ended" | "broken" | "archived";
   ownerId: string;
@@ -270,6 +322,7 @@ export interface Contract {
   priorMonthsCount?: number;
   priorMonthsTotalPaid?: number;
   priorMonthsTotalPending?: number;
+  terminationDetails?: ContractTerminationDetails;
   createdAt?: any;
   updatedAt?: any;
 }

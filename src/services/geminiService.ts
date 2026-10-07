@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { Property, Tenant, Payment, Expense, Agreement } from "../types";
+import { formatOfficialAddress } from "../utils/addressHelpers";
 
 const formatAIError = (error: any): string => {
   const msg = error?.message || String(error);
@@ -106,11 +107,11 @@ export const generateStandardResidenceDeclaration = (tenantData: any, propertyDa
 
   // Extract Property info
   const propertyName = propertyData?.name || tenantData?.propertyName || 'Imóvel Residencial';
-  const rawAddress = propertyData?.address || tenantData?.propertyAddress || '';
-  const propertyAddress = rawAddress || 'Endereço do Imóvel';
+  const officialAddr = formatOfficialAddress(propertyData) || propertyData?.officialAddress || propertyData?.address || tenantData?.propertyAddress || '';
+  const propertyAddress = officialAddr || 'Endereço do Imóvel';
   
   // Extract CEP
-  const cepMatch = rawAddress ? (rawAddress.match(/CEP[:\s]*([0-9]{5}-?[0-9]{3})/i) || rawAddress.match(/([0-9]{5}-?[0-9]{3})/)) : null;
+  const cepMatch = propertyAddress ? (propertyAddress.match(/CEP[:\s]*([0-9]{5}-?[0-9]{3})/i) || propertyAddress.match(/([0-9]{5}-?[0-9]{3})/)) : null;
   const propertyCep = propertyData?.cep || (cepMatch ? cepMatch[1] : (tenantData?.cep || ''));
 
   // Extract Contract dates
@@ -314,6 +315,7 @@ export const generateLeaseContract = async (tenantData: any, propertyData?: any,
   const allowPetsText = propertyData?.allowPets === true ? 'Permitido animais de estimação.' : propertyData?.allowPets === false ? 'Proibido manter animais de estimação no imóvel.' : 'Sujeito às regras normais do condomínio.';
   const allowSmokingText = propertyData?.allowSmoking === true ? 'Permitido fumar.' : propertyData?.allowSmoking === false ? 'Proibido fumar nas dependências do imóvel.' : 'Não especificado.';
   const maxResidentsText = propertyData?.maxResidents ? `Máximo permitido de moradores: ${propertyData.maxResidents}` : 'Não especificado na ficha do imóvel.';
+  const officialPropertyAddress = formatOfficialAddress(propertyData) || propertyData?.officialAddress || propertyData?.address || '[Pendente]';
 
   const spouseText = tenantData?.spouse ? `Cônjuge/Coparticipe: ${tenantData.spouse}` : 'Não informado';
   const childrenText = tenantData?.children ? `Filhos: ${tenantData.children}` : 'Nenhum informado';
@@ -459,7 +461,8 @@ export const generateLeaseContract = async (tenantData: any, propertyData?: any,
   
   IMÓVEL / LOCADOR / OBJETO:
   - Identificação/Nome: ${propertyData?.name || '[Pendente]'}
-  - Endereço Completo: ${propertyData?.address || '[Pendente]'}
+  - Endereço Oficial Completo: ${officialPropertyAddress}
+  - CEP do Imóvel: ${propertyData?.cep || (officialPropertyAddress.match(/CEP[:\s]*([0-9]{5}-?[0-9]{3})/i)?.[1] || 'Conforme endereço oficial')}
   - Valor do Aluguel Mensal: R$ ${tenantData?.rentValue || propertyData?.rentValue || '[Pendente]'}
   - Dia de Vencimento: Todo dia ${tenantData?.paymentDay || propertyData?.paymentDay || '[Pendente]'} de cada mês
   - Cláusula de Penalidades por Atraso: ${tenantData?.chargeLateFees || propertyData?.chargeLateFees ? `Multa moratória de ${tenantData?.lateFeePenalty || propertyData?.lateFeePenalty || 10}% sobre o valor devido e Juros de mora de ${tenantData?.lateFeeDaily || propertyData?.lateFeeDaily || 0.033}% ao dia` : 'Multa padrão de 10% e juros moratórios de 1% ao mês (Art. 406 CC).'}

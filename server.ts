@@ -687,6 +687,64 @@ app.get(['/api/drive/test', '/api/drive/test/'], async (req, res) => {
   }
 });
 
+app.get(['/api/drive/latest-backup', '/api/drive/latest-backup/'], async (req, res) => {
+  let tokens = (req.session as any).tokens;
+  const headerTokens = req.headers['x-drive-tokens'];
+
+  if (!tokens && headerTokens) {
+    try {
+      tokens = JSON.parse(headerTokens as string);
+      (req.session as any).tokens = tokens;
+    } catch (e) {
+      console.error('[Latest Backup] Error parsing header tokens');
+    }
+  }
+
+  if (!tokens) {
+    return res.status(401).json({ connected: false, error: 'Google Drive não conectado' });
+  }
+
+  try {
+    const client = createOAuthClient(req, tokens);
+    const drive = google.drive({ version: 'v3', auth: client });
+
+    const searchRes = await drive.files.list({
+      q: "name = 'GerenteImobiliario_Backup_Oficial.json' and trashed = false",
+      fields: 'files(id, name, modifiedTime, size)',
+      orderBy: 'modifiedTime desc',
+      pageSize: 5
+    });
+
+    if (!searchRes.data.files || searchRes.data.files.length === 0) {
+      return res.status(404).json({ error: 'Nenhum arquivo de backup encontrado no Google Drive.' });
+    }
+
+    const latestFile = searchRes.data.files[0];
+    const fileContentRes = await drive.files.get(
+      { fileId: latestFile.id!, alt: 'media' },
+      { responseType: 'text' }
+    );
+
+    let parsedData = null;
+    try {
+      parsedData = typeof fileContentRes.data === 'string' ? JSON.parse(fileContentRes.data) : fileContentRes.data;
+    } catch (err) {
+      return res.status(400).json({ error: 'Conteúdo do backup corrompido ou formato inválido.' });
+    }
+
+    res.json({
+      success: true,
+      fileId: latestFile.id,
+      fileName: latestFile.name,
+      modifiedTime: latestFile.modifiedTime,
+      backupData: parsedData
+    });
+  } catch (error: any) {
+    console.error('Drive latest-backup error:', error);
+    res.status(500).json({ error: error.message || 'Falha ao buscar backup do Google Drive' });
+  }
+});
+
 // Google Tasks Proxy API Endpoints
 app.get('/api/tasks/lists', async (req, res) => {
   let tokens = (req.session as any).tokens;

@@ -1,12 +1,13 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { Contract, Property, Tenant, OperationType, StorageSpace } from '../types';
+import { Contract, Property, Tenant, Payment, OperationType, StorageSpace, DocumentVersion } from '../types';
 import { 
   FileText, Plus, Search, CheckCircle2, XCircle, Clock, X,
   Trash2, AlertTriangle, Upload, Eye, FileSignature, Sparkles,
   ChevronDown, ChevronUp, Maximize, RotateCcw, Archive, TrendingUp,
   Building2, User, DollarSign, Calendar, ArrowRight, FileCheck, Check,
-  Printer, Copy, Edit3, Receipt, RefreshCw, HelpCircle
+  Printer, Copy, Edit3, Receipt, RefreshCw, HelpCircle, History, Key, ShieldCheck
 } from 'lucide-react';
+import { ContractTerminationModal } from './ContractTerminationModal';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { adjustDateToNextBusinessDay } from '../utils/dateHelpers';
@@ -127,11 +128,13 @@ import { handleFirestoreError } from '../utils/firestoreError';
 import { toast } from 'sonner';
 import { generateLeaseContract } from '../services/geminiService';
 import { getAccumulatedIndex } from '../services/bcbService';
+import { formatOfficialAddress } from '../utils/addressHelpers';
 
 interface ContractsViewProps {
   contracts: Contract[];
   properties: Property[];
   tenants: Tenant[];
+  payments?: Payment[];
   onSecurityCheck: (onSuccess: () => void, description?: string) => void;
   isDriveConnected: boolean;
   uploadToDrive?: (fileName: string, fileData: string, mimeType: string, folderName?: string) => Promise<any>;
@@ -145,6 +148,7 @@ export const ContractsView = ({
   contracts,
   properties,
   tenants,
+  payments = [],
   onSecurityCheck,
   isDriveConnected,
   uploadToDrive,
@@ -171,6 +175,8 @@ export const ContractsView = ({
   const [targetContract, setTargetContract] = useState<Contract | null>(null);
   const [raEndDate, setRaEndDate] = useState('');
   const [raObservations, setRaObservations] = useState('');
+  const [terminatingContract, setTerminatingContract] = useState<Contract | null>(null);
+  const [viewingTerminationContract, setViewingTerminationContract] = useState<Contract | null>(null);
 
   // Estados para o Gerador Rápido de Documentos Legais (Modelos Rápidos)
   const [isQuickDocModalOpen, setIsQuickDocModalOpen] = useState(false);
@@ -308,10 +314,12 @@ export const ContractsView = ({
         landlordEmail: activeContract?.landlordEmail || lp.email || auth.currentUser?.email || '',
       };
 
+      const officialAddress = formatOfficialAddress(selectedProperty) || selectedProperty?.officialAddress || selectedProperty?.address || '';
       const propertyData: Partial<Property> = {
         ...(selectedProperty || {}),
         name: selectedProperty?.name || (quickDocCustomPropertyAddress ? quickDocCustomPropertyAddress.split(',')[0] : 'Imóvel Residencial'),
-        address: quickDocCustomPropertyAddress || selectedProperty?.address || '',
+        address: quickDocCustomPropertyAddress || officialAddress || selectedProperty?.address || '',
+        officialAddress: officialAddress,
         cep: selectedProperty?.cep || '',
         rentValue: quickDocRentValue || selectedProperty?.rentValue || activeContract?.rentValue || 0,
         paymentDay: selectedProperty?.paymentDay || selectedTenant?.paymentDay || activeContract?.paymentDay || 5,
@@ -384,6 +392,57 @@ export const ContractsView = ({
   const [confirmHistoryOption, setConfirmHistoryOption] = useState<'all_paid' | 'has_pending' | 'unconfirmed'>('all_paid');
   const [confirmHistoryOverrides, setConfirmHistoryOverrides] = useState<Record<number, 'paid' | 'pending'>>({});
   const [isConfirmHistorySubmitting, setIsConfirmHistorySubmitting] = useState(false);
+
+  // Contract Document Versions states
+  const [selectedContractForVersions, setSelectedContractForVersions] = useState<Contract | null>(null);
+  const [isVersionsModalOpen, setIsVersionsModalOpen] = useState(false);
+
+  const handleRestoreContractVersion = async (contract: Contract, version: DocumentVersion) => {
+    if (!contract.id) return;
+    try {
+      const existingFile = contract.contractFile;
+      const existingName = contract.evidenceName;
+
+      // Keep current active file in versions list before swapping
+      let updatedVersions = (contract.fileVersions || []).filter(v => v.id !== version.id);
+      if (existingFile && existingFile !== version.url) {
+        updatedVersions = [
+          {
+            id: `ver_${Date.now()}`,
+            name: existingName || 'Versão Anterior.pdf',
+            url: existingFile,
+            uploadedAt: contract.updatedAt || new Date().toISOString(),
+            notes: 'Substituído ao restaurar versão anterior'
+          },
+          ...updatedVersions
+        ].slice(0, 10);
+      }
+
+      await updateDoc(doc(db, 'contracts', contract.id), cleanObject({
+        contractFile: version.url,
+        evidenceName: version.name,
+        fileVersions: updatedVersions,
+        updatedAt: new Date().toISOString()
+      }));
+
+      // If this contract is currently open in modal, update formData too
+      if (editingContract?.id === contract.id) {
+        setFormData(prev => ({
+          ...prev,
+          contractFile: version.url,
+          evidenceName: version.name,
+          fileVersions: updatedVersions
+        }));
+      }
+
+      toast.success(`Versão "${version.name}" restaurada como documento ativo!`);
+      setIsVersionsModalOpen(false);
+      setSelectedContractForVersions(null);
+    } catch (err: any) {
+      console.error('Erro ao restaurar versão do contrato:', err);
+      toast.error('Falha ao restaurar versão anterior.');
+    }
+  };
 
   const pastMonthsCount = useMemo(() => {
     if (!formData.startDate) return 0;
@@ -852,6 +911,26 @@ export const ContractsView = ({
       }
 
       if (editingContract?.id) {
+        // Track file versions when replaced
+        const currentFile = editingContract.contractFile;
+        const newFile = formData.contractFile;
+        const currentVersions: DocumentVersion[] = editingContract.fileVersions || [];
+
+        if (currentFile && newFile && currentFile !== newFile) {
+          const archivedVersion: DocumentVersion = {
+            id: `ver_${Date.now()}`,
+            name: editingContract.evidenceName || 'Via Anterior.pdf',
+            url: currentFile,
+            uploadedAt: editingContract.updatedAt || editingContract.createdAt || new Date().toISOString(),
+            notes: 'Arquivado automaticamente após envio de nova via'
+          };
+          contractData.fileVersions = [archivedVersion, ...currentVersions].slice(0, 10);
+        } else if (formData.fileVersions) {
+          contractData.fileVersions = formData.fileVersions;
+        } else {
+          contractData.fileVersions = currentVersions;
+        }
+
         if (detectedContractChanges.length > 0) {
           const timeStamp = format(new Date(), 'dd/MM/yyyy HH:mm');
           const note = `[Aditivo/Atualização de Contrato em ${timeStamp}]: Contrato estendido/atualizado. Alterações detectadas: ${detectedContractChanges.join('; ')}.`;
@@ -1592,29 +1671,60 @@ export const ContractsView = ({
                               {calculatingId === contract.id ? 'Calculando...' : `Aplicar Reajuste (${contract.readjustmentIndex})`}
                            </button>
                         )}
-                       <div className="flex gap-2">
-                           <button onClick={() => handleOpenRenewArchive(contract, 'renew')} className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex justify-center items-center gap-1.5 ${isExpired ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-sm' : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-800'}`}>
-                              <RotateCcw className="w-3.5 h-3.5" /> Renovar
-                           </button>
-                           <button onClick={() => handleOpenRenewArchive(contract, 'archive')} className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex justify-center items-center gap-1.5 ${isExpired ? 'bg-white border border-rose-200 hover:bg-rose-50 text-rose-700' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'}`}>
-                              <Archive className="w-3.5 h-3.5" /> Arquivar
-                           </button>
-                       </div>
+                       {/* Botão de Finalização / Desocupação Destacado */}
+                        <button
+                           type="button"
+                           onClick={() => setTerminatingContract(contract)}
+                           className={`w-full px-3 py-2.5 rounded-xl text-xs font-bold transition flex justify-center items-center gap-1.5 shadow-xs cursor-pointer ${
+                             isExpired
+                               ? 'bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-700 hover:to-amber-700 text-white shadow-rose-200'
+                               : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/80'
+                           }`}
+                        >
+                           <Key className="w-3.5 h-3.5" />
+                           <span>{isExpired ? 'Finalizar Contrato & Desocupar Imóvel' : 'Finalizar Contrato / Desocupar'}</span>
+                        </button>
+
+                        <div className="flex gap-2">
+                            <button onClick={() => handleOpenRenewArchive(contract, 'renew')} className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex justify-center items-center gap-1.5 cursor-pointer ${isExpired ? 'bg-slate-100 hover:bg-slate-200 text-slate-700' : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-800'}`}>
+                               <RotateCcw className="w-3.5 h-3.5" /> Renovar
+                            </button>
+                            <button onClick={() => handleOpenRenewArchive(contract, 'archive')} className="flex-1 px-3 py-2 rounded-lg text-xs font-bold transition flex justify-center items-center gap-1.5 cursor-pointer bg-slate-100 hover:bg-slate-200 text-slate-700">
+                               <Archive className="w-3.5 h-3.5" /> Arquivar
+                            </button>
+                        </div>
                     </div>
                  )}
               </div>
             <div className="flex items-center justify-between border-t border-slate-100 pt-4 mt-auto">
-                {contract.contractFile ? (
-                   <a href={contract.contractFile} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-3 py-1.5 rounded-lg">
-                      <FileSignature className="w-3.5 h-3.5" /> Ver PDF
-                   </a>
-                ) : contract.aiContractText ? (
-                   <button onClick={() => handleOpenModal(contract)} className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-3 py-1.5 rounded-lg">
-                      <Sparkles className="w-3.5 h-3.5" /> Texto IA
-                   </button>
-                ) : (
-                    <span className="text-[10px] uppercase font-bold tracking-wider text-amber-600 bg-amber-50 px-2.5 py-1 rounded-md">Sem Anexo</span>
-                )}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {contract.contractFile ? (
+                     <a href={contract.contractFile} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-3 py-1.5 rounded-lg">
+                        <FileSignature className="w-3.5 h-3.5" /> Ver PDF
+                     </a>
+                  ) : contract.aiContractText ? (
+                     <button onClick={() => handleOpenModal(contract)} className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-3 py-1.5 rounded-lg">
+                        <Sparkles className="w-3.5 h-3.5" /> Texto IA
+                     </button>
+                  ) : (
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-amber-600 bg-amber-50 px-2.5 py-1 rounded-md">Sem Anexo</span>
+                  )}
+
+                  {contract.fileVersions && contract.fileVersions.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedContractForVersions(contract);
+                        setIsVersionsModalOpen(true);
+                      }}
+                      className="flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/60 px-2.5 py-1.5 rounded-lg transition"
+                      title="Ver e restaurar versões anteriores deste contrato"
+                    >
+                      <History className="w-3.5 h-3.5 text-indigo-600" />
+                      {contract.fileVersions.length} {contract.fileVersions.length === 1 ? 'ant.' : 'ant.'}
+                    </button>
+                  )}
+                </div>
 
                <div className="flex gap-2">
                  <button onClick={() => handleOpenModal(contract)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition" title="Editar">
@@ -2034,6 +2144,71 @@ export const ContractsView = ({
                            reader.readAsDataURL(file);
                          }
                        }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 cursor-pointer" />
+                     </div>
+                   )}
+
+                   {/* Previous Versions in Modal */}
+                   {formData.fileVersions && formData.fileVersions.length > 0 && (
+                     <div className="mt-3 p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                       <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                         <span className="flex items-center gap-1.5">
+                           <History className="w-3.5 h-3.5 text-indigo-600" />
+                           Versões Anteriores Salvas ({formData.fileVersions.length})
+                         </span>
+                         <span className="text-[10px] text-slate-400 font-normal">Clique para restaurar</span>
+                       </div>
+                       <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                         {formData.fileVersions.map((ver, idx) => (
+                           <div key={ver.id || idx} className="p-2 bg-white rounded-xl border border-slate-200/80 flex items-center justify-between gap-2 text-xs">
+                             <div className="min-w-0 flex-1">
+                               <p className="font-bold text-slate-800 truncate">{ver.name}</p>
+                               <p className="text-[10px] text-slate-400">
+                                 {ver.uploadedAt ? format(parseISO(ver.uploadedAt), "dd/MM/yyyy 'às' HH:mm") : 'Data não registrada'}
+                               </p>
+                             </div>
+                             <div className="flex items-center gap-1.5 shrink-0">
+                               <a
+                                 href={ver.url}
+                                 target="_blank"
+                                 rel="noopener noreferrer"
+                                 className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-bold flex items-center gap-1"
+                               >
+                                 <Eye className="w-3 h-3" /> Ver
+                               </a>
+                               <button
+                                 type="button"
+                                 onClick={() => {
+                                   const currFile = formData.contractFile;
+                                   const currName = formData.evidenceName;
+                                   let nextVersions = (formData.fileVersions || []).filter(v => v.id !== ver.id);
+                                   if (currFile) {
+                                     nextVersions = [
+                                       {
+                                         id: `ver_${Date.now()}`,
+                                         name: currName || 'Versão Anterior.pdf',
+                                         url: currFile,
+                                         uploadedAt: new Date().toISOString(),
+                                         notes: 'Trocado no formulário'
+                                       },
+                                       ...nextVersions
+                                     ];
+                                   }
+                                   setFormData({
+                                     ...formData,
+                                     contractFile: ver.url,
+                                     evidenceName: ver.name,
+                                     fileVersions: nextVersions
+                                   });
+                                   toast.success(`Versão "${ver.name}" selecionada como documento ativo!`);
+                                 }}
+                                 className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-[11px] font-bold flex items-center gap-1 border border-indigo-200/60"
+                                >
+                                 <RotateCcw className="w-3 h-3" /> Restaurar
+                               </button>
+                             </div>
+                           </div>
+                         ))}
+                       </div>
                      </div>
                    )}
                 </div>
@@ -2918,6 +3093,230 @@ export const ContractsView = ({
                 className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-sm transition"
               >
                 Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Histórico de Versões do Contrato */}
+      {isVersionsModalOpen && selectedContractForVersions && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-xl">
+                  <History className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-900">Histórico de Versões do Contrato</h3>
+                  <p className="text-xs text-slate-500">Recupere ou visualize vias e aditivos anteriores</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsVersionsModalOpen(false);
+                  setSelectedContractForVersions(null);
+                }}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4">
+              {/* Versão Atual */}
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between text-xs font-black text-emerald-800 uppercase tracking-wider">
+                  <span className="flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    Versão Atual em Vigor
+                  </span>
+                  <span className="bg-emerald-200/70 text-emerald-900 px-2 py-0.5 rounded-full text-[10px]">
+                    Ativa
+                  </span>
+                </div>
+                <p className="text-sm font-bold text-slate-900 truncate">
+                  {selectedContractForVersions.evidenceName || 'Contrato Vigente.pdf'}
+                </p>
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-xs text-slate-500">
+                    Última atualização: {selectedContractForVersions.updatedAt ? format(parseISO(selectedContractForVersions.updatedAt), "dd/MM/yyyy 'às' HH:mm") : 'Data não informada'}
+                  </span>
+                  {selectedContractForVersions.contractFile && (
+                    <a
+                      href={selectedContractForVersions.contractFile}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-xs"
+                    >
+                      <Eye className="w-3.5 h-3.5" /> Abrir Arquivo
+                    </a>
+                  )}
+                </div>
+              </div>
+
+              {/* Versões Anteriores */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-slate-500" />
+                  Versões Anteriores Arquivadas ({selectedContractForVersions.fileVersions?.length || 0})
+                </h4>
+
+                {(!selectedContractForVersions.fileVersions || selectedContractForVersions.fileVersions.length === 0) ? (
+                  <div className="p-6 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-slate-400 text-xs">
+                    Nenhuma via anterior registrada para este contrato ainda. Quando uma nova via for enviada, a anterior será arquivada aqui automaticamente.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {selectedContractForVersions.fileVersions.map((version, idx) => (
+                      <div
+                        key={version.id || idx}
+                        className="p-3.5 bg-white border border-slate-200 rounded-2xl flex items-center justify-between gap-3 hover:border-indigo-200 transition"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-bold">
+                              #{selectedContractForVersions.fileVersions!.length - idx}
+                            </span>
+                            <p className="font-bold text-sm text-slate-800 truncate">{version.name}</p>
+                          </div>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Arquivado em: {version.uploadedAt ? format(parseISO(version.uploadedAt), "dd/MM/yyyy 'às' HH:mm") : 'Data não registrada'}
+                            {version.notes && ` • ${version.notes}`}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <a
+                            href={version.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                          >
+                            <Eye className="w-3.5 h-3.5" /> Ver
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreContractVersion(selectedContractForVersions, version)}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" /> Restaurar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsVersionsModalOpen(false);
+                  setSelectedContractForVersions(null);
+                }}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Assistente de Finalização de Contrato & Desocupação (Check-out) */}
+      {terminatingContract && (
+        <ContractTerminationModal
+          isOpen={true}
+          onClose={() => setTerminatingContract(null)}
+          contract={terminatingContract}
+          tenant={tenants.find(t => t.id === terminatingContract.tenantId)}
+          property={properties.find(p => p.id === terminatingContract.propertyId)}
+          payments={payments}
+          onSecurityCheck={onSecurityCheck}
+          onSuccess={() => {
+            setTerminatingContract(null);
+          }}
+        />
+      )}
+
+      {/* Modal de Visualização de Rescisão Concluída */}
+      {viewingTerminationContract && viewingTerminationContract.terminationDetails && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-xs" onClick={() => setViewingTerminationContract(null)} />
+          <div className="relative bg-white rounded-3xl shadow-xl w-full max-w-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="flex items-center justify-between p-5 border-b border-slate-100 bg-slate-900 text-white">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-bold text-base">Histórico da Rescisão / Check-out</h3>
+              </div>
+              <button onClick={() => setViewingTerminationContract(null)} className="p-1 rounded-full text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto space-y-4 text-xs text-slate-700">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Chaves Devolvidas</span>
+                  <p className="font-bold text-slate-800">
+                    {format(parseISO(viewingTerminationContract.terminationDetails.keysReturnDate), 'dd/MM/yyyy')}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Vistoria</span>
+                  <p className="font-bold text-slate-800">
+                    {viewingTerminationContract.terminationDetails.inspectionStatus === 'completed_ok' ? 'Aprovada OK' :
+                     viewingTerminationContract.terminationDetails.inspectionStatus === 'completed_with_repairs' ? 'Com Reparos' :
+                     viewingTerminationContract.terminationDetails.inspectionStatus === 'not_done_waived' ? 'Dispensada' : 'Pendente'}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Total Reparos</span>
+                  <p className="font-bold text-amber-700">
+                    R$ {viewingTerminationContract.terminationDetails.totalRepairs.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Saldo Final</span>
+                  <p className={`font-black ${viewingTerminationContract.terminationDetails.balanceAction === 'refund_tenant' ? 'text-emerald-600' : viewingTerminationContract.terminationDetails.balanceAction === 'tenant_owes' ? 'text-rose-600' : 'text-slate-800'}`}>
+                    {viewingTerminationContract.terminationDetails.balanceAction === 'refund_tenant' ? 'Devolvido: ' : viewingTerminationContract.terminationDetails.balanceAction === 'tenant_owes' ? 'A Receber: ' : 'Quitado: '}
+                    R$ {Math.abs(viewingTerminationContract.terminationDetails.finalBalance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </p>
+                </div>
+              </div>
+
+              {viewingTerminationContract.terminationDetails.repairItems && viewingTerminationContract.terminationDetails.repairItems.length > 0 && (
+                <div className="space-y-1.5">
+                  <span className="font-bold text-slate-800 uppercase tracking-tight text-[11px]">Reparos Descontados da Caução:</span>
+                  <div className="space-y-1">
+                    {viewingTerminationContract.terminationDetails.repairItems.map(rep => (
+                      <div key={rep.id} className="flex justify-between p-2 bg-slate-50 rounded-lg border border-slate-100">
+                        <span>{rep.description}</span>
+                        <span className="font-bold text-amber-700">R$ {rep.cost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {viewingTerminationContract.terminationDetails.observations && (
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                  <span className="font-bold text-slate-800 uppercase tracking-tight text-[10px] block mb-1">Observações do Gerente:</span>
+                  <p className="italic text-slate-600 leading-relaxed">{viewingTerminationContract.terminationDetails.observations}</p>
+                </div>
+              )}
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setViewingTerminationContract(null)}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs"
+              >
+                Fechar
               </button>
             </div>
           </div>
