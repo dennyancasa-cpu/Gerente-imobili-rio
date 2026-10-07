@@ -96,7 +96,102 @@ self.addEventListener('fetch', (event) => {
 });
 
 self.addEventListener('message', (event) => {
+  if (!event.data) return;
+
   if (event.data === 'PING') {
-    event.source.postMessage('PONG');
+    if (event.source) event.source.postMessage('PONG');
+    return;
   }
+
+  // Permitir que o app solicite a exibição de uma notificação nativa via Service Worker
+  if (event.data.type === 'SHOW_NOTIFICATION') {
+    const { title, options } = event.data;
+    const notificationOptions = Object.assign(
+      {
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: 'vencimento-alert',
+        renotify: true,
+        vibrate: [200, 100, 200],
+        data: { url: '/?tab=receivables' },
+        actions: [
+          { action: 'open', title: 'Ver Cobranças' },
+          { action: 'dismiss', title: 'Dispensar' }
+        ]
+      },
+      options || {}
+    );
+
+    event.waitUntil(
+      self.registration.showNotification(title || 'Gerente Imobiliário', notificationOptions)
+    );
+  }
+});
+
+// Listener para eventos de Web Push em segundo plano
+self.addEventListener('push', (event) => {
+  let data = {
+    title: '🔔 Aviso de Vencimento - Gerente Imobiliário',
+    body: 'Você possui vencimentos ou cobranças pendentes no sistema.',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    data: { url: '/?tab=receivables' }
+  };
+
+  if (event.data) {
+    try {
+      const parsed = event.data.json();
+      data = Object.assign({}, data, parsed);
+    } catch (e) {
+      data.body = event.data.text() || data.body;
+    }
+  }
+
+  const options = {
+    body: data.body,
+    icon: data.icon || '/icon-192.png',
+    badge: data.badge || '/icon-192.png',
+    vibrate: [200, 100, 200],
+    tag: data.tag || 'vencimento-alert',
+    renotify: true,
+    requireInteraction: true,
+    data: data.data || { url: '/?tab=receivables' },
+    actions: [
+      { action: 'open', title: 'Ver Cobranças' },
+      { action: 'dismiss', title: 'Fechar' }
+    ]
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, options)
+  );
+});
+
+// Listener para clique na notificação nativa do sistema
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  if (event.action === 'dismiss') {
+    return;
+  }
+
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/?tab=receivables';
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      // Se houver uma aba aberta, foca nela e navega
+      for (const client of windowClients) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          if (client.postMessage) {
+            client.postMessage({ type: 'NAVIGATE_TAB', tab: 'receivables' });
+          }
+          return client.focus();
+        }
+      }
+      // Se nenhuma aba estiver aberta, abre uma nova janela
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+    })
+  );
 });

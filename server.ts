@@ -38,7 +38,7 @@ try {
   console.error('Error loading firebase-applet-config.json:', e);
 }
 
-// Initialize Firebase Admin
+// Initialize Firebase Admin (only when service account credentials are provided)
 let adminApp: App | null = null;
 let db: any = null;
 
@@ -50,68 +50,22 @@ try {
   
   const finalProjectId = preferredProjectId || saProjectId;
   
-  console.log(`[Firebase Admin] Planning init. Config Project: ${preferredProjectId}, SA Project: ${saProjectId}, Final: ${finalProjectId}`);
-  
-  const adminConfig: any = {
-    projectId: finalProjectId
-  };
-
   if (sa) {
-    adminConfig.credential = cert(sa);
-  }
-
-  // Use a unique name for this app to avoid conflicts with platform-default apps
-  // that might have different credentials or project scopes.
-  const appName = `imobi-admin-${finalProjectId || 'default'}`;
-  
-  const existingApps = getApps();
-  const existingApp = existingApps.find(a => a.name === appName);
-  
-  if (existingApp) {
-    adminApp = existingApp;
-    console.log(`[Firebase Admin] Using existing app instance: ${appName}`);
-  } else {
-    adminApp = initializeApp(adminConfig, appName);
-    console.log(`[Firebase Admin] Initialized new app instance: ${appName}`);
-  }
-
-  // Firestore instance retrieval
-  const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
-  if (adminApp) {
+    const adminConfig: any = {
+      projectId: finalProjectId,
+      credential: cert(sa)
+    };
+    const appName = `imobi-admin-${finalProjectId || 'default'}`;
+    const existingApps = getApps();
+    adminApp = existingApps.find(a => a.name === appName) || initializeApp(adminConfig, appName);
+    const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
     db = getFirestore(adminApp, databaseId);
-    console.log(`[Firestore] Initialized instance for DB: ${databaseId} (Project: ${adminApp.options.projectId})`);
-    
-    // Immediate Health Check
-    (async () => {
-      try {
-        console.log(`[Firestore] Testing Admin write on ${databaseId}...`);
-        await db.collection('_health').doc('admin_ping').set({ 
-          last_ping: FieldValue.serverTimestamp(),
-          env: process.env.NODE_ENV || 'development',
-          projectId: finalProjectId,
-          databaseId: databaseId
-        });
-        console.log(`[Firestore] SUCCESS: Admin write verified on ${databaseId}`);
-      } catch (err: any) {
-        console.warn(`[Firestore] WARNING: Admin write FAILED on ${databaseId}. Application will continue in limited mode. Error: ${err.message}`);
-        
-        // Try fallback to '(default)' if we were using a custom ID
-        if (databaseId !== '(default)') {
-           console.log('[Firestore] Checking if (default) database is accessible as fallback...');
-           try {
-             const fallbackDb = getFirestore(adminApp!, '(default)');
-             await fallbackDb.collection('_health').doc('admin_ping').set({ last_ping: FieldValue.serverTimestamp() });
-             db = fallbackDb;
-             console.log('[Firestore] FALLBACK SUCCESS: Switch to (default) database complete.');
-           } catch (defaultErr: any) {
-             console.warn('[Firestore] FALLBACK FAILED: (default) database also inaccessible. IAM/Project issue likely. Root: ' + defaultErr.message);
-           }
-        }
-      }
-    })();
+    console.log(`[Firebase Admin] Initialized with Service Account for DB: ${databaseId}`);
+  } else {
+    console.log(`[Firebase Admin] Service account not configured. Client-side SDK used for Firestore database.`);
   }
 } catch (e: any) {
-  console.error('[Firebase Admin] Global Initialization Error:', e.message || e);
+  console.warn('[Firebase Admin] Initialization skipped:', e.message || e);
 }
 
 const app = express();
@@ -588,6 +542,12 @@ app.post('/api/tenant/login', async (req, res) => {
     // Clean CPF (remove dots, dashes, spaces)
     const cleanCpf = cpf.replace(/\D/g, '');
 
+    if (!db) {
+      return res.status(503).json({ 
+        error: 'Login via servidor indisponível sem credenciais de serviço. Utilize o portal do inquilino no aplicativo.' 
+      });
+    }
+
     // Get all tenants in database to avoid case-sensitivity and check clean'ed CPFs
     const tenantsSnap = await db.collection('tenants').get();
     let matchedTenant: any = null;
@@ -843,61 +803,9 @@ app.delete('/api/tasks/lists/:listId/tasks/:taskId', async (req, res) => {
 
 // Vite middleware for development
 async function startServer() {
-  let isReady = false;
-
-  // Temporary middleware to hold requests until Vite (or static) is ready
-  app.use((req, res, next) => {
-    if (isReady) return next();
-    
-    // If it's a page request, send a nice loading screen
-    // Using 503 prevents the Service Worker from caching this temporary screen
-    if (req.accepts('html')) {
-      res.status(503).send(`
-        <!DOCTYPE html>
-        <html lang="pt-BR">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Iniciando...</title>
-          <style>
-            body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: white; }
-            .loader { border: 4px solid rgba(255,255,255,0.1); border-left-color: #6366f1; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 1rem; }
-            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-          </style>
-          <script>
-            // Refresh automatically when ready
-            setInterval(() => {
-              fetch('/api/health').then(r => { if (r.ok) window.location.reload(); });
-            }, 1000);
-          </script>
-        </head>
-        <body>
-          <div class="loader"></div>
-          <h2>Preparando ambiente...</h2>
-          <p style="color: #94a3b8; font-size: 14px;">Isso leva apenas alguns segundos.</p>
-        </body>
-        </html>
-      `);
-    } else {
-      // For assets/api, just wait
-      const check = setInterval(() => {
-        if (isReady) {
-          clearInterval(check);
-          next();
-        }
-      }, 100);
-    }
-  });
-
-  // Health endpoint for the loading screen to poll
+  // Health endpoint for proxy and container health checks
   app.get('/api/health', (req, res) => {
-    if (isReady) res.json({ status: 'ok' });
-    else res.status(503).json({ status: 'starting' });
-  });
-
-  // Bind port immediately so the proxy can connect and avoid showing the "Please wait" page
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server listening on http://localhost:${PORT}`);
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
   if (process.env.NODE_ENV !== "production") {
@@ -907,15 +815,27 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-    isReady = true;
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
-    isReady = true;
   }
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+  });
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[Server] Port ${PORT} is already in use. Waiting or assuming existing process.`);
+    } else {
+      console.error('[Server] Listen error:', err);
+    }
+  });
 }
 
-startServer().catch(console.error);
+startServer().catch(err => {
+  console.error('[Server] Fatal startup error:', err);
+});

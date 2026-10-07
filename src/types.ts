@@ -88,6 +88,9 @@ export interface Property {
   neighborhood?: string;
   city?: string;
   state?: string;
+  lat?: number;
+  lng?: number;
+  placeId?: string;
 
   // Physical characteristics
   propertyType?: string;
@@ -451,6 +454,8 @@ export interface StorageSpace {
   name: string;
   spaceType?: "warehouse" | "room" | "cabinet" | "drawer" | "space" | "garage" | "storage_room" | "other";
   address?: string;
+  lat?: number;
+  lng?: number;
   monthlyCost: number;
   dueDay: number;
   propertyId?: string;

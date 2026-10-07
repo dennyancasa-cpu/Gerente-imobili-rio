@@ -188,6 +188,14 @@ import { CalendarSync } from "./components/CalendarSync";
 import { GoogleTasksView } from "./components/GoogleTasksView";
 import { LegalDocsView } from "./components/LegalDocsView";
 import { PermissionsOnboardingModal } from "./components/PermissionsOnboardingModal";
+import { NotificationSettingsCard } from "./components/NotificationSettingsCard";
+import { PropertyLocationSearch, PropertyLocationMapViewer } from "./components/PropertyLocationMap";
+import {
+  requestNativeNotificationPermission,
+  triggerTestVencimentoNotification,
+  checkAndNotifyDuePayments,
+  setupBackgroundDueChecker,
+} from "./services/notificationService";
 import {
   BarChart,
   Bar,
@@ -2495,12 +2503,18 @@ const PropertiesView = ({
         renovationImages: p.renovationImages || [],
         rules: p.rules || "",
         alerts: p.alerts || "",
+        lat: p.lat,
+        lng: p.lng,
+        placeId: p.placeId,
       });
     } else {
       setEditingProperty(null);
       setFormData({
         name: "",
         address: "",
+        lat: undefined,
+        lng: undefined,
+        placeId: undefined,
         status: "vacant",
         rentValue: 0,
         condoFee: 0,
@@ -2887,16 +2901,27 @@ const PropertiesView = ({
               );
             })()}
 
-            <div className="space-y-1">
+            <div className="space-y-2">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">
-                Endereço Completo
+                Endereço & Localização
               </p>
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-start gap-3">
-                <MapPin className="w-4 h-4 text-slate-400 mt-0.5" />
-                <p className="text-sm text-slate-700">
-                  {currentProperty.address || "Endereço não cadastrado"}
-                </p>
-              </div>
+              {currentProperty.address ? (
+                <PropertyLocationMapViewer
+                  lat={currentProperty.lat}
+                  lng={currentProperty.lng}
+                  address={currentProperty.address}
+                  title={currentProperty.name}
+                  height="220px"
+                  interactive={true}
+                />
+              ) : (
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-start gap-3">
+                  <MapPin className="w-4 h-4 text-slate-400 mt-0.5" />
+                  <p className="text-sm text-slate-500 italic">
+                    Endereço não cadastrado
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Características Físicas */}
@@ -4381,9 +4406,60 @@ const PropertiesView = ({
 
           {/* Section 2: Dados de Localização */}
           <div className="space-y-4">
-            <h3 className="text-sm font-bold text-slate-800 border-b pb-2">
-              2. Dados de Localização (Endereço)
-            </h3>
+            <div className="flex items-center justify-between border-b pb-2">
+              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-indigo-600" />
+                <span>2. Dados de Localização (Endereço)</span>
+              </h3>
+              <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                Google Maps Ativo
+              </span>
+            </div>
+
+            {/* Busca Rápida com Google Maps Places Autocomplete */}
+            <div className="space-y-1.5 bg-gradient-to-r from-indigo-50/70 to-slate-50 p-3.5 rounded-2xl border border-indigo-100/80 shadow-xs">
+              <label className="text-[11px] font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+                <Search className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Preenchimento Automático via Google Maps</span>
+              </label>
+              <PropertyLocationSearch
+                placeholder="Comece digitando a rua, avenida ou condomínio..."
+                onSelectAddress={(data) => {
+                  setFormData((prev) => {
+                    const street = data.street || prev.street || "";
+                    const number = data.number || prev.number || "";
+                    const neighborhood = data.neighborhood || prev.neighborhood || "";
+                    const city = data.city || prev.city || "";
+                    const state = data.state || prev.state || "";
+                    const cep = data.cep || prev.cep || "";
+                    const parts = [];
+                    if (street) parts.push(street + (number ? `, ${number}` : ""));
+                    if (prev.complement) parts.push(`(${prev.complement})`);
+                    if (neighborhood) parts.push(neighborhood);
+                    if (city || state) parts.push(`${city}${state ? "/" + state : ""}`);
+                    const fullAddress = data.address || parts.join(" - ");
+
+                    return {
+                      ...prev,
+                      street,
+                      number,
+                      neighborhood,
+                      city,
+                      state,
+                      cep,
+                      address: fullAddress,
+                      lat: data.lat,
+                      lng: data.lng,
+                      placeId: data.placeId,
+                    };
+                  });
+                  toast.success("Endereço e coordenadas carregados do Google Maps!");
+                }}
+              />
+              <p className="text-[10px] text-slate-500">
+                Ao selecionar a sugestão, os campos abaixo e o mapa serão preenchidos instantaneamente.
+              </p>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="sm:col-span-1 flex flex-col gap-1.5">
@@ -4489,6 +4565,38 @@ const PropertiesView = ({
                 />
               </div>
             </div>
+
+            {/* Mini Mapa Interativo da Localização */}
+            {((formData.lat && formData.lng) || formData.street || formData.address) && (
+              <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Visualização no Google Maps</span>
+                  </label>
+                  <span className="text-[10px] text-slate-500">
+                    Clique no mapa para ajustar a posição do pin
+                  </span>
+                </div>
+                <PropertyLocationMapViewer
+                  lat={formData.lat}
+                  lng={formData.lng}
+                  address={
+                    formData.address ||
+                    (formData.street
+                      ? `${formData.street}${formData.number ? ", " + formData.number : ""}, ${formData.city || ""}`
+                      : undefined)
+                  }
+                  title={formData.name || "Localização do Imóvel"}
+                  height="190px"
+                  interactive={true}
+                  allowPinAdjustment={true}
+                  onCoordinateChange={(newLat, newLng) => {
+                    setFormData((prev) => ({ ...prev, lat: newLat, lng: newLng }));
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           {/* Section 3: Características Físicas do Imóvel */}
@@ -13325,6 +13433,9 @@ interface SettingsViewProps {
   agreements: Agreement[];
   properties: Property[];
   tenants: Tenant[];
+  payments?: Payment[];
+  contracts?: Contract[];
+  alertSettings?: AlertSettings;
   setAgreementForm: (a: Partial<Agreement>) => void;
   setIsAgreementModalOpen: (open: boolean) => void;
   setArchivingAgreement: (a: Agreement) => void;
@@ -13349,6 +13460,9 @@ const SettingsView = ({
   agreements,
   properties,
   tenants,
+  payments = [],
+  contracts = [],
+  alertSettings,
   setAgreementForm,
   setIsAgreementModalOpen,
   setArchivingAgreement,
@@ -13385,26 +13499,8 @@ const SettingsView = ({
   });
 
   const handleRequestNotificationsInSettings = async () => {
-    if (typeof window === 'undefined') return;
-    if (!('Notification' in window)) {
-      toast.error('Este navegador não suporta notificações push nativas.');
-      return;
-    }
-    try {
-      let perm = Notification.permission;
-      if (perm === 'default') {
-        perm = await Notification.requestPermission();
-      }
-      setNotificationPermission(perm);
-      if (perm === 'granted') {
-        toast.success('Notificações de vencimento ativadas com sucesso!');
-      } else {
-        toast.error('Notificações bloqueadas nas configurações do navegador.');
-      }
-    } catch (e) {
-      console.error(e);
-      toast.error('Não foi possível alterar a permissão de notificação.');
-    }
+    const res = await requestNativeNotificationPermission();
+    setNotificationPermission(res.permission);
   };
 
   const handleSendPin = () => {
@@ -13888,6 +13984,16 @@ const SettingsView = ({
           </div>
         </Card>
 
+        {/* Card Dedicado de Notificações Nativas e Push de Vencimentos em Segundo Plano */}
+        <NotificationSettingsCard
+          payments={payments}
+          properties={properties}
+          tenants={tenants}
+          isDriveConnected={isDriveConnected}
+          onConnectDrive={onConnectDrive}
+          onPermissionChange={(perm) => setNotificationPermission(perm)}
+        />
+
         {/* Central de Permissões, PWA e Sincronização do Sistema (Unificada & Organizada) */}
         {(() => {
           const isNotificationGranted = notificationPermission === 'granted';
@@ -14136,6 +14242,56 @@ const SettingsView = ({
                             >
                               <Zap className="w-3 h-3 mr-1" /> Diagnostics PWA Bot
                             </Button>
+                          </div>
+                        </div>
+
+                        {/* Item 3: Notificações Nativas & Push de Vencimentos */}
+                        <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/60 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                              <Bell className="w-4 h-4 text-amber-500" /> Notificações Nativas (Vencimentos)
+                            </span>
+                            {notificationPermission === 'granted' ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">Autorizado</span>
+                            ) : notificationPermission === 'denied' ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">Bloqueado</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700">Pendente</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-600 leading-relaxed">
+                            Avisos do sistema operacional para vencimentos e cobranças pendentes mesmo com o aplicativo em segundo plano.
+                          </p>
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {notificationPermission !== 'granted' ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleRequestNotificationsInSettings}
+                                className="text-[11px] font-bold h-8 border-amber-300 text-amber-800 bg-amber-50 hover:bg-amber-100"
+                              >
+                                <Bell className="w-3 h-3 mr-1" /> Ativar Permissão Nativa
+                              </Button>
+                            ) : (
+                              <>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => triggerTestVencimentoNotification()}
+                                  className="text-[11px] font-bold h-8 border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                                >
+                                  <Send className="w-3 h-3 mr-1" /> Testar Notificação
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => checkAndNotifyDuePayments(payments, properties, tenants, { force: true })}
+                                  className="text-[11px] font-bold h-8 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                                >
+                                  <Zap className="w-3 h-3 mr-1" /> Checar Vencimentos
+                                </Button>
+                              </>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -17149,6 +17305,32 @@ export default function App() {
       if (timer) clearTimeout(timer);
     };
   }, [user, isDriveConnected, autoBackupEnabled, lastBackupDate, loading]);
+
+  // Monitoramento nativo em segundo plano de vencimentos de pagamentos (Push / SW)
+  useEffect(() => {
+    if (loading || payments.length === 0) return;
+
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      const handleSwMessage = (event: MessageEvent) => {
+        if (event.data?.type === "NAVIGATE_TAB" && event.data?.tab) {
+          setActiveTab(event.data.tab);
+        }
+      };
+      navigator.serviceWorker.addEventListener("message", handleSwMessage);
+
+      // Inicia observador de segundo plano (visibilidade e timer periódico)
+      const cleanup = setupBackgroundDueChecker(() => ({
+        payments,
+        properties,
+        tenants,
+      }));
+
+      return () => {
+        navigator.serviceWorker.removeEventListener("message", handleSwMessage);
+        cleanup();
+      };
+    }
+  }, [loading, payments, properties, tenants]);
 
   // Synchronize tenant data to localStorage for local testing & development backup
   // and also write to firestore tenant_portal_data for live secure tenant login
@@ -20587,6 +20769,9 @@ export default function App() {
             agreements={agreements}
             properties={properties}
             tenants={tenants}
+            payments={payments}
+            contracts={contracts}
+            alertSettings={alertSettings}
             setAgreementForm={setAgreementForm}
             setIsAgreementModalOpen={setIsAgreementModalOpen}
             setArchivingAgreement={setArchivingAgreement}
@@ -20626,7 +20811,16 @@ export default function App() {
           />
         );
       case "help":
-        return <HelpView />;
+        return (
+          <HelpView
+            payments={payments}
+            properties={properties}
+            tenants={tenants}
+            isDriveConnected={isDriveConnected}
+            onConnectDrive={handleConnectDrive}
+            onDriveStatusChanged={() => {}}
+          />
+        );
       case "google_tasks":
         return (
           <GoogleTasksView

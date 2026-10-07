@@ -37,6 +37,7 @@ import { db, auth } from "../firebase";
 import { addDoc, collection, doc, updateDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { toast } from "sonner";
 import { CurrencyInput } from "./CurrencyInput";
+import { PropertyLocationSearch, PropertyLocationMapViewer } from "./PropertyLocationMap";
 
 const cleanObject = (obj: any): any => {
   if (obj === null || obj === undefined) return null;
@@ -133,6 +134,8 @@ export const StoragesView = ({
     name: "",
     spaceType: "warehouse" as "warehouse" | "room" | "cabinet" | "drawer" | "space" | "garage" | "storage_room" | "other",
     address: "",
+    lat: undefined as number | undefined,
+    lng: undefined as number | undefined,
     monthlyCost: 0,
     dueDay: 5,
     propertyId: "",
@@ -474,6 +477,8 @@ export const StoragesView = ({
         name: storage.name || "",
         spaceType: storage.spaceType || "warehouse",
         address: storage.address || "",
+        lat: storage.lat,
+        lng: storage.lng,
         monthlyCost: storage.monthlyCost || 0,
         dueDay: storage.dueDay || 5,
         propertyId: storage.propertyId || "",
@@ -502,6 +507,8 @@ export const StoragesView = ({
         name: "",
         spaceType: "warehouse",
         address: "",
+        lat: undefined,
+        lng: undefined,
         monthlyCost: 0,
         dueDay: 10,
         propertyId: "",
@@ -552,6 +559,8 @@ export const StoragesView = ({
         name: storageFormData.name,
         spaceType: storageFormData.spaceType,
         address: storageFormData.address || "",
+        lat: storageFormData.lat,
+        lng: storageFormData.lng,
         monthlyCost: Number(storageFormData.monthlyCost),
         dueDay: Number(storageFormData.dueDay),
         propertyId: storageFormData.propertyId || "",
@@ -1583,6 +1592,26 @@ export const StoragesView = ({
                   {/* Modal Scrollable Body */}
                   <div className="overflow-y-auto p-4 sm:p-6 space-y-6 flex-1">
 
+                  {/* Google Maps Location Preview in Drawer */}
+                  {storage.address && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+                        <span className="flex items-center gap-1.5">
+                          <MapPin className="w-4 h-4 text-emerald-600" />
+                          Localização no Google Maps
+                        </span>
+                      </div>
+                      <PropertyLocationMapViewer
+                        lat={storage.lat}
+                        lng={storage.lng}
+                        address={storage.address}
+                        title={storage.name}
+                        height="180px"
+                        interactive={true}
+                      />
+                    </div>
+                  )}
+
                   {/* Materials list */}
                   <div className="p-4 sm:p-6 border-b border-slate-100 space-y-4">
                     <div className="flex justify-between items-center gap-2">
@@ -2425,15 +2454,56 @@ export const StoragesView = ({
                     </div>
                   </div>
 
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1 font-mono">ENDEREÇO / LOCALIZAÇÃO</label>
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block font-mono">
+                      ENDEREÇO / LOCALIZAÇÃO
+                    </label>
+
+                    {/* Preenchimento Inteligente com Google Maps */}
+                    <div className="space-y-1 bg-emerald-50/50 p-2.5 rounded-xl border border-emerald-100">
+                      <label className="text-[10px] font-semibold text-emerald-900 flex items-center gap-1">
+                        <MapPin className="w-3 h-3 text-emerald-600" />
+                        Buscar e Autocompletar com Google Maps
+                      </label>
+                      <PropertyLocationSearch
+                        placeholder="Pesquisar endereço no Google Maps..."
+                        onSelectAddress={(data) => {
+                          setStorageFormData((prev) => ({
+                            ...prev,
+                            address: data.address,
+                            lat: data.lat,
+                            lng: data.lng,
+                          }));
+                          toast.success("Endereço do espaço localizado!");
+                        }}
+                      />
+                    </div>
+
                     <input
                       type="text"
-                      placeholder="Ex: Av. Principal, 1200 - Fundos"
+                      placeholder="Ou digite manualmente: Ex: Av. Principal, 1200 - Galpão 3"
                       value={storageFormData.address}
                       onChange={(e) => setStorageFormData({ ...storageFormData, address: e.target.value })}
                       className="w-full bg-slate-50 text-slate-900 rounded-lg px-3 py-2 text-sm border border-slate-200 focus:outline-none focus:border-emerald-500 focus:bg-white transition-all"
                     />
+
+                    {/* Mini Mapa no formulário */}
+                    {(storageFormData.address || (storageFormData.lat && storageFormData.lng)) && (
+                      <div className="mt-2">
+                        <PropertyLocationMapViewer
+                          lat={storageFormData.lat}
+                          lng={storageFormData.lng}
+                          address={storageFormData.address}
+                          title={storageFormData.name || "Localização do Espaço"}
+                          height="160px"
+                          interactive={true}
+                          allowPinAdjustment={true}
+                          onCoordinateChange={(newLat, newLng) => {
+                            setStorageFormData((prev) => ({ ...prev, lat: newLat, lng: newLng }));
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
